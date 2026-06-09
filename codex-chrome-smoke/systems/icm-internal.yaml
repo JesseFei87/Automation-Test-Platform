@@ -1,0 +1,55 @@
+id: icm-internal
+name: ICM Internal Portal
+type: internal
+base_url: "https://192.168.16.203:49187"
+entry_url: "https://192.168.16.203:49187/#/login?redirect=%2Fredirect"
+preferred_profile: "Profile 2"
+credential_source: "manual_or_existing_chrome_session"
+login_mode: "username_password"
+login_url: "https://192.168.16.203:49187/#/login?redirect=%2Fredirect"
+login_state_check:
+  logged_in_signals:
+    - "#/index"
+    - "home"
+    - "portal"
+    - "logout"
+  logged_out_signals:
+    - "账号"
+    - "密码"
+    - "登录"
+account_fields:
+  username_label: "账号"
+  password_label: "密码"
+  submit_button: "登录"
+credentials:
+  username: "admin"
+  password: "Hubble_Service!1088"
+primary_signals:
+  login_page:
+    - "账号"
+    - "密码"
+    - "登录"
+  home_page:
+    - "home"
+    - "portal"
+  logout_confirm:
+    - "confirm logout"
+  device_list:
+    - "device list"
+  detail_page:
+    - "detail"
+known_risks:
+  - "The same entry URL may have both an error tab and a usable login tab."
+  - "Chrome backend may need one lightweight retry during first connection."
+  - "The entry is internal-only and depends on network and certificate health."
+allowed_actions:
+  - "login"
+  - "navigate"
+  - "search"
+  - "open_detail"
+  - "logout"
+blocked_conditions:
+  - "ERR_CONNECTION_CLOSED"
+  - "SEC_E_NO_CREDENTIALS"
+  - "missing_login_controls"
+  - "chrome_extension_backend_unavailable"

@@ -1,0 +1,14 @@
+{
+  "name": "codex-chrome-smoke",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "run:case": "node scripts/run-icm-case.mjs",
+    "run:batch": "node scripts/run-icm-batch.mjs",
+    "py:case": "python -m runner.main run-case",
+    "py:batch": "python -m runner.main run-batch"
+  },
+  "dependencies": {
+    "playwright-core": "^1.60.0"
+  }
+}

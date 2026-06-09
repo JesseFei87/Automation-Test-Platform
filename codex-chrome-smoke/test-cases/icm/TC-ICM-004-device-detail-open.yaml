@@ -1,0 +1,51 @@
+id: TC-ICM-004
+system: icm-internal
+title: ICM device detail open
+priority: P1
+category: navigation
+preconditions:
+  - "The device list page is already open."
+  - "At least one clickable device row is visible."
+steps:
+  - "Pick the first usable row."
+  - "Open Detail or the equivalent entry."
+  - "Wait for the detail page, modal, or drawer."
+expected_results:
+  - "A detail title, detail form, or detail field area becomes visible."
+failure_signals:
+  - "No detail entry is present."
+  - "No page, modal, or drawer appears after the click."
+evidence_points:
+  - "01-entry.png: device list page"
+  - "02-action.png: after clicking detail"
+  - "03-final.png: detail view"
+risk_notes:
+  - "A page, modal, or drawer detail presentation all count as pass, but the actual form must be recorded in the report."
+automation_asset:
+  operation_steps:
+    - "Ensure the session is already logged in."
+    - "Open the device list at #/hubble/device or its equivalent stable route."
+    - "Wait for the device list table to render."
+    - "Pick a visible device row."
+    - "Click the row's Modify action."
+    - "Wait for the edit dialog or detail form to appear."
+  selectors:
+    device_list_url:
+      - "#/hubble/device"
+    device_row:
+      - "tr:has-text(AU5800)"
+      - "tr:has-text(Device)"
+    row_modify_button:
+      - "button[text=修改]"
+      - "button:has-text(修改)"
+    detail_dialog:
+      - "[role=\"dialog\"]"
+    detail_fields:
+      - "placeholder=请输入设备名称"
+      - "placeholder=请输入设备ip"
+      - "placeholder=请输入设备端口"
+  input_values: {}
+  assertions:
+    - "The URL contains #/hubble/device or the device list view is otherwise confirmed."
+    - "Clicking Modify opens a dialog, drawer, or detail form."
+    - "The detail surface contains device name, IP, and port fields."

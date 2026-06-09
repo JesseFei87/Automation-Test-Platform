@@ -1,0 +1,242 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "ICM Platform: Start Backend API",
+      "type": "shell",
+      "command": "python",
+      "args": [
+        "-m",
+        "uvicorn",
+        "icm_platform.api:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8000"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "ICM Platform: Start Frontend UI",
+      "type": "shell",
+      "command": "cmd",
+      "args": [
+        "/c",
+        "npm run dev"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/web-ui"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "ICM: Run Single Case",
+      "type": "shell",
+      "command": "python",
+      "args": [
+        "-m",
+        "runner.main",
+        "run-case",
+        "${input:icmCaseId}"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "ICM: Run Chain 006-011",
+      "type": "shell",
+      "command": "python",
+      "args": [
+        "-m",
+        "runner.main",
+        "run-case",
+        "TC-ICM-006"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      },
+      "problemMatcher": [],
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "ICM: Run Case 007",
+        "ICM: Run Case 008",
+        "ICM: Run Case 009",
+        "ICM: Run Case 010",
+        "ICM: Run Case 011"
+      ]
+    },
+    {
+      "label": "ICM: Run Case 007",
+      "type": "shell",
+      "command": "python",
+      "args": [
+        "-m",
+        "runner.main",
+        "run-case",
+        "TC-ICM-007"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "ICM: Run Case 008",
+      "type": "shell",
+      "command": "python",
+      "args": [
+        "-m",
+        "runner.main",
+        "run-case",
+        "TC-ICM-008"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "ICM: Run Case 009",
+      "type": "shell",
+      "command": "python",
+      "args": [
+        "-m",
+        "runner.main",
+        "run-case",
+        "TC-ICM-009"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "ICM: Run Case 010",
+      "type": "shell",
+      "command": "python",
+      "args": [
+        "-m",
+        "runner.main",
+        "run-case",
+        "TC-ICM-010"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "ICM: Run Case 011",
+      "type": "shell",
+      "command": "python",
+      "args": [
+        "-m",
+        "runner.main",
+        "run-case",
+        "TC-ICM-011"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "ICM: Run Batch 001-012",
+      "type": "shell",
+      "command": "python",
+      "args": [
+        "-m",
+        "runner.main",
+        "run-batch",
+        "${input:icmBatchRunId}"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      },
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "icmCaseId",
+      "type": "pickString",
+      "description": "Choose the ICM case to run",
+      "options": [
+        "TC-ICM-001",
+        "TC-ICM-002",
+        "TC-ICM-003",
+        "TC-ICM-004",
+        "TC-ICM-005",
+        "TC-ICM-006",
+        "TC-ICM-007",
+        "TC-ICM-008",
+        "TC-ICM-009",
+        "TC-ICM-010",
+        "TC-ICM-011",
+        "TC-ICM-012"
+      ],
+      "default": "TC-ICM-001"
+    },
+    {
+      "id": "icmBatchRunId",
+      "type": "promptString",
+      "description": "Enter the batch run id, for example 20260601-local-batch-01",
+      "default": "20260601-local-batch-01"
+    }
+  ]
+}

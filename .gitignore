@@ -1,0 +1,79 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+codex_chrome_smoke.egg-info/
+build/
+dist/
+.eggs/
+*.egg
+
+# Virtual env
+.venv/
+venv/
+env/
+
+# Node
+node_modules/
+.npm/
+.yarn/
+.pnp.*
+
+# Vite / Frontend
+web-ui/dist/
+web-ui/.vite/
+
+# IDE / Editor
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/launch.json
+!.vscode/tasks.json
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Runtime / Test data
+.codex-tmp/
+.chrome-profile-clone/
+platform-data/
+logs/
+screenshots/runs/
+reports/runs/
+codex-chrome-smoke/reports/runs/
+codex-chrome-smoke/reports/observed-assets/
+codex-chrome-smoke/screenshots/latest/
+codex-chrome-smoke/screenshots/runs/
+codex-chrome-smoke/web-ui/qa-screenshots/
+codex-chrome-smoke/web-ui/tsconfig.tsbuildinfo
+
+# Local secrets / environment
+.env
+.env.local
+*.local
+
+# Database / sqlite
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+icm_platform/icm.db
+
+# Captcha / debug images
+doc/captcha-mask.png
+doc/icm-login-captcha-*.png
+doc/icm-login-captcha-*.jpg
+doc/tc_icm_012_probe/
+
+# Python test caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

@@ -1,0 +1,29 @@
+id: external-template
+name: Replace With External System Name
+type: external
+base_url: "https://example.com"
+entry_url: "https://example.com/login"
+preferred_profile: "Default"
+credential_source: "manual_or_existing_chrome_session"
+login_mode: "username_password_or_sso"
+account_fields:
+  username_label: "TBD"
+  password_label: "TBD"
+  submit_button: "TBD"
+primary_signals:
+  login_page:
+    - "TBD"
+  home_page:
+    - "TBD"
+known_risks:
+  - "Document account scope and production access policy."
+  - "Document SSO, captcha, MFA, payment, and approval risks."
+allowed_actions:
+  - "login"
+  - "navigate"
+  - "search"
+  - "logout"
+blocked_conditions:
+  - "captcha"
+  - "sso_timeout"
+  - "permission_denied"
