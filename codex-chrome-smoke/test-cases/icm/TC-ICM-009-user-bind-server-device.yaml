@@ -1,0 +1,85 @@
+id: TC-ICM-009
+system: icm-internal
+title: ICM bind server and device to user
+priority: P0
+category: action
+preconditions:
+  - "This case must be run after TC-ICM-006 to TC-ICM-008 in the same batch."
+  - "The system is logged in as admin."
+  - "The Tester user exists."
+  - "The target server Test Server#203 exists."
+  - "The device Test_Ins01 exists and is already bound to the server."
+steps:
+  - "Open System Management > User Management."
+  - "Find the Tester row and open More > Configure Server and Device."
+  - "Add the target server."
+  - "In the server selection page, check Test Server#203 and confirm."
+  - "Turn on the current-server switch for Test Server#203."
+  - "Go to page 3 in the bound device table and select Test_Ins01."
+  - "Return to page 1 in the bound device table."
+  - "Verify Test_Ins01 is visible in the bound device area on page 1."
+expected_results:
+  - "Tester is configured with the target server and device bindings."
+  - "The server binding is saved for the user."
+  - "Test Server#203 is marked as the current server."
+  - "The bound device list shows Test_Ins01 on page 1 after selection."
+failure_signals:
+  - "The configure action cannot be opened."
+  - "The server selection page does not show Test Server#203."
+  - "The current-server switch does not turn on."
+  - "The bound device table does not show Test_Ins01 after selection."
+evidence_points:
+  - "01-entry.png: Tester row before configuration"
+  - "02-action.png: server marked current"
+  - "03-final.png: bound device page 1 with Test_Ins01 after selection"
+risk_notes:
+  - "This case depends on the exact user/server/device names created earlier in the batch."
+  - "The current-server state is a separate toggle and must be enabled explicitly."
+  - "The selected device may move back to page 1 after selection, so the final verification should use page 1."
+automation_asset:
+  operation_steps:
+    - "Ensure the session is already logged in as admin."
+    - "Open System Management > User Management at #/system/user."
+    - "Find the Tester row and open More > Configure Server and Device."
+    - "Add the target server."
+    - "Check Test Server#203 in the server selection page and confirm."
+    - "Turn on the current-server switch for Test Server#203."
+    - "Go to page 3 in the bound device table and select Test_Ins01."
+    - "Return to page 1 in the bound device table."
+    - "Verify Test_Ins01 is visible in the bound device area on page 1."
+  selectors:
+    user_list_url:
+      - "#/system/user"
+    tester_row:
+      - "tr:has-text(Tester)"
+    more_button:
+      - "text=More"
+      - "button:has-text(More)"
+    configure_server_device_item:
+      - "text=Configure Server and Device"
+    add_server_button:
+      - "button:has-text(Add Server)"
+    target_server_text:
+      - "text=Test Server#203"
+    confirm_button:
+      - "button:has-text(确 定)"
+      - "button:has-text(确定)"
+    current_server_switch:
+      - ".el-switch:nth-of-type(2)"
+    device_page_3:
+      - ".el-pager li.number:has-text(3)"
+    device_page_1:
+      - ".el-pager li.number:has-text(1)"
+    device_row_text:
+      - "text=Test_Ins01"
+    device_checkbox:
+      - ".el-checkbox__inner"
+  input_values:
+    tester_user: "Tester"
+    server_name: "Test Server#203"
+    device_name: "Test_Ins01"
+  assertions:
+    - "The configure action can be opened."
+    - "The target server can be selected."
+    - "The current-server switch can be enabled."
+    - "The bound device list shows Test_Ins01 on page 1 after selection."

@@ -1,0 +1,63 @@
+id: TC-ICM-010
+system: icm-internal
+title: ICM screen wall open remote desktop
+priority: P0
+category: navigation
+preconditions:
+  - "This case must be run after TC-ICM-009 in the same batch."
+  - "The system can be logged in as Tester with a locally configured password."
+  - "The screen wall page is reachable."
+  - "The screen wall has refreshed and shows the target device."
+steps:
+  - "Log in as Tester."
+  - "Open the screen wall page."
+  - "Hover the Test_Ins01 tile to reveal the focus mask."
+  - "Click the center screen mask on Test_Ins01."
+  - "Verify that a new tab opens for the remote desktop."
+  - "Wait for the remote desktop to finish loading."
+  - "Interact with the remote desktop if needed."
+expected_results:
+  - "A new tab opens for Test_Ins01 remote desktop."
+  - "The remote desktop page shows the Test_Ins01 session."
+failure_signals:
+  - "The screen wall does not show the target device."
+  - "No new tab opens for the remote desktop."
+  - "The remote desktop page cannot be loaded."
+evidence_points:
+  - "01-entry.png: screen wall before entering the device"
+  - "02-action.png: remote desktop tab opened"
+  - "03-final.png: remote desktop page loaded"
+risk_notes:
+  - "The remote desktop is a separate tab and should be treated as an independent session."
+  - "The entry point is the screen-wall tile overlay, not the remote-assistance list page."
+automation_asset:
+  operation_steps:
+    - "Log in as Tester with the provided password."
+    - "Open the screen wall page at #/icm."
+    - "Wait for the screen wall to render."
+    - "Hover the Test_Ins01 tile to reveal the focus mask."
+    - "Click the center screen mask on Test_Ins01."
+    - "Confirm that a new remote desktop tab opens."
+  selectors:
+    login_url:
+      - "#/login"
+    username_input:
+      - "placeholder=account"
+    password_input:
+      - "placeholder=password"
+    login_button:
+      - "button:has-text(login)"
+    screen_wall_url:
+      - "#/icm"
+    device_tile:
+      - "text=Test_Ins01"
+    tile_hotspot:
+      - ".screen-mask-img"
+  input_values:
+    username: "Tester"
+    password: ""
+    device_name: "Test_Ins01"
+  assertions:
+    - "The screen wall page opens."
+    - "The Test_Ins01 tile can be hovered."
+    - "A remote desktop tab is opened."

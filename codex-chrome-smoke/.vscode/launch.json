@@ -1,0 +1,59 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "ICM: Debug Single Case",
+      "type": "python",
+      "request": "launch",
+      "module": "runner.main",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "args": [
+        "run-case",
+        "${input:icmDebugCaseId}"
+      ]
+    },
+    {
+      "name": "ICM: Debug Batch 001-012",
+      "type": "python",
+      "request": "launch",
+      "module": "runner.main",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "args": [
+        "run-batch",
+        "${input:icmDebugBatchRunId}"
+      ]
+    }
+  ],
+  "inputs": [
+    {
+      "id": "icmDebugCaseId",
+      "type": "pickString",
+      "description": "Choose the ICM case to debug",
+      "options": [
+        "TC-ICM-001",
+        "TC-ICM-002",
+        "TC-ICM-003",
+        "TC-ICM-004",
+        "TC-ICM-005",
+        "TC-ICM-006",
+        "TC-ICM-007",
+        "TC-ICM-008",
+        "TC-ICM-009",
+        "TC-ICM-010",
+        "TC-ICM-011",
+        "TC-ICM-012"
+      ],
+      "default": "TC-ICM-001"
+    },
+    {
+      "id": "icmDebugBatchRunId",
+      "type": "promptString",
+      "description": "Enter the batch run id, for example 20260601-local-batch-01",
+      "default": "20260601-local-batch-01"
+    }
+  ]
+}

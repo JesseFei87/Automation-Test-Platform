@@ -1,0 +1,42 @@
+# 路线 A + B + C 共享忽略规则（架构 §6 T14）
+# 临时数据 / 备份 / 数据库 / 浏览器 profile
+.codex-tmp/
+reports/observed-assets/
+reports/runs/
+platform-data/*.sqlite3
+platform-data/runner-logs/
+screenshots/
+.chrome-profile-clone/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+.coverage
+.tox/
+.venv/
+venv/
+env/
+.mypy_cache/
+.ruff_cache/
+
+# Node / 前端
+node_modules/
+dist/
+build/
+.vite/
+
+# 编辑器 / 系统
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/launch.json
+!.vscode/tasks.json
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo

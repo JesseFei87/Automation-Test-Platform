@@ -1,0 +1,42 @@
+id: TC-ICM-002
+system: icm-internal
+title: ICM homepage load success
+priority: P0
+category: navigation
+preconditions:
+  - "The system is already logged in."
+steps:
+  - "Open the homepage."
+  - "Wait for loading to finish."
+  - "Confirm stable homepage sections are visible."
+expected_results:
+  - "The URL contains #/index."
+  - "The homepage no longer shows a loading message."
+failure_signals:
+  - "Loading does not finish."
+  - "The page goes blank, errors, or returns to login."
+evidence_points:
+  - "01-entry.png: homepage entry"
+  - "02-action.png: after loading ends"
+  - "03-final.png: homepage final state"
+risk_notes:
+  - "If the page returns to login, treat it as session-loss or login failure."
+automation_asset:
+  operation_steps:
+    - "Ensure the session is already logged in."
+    - "Open the homepage at #/index."
+    - "Wait for the loading state to clear."
+    - "Confirm stable homepage sections are visible."
+  selectors:
+    homepage_url:
+      - "#/index"
+    stable_home_signals:
+      - "home"
+      - "portal"
+      - "首页"
+      - "系统管理"
+  input_values: {}
+  assertions:
+    - "The URL contains #/index."
+    - "The homepage no longer shows a loading message."
+    - "The page does not return to login."

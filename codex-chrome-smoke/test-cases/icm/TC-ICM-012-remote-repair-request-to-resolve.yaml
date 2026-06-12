@@ -1,0 +1,89 @@
+id: TC-ICM-012
+system: icm-internal
+title: ICM remote repair request to resolve
+priority: P0
+category: action
+preconditions:
+  - "The labo account can log in to the ICM screen wall."
+  - "The first screen-wall device tile is AU5800."
+  - "The AU5800 screen must finish loading before Request Assistance becomes available in the device info card."
+  - "The jesse account can log in to the dev.tcsoft.net.cn portal."
+steps:
+  - "Log in to the ICM screen wall as labo."
+  - "Wait for the first AU5800 screen tile to finish loading."
+  - "Hover AU5800, click the top-right circular device-info entry, then click Request Assistance from the device info card."
+  - "Fill validity 5, contact Tester, phone 66668888, and demand text 自动化测试专用，请勿回复！, then submit."
+  - "Open a new tab and log in to the dev.tcsoft.net.cn portal as jesse."
+  - "Open ICM > 远程协助信息 and process the newly created record."
+  - "Open the remote interface from the detail page."
+  - "Verify the remote page opens in a new tab and click the Solve toolbar action."
+expected_results:
+  - "A remote-help request can be submitted from the AU5800 device info card."
+  - "The matching remote-help record can be processed by jesse."
+  - "The remote interface opens in a new tab."
+  - "The Solve action can be triggered from the remote toolbar."
+failure_signals:
+  - "The AU5800 tile never becomes ready for Request Assistance."
+  - "The Request Assistance form cannot be submitted."
+  - "The dev portal cannot find the matching remote-help record."
+  - "The remote interface does not open or the Solve action cannot be triggered."
+evidence_points:
+  - "01-entry.png: AU5800 screen wall tile after it becomes ready"
+  - "02-action.png: filled Request Assistance form before submission"
+  - "03-final.png: remote interface tab after Solve is triggered"
+risk_notes:
+  - "This case spans two authenticated domains in the same browser context."
+  - "The remote-help list does not expose the request detail text directly, so the script must verify the demand text in the detail page before continuing."
+automation_asset:
+  operation_steps:
+    - "Log in as labo and open #/icm."
+    - "Wait until the first AU5800 tile is no longer blocked by loading or abnormal-state overlays."
+    - "Hover AU5800 and click the top-right circular device-info entry."
+    - "Wait for Request Assistance to appear in the device info card and click it."
+    - "Fill the request form and submit it."
+    - "Open a new tab, log in as jesse, and open /hubble/remoteHelpInfo."
+    - "Open the newest matching Process record and verify the request detail text."
+    - "Click 打开远程界面 and switch to the new remoteView tab."
+    - "Click the middle lock-style toolbar icon as the Solve action."
+  selectors:
+    labo_login_url:
+      - "https://192.168.16.203:49187/#/login?redirect=%2Fredirect"
+    screen_wall_url:
+      - "#/icm"
+    first_device_name:
+      - "text=AU5800"
+    device_info_entry:
+      - ".screen-top-head"
+    request_assistance_button:
+      - "button:has-text(请求协助)"
+      - "text=请求协助"
+    request_dialog:
+      - ".el-dialog:visible"
+    dev_login_url:
+      - "https://dev.tcsoft.net.cn/login?redirect=%2Fredirect"
+    remote_help_url:
+      - "https://dev.tcsoft.net.cn/hubble/remoteHelpInfo"
+    process_button:
+      - "button:has-text(处理)"
+    open_remote_button:
+      - "button:has-text(打开远程界面)"
+    remote_toolbar_solve_icon:
+      - ".top-center img.el-tooltip:nth-of-type(2)"
+  input_values:
+    labo_username: "labo"
+    labo_password: ""
+    device_name: "AU5800"
+    request_valid_days: "5"
+    request_contact: "Tester"
+    request_phone: "66668888"
+    request_text: "自动化测试专用，请勿回复！"
+    jesse_login_url: "https://dev.tcsoft.net.cn/login?redirect=%2Fredirect"
+    jesse_username: "jesse"
+    jesse_password: ""
+    remote_help_url: "https://dev.tcsoft.net.cn/hubble/remoteHelpInfo"
+  assertions:
+    - "The AU5800 tile becomes ready and exposes Request Assistance in the device info card."
+    - "The request form accepts the required values and can be submitted."
+    - "The matching remote-help detail page contains 自动化测试专用，请勿回复！."
+    - "The remoteView tab opens."
+    - "The Solve toolbar action can be triggered."
