@@ -54,6 +54,9 @@ def init_db() -> None:
               id text primary key,
               mode text not null,
               case_id text,
+              parent_run_id text,
+              trigger text,
+              healing_context_path text,
               status text not null,
               command text not null,
               started_at text,
@@ -181,6 +184,7 @@ def init_db() -> None:
         ensure_column(conn, "requirements", "analysis_summary", "text")
         ensure_column(conn, "requirements", "risk_summary", "text")
         ensure_column(conn, "requirements", "case_count", "integer default 0")
+        ensure_column(conn, "requirements", "project_id", "text")
         ensure_column(conn, "test_points", "description", "text")
         ensure_column(conn, "test_points", "parent_id", "integer")
         ensure_column(conn, "test_points", "sort_order", "integer")
@@ -192,8 +196,12 @@ def init_db() -> None:
         ensure_column(conn, "case_drafts", "promoted_case_id", "text")
         ensure_column(conn, "case_drafts", "promoted_path", "text")
         ensure_column(conn, "case_drafts", "error", "text")
+        ensure_column(conn, "run_tasks", "parent_run_id", "text")
+        ensure_column(conn, "run_tasks", "trigger", "text")
+        ensure_column(conn, "run_tasks", "healing_context_path", "text")
         ensure_column(conn, "platform_settings", "environment_json", "text")
         ensure_column(conn, "platform_settings", "accounts_json", "text")
+        backfill_requirement_project_id(conn)
         backfill_test_point_mindmap_columns(conn)
 
 
@@ -221,6 +229,27 @@ def backfill_test_point_mindmap_columns(conn: sqlite3.Connection) -> None:
           '未归属模块'
         )
         where module is null or module = ''
+        """
+    )
+
+
+def backfill_requirement_project_id(conn: sqlite3.Connection) -> None:
+    icm_project = conn.execute("select id from project_profiles where id = ?", ("proj-icm-default",)).fetchone()
+    if not icm_project:
+        return
+    conn.execute(
+        """
+        update requirements
+        set project_id = 'proj-icm-default'
+        where (project_id is null or project_id = '')
+          and (
+            title like '%ICM%'
+            or document like '%ICM%'
+            or title like '%登录ICM系统%'
+            or document like '%登录ICM系统%'
+            or title like '%登录%'
+            or document like '%登录%'
+          )
         """
     )
 

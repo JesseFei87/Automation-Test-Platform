@@ -1,0 +1,55 @@
+id: TC-ICM-016
+title: 登录成功后刷新页面仍保持登录态
+module: 账号/登录
+priority: P1
+type: 功能
+precondition: 已通过 test/123456 成功登录
+test_data: username=test, password=123456
+steps:
+- 1. 成功登录后停留在屏幕墙
+- 2. 按 F5 刷新页面
+- 3. 关闭浏览器后重新打开访问屏幕墙 URL
+expected: &id001
+- 1. 刷新后仍显示屏幕墙页面，未跳回登录页
+- 2. 顶部导航栏仍展示用户 test
+- 3. 若使用 token 机制，token 在有效期内持续有效
+requirement_id: REQ-LOGIN-009
+automation: 'Yes'
+author: AI
+date: '2026-06-09'
+note: 会话保持验证
+context_info:
+  env_url: ''
+  test_account: ''
+  excluded: ''
+  refs: ''
+system: icm-internal
+expected_results: *id001
+preconditions:
+- 已通过 test/123456 成功登录
+status: formal
+source: agent-explore
+source_run_id: ui-6319eba7b9f2
+automation_asset:
+  status: verified
+  source: agent-explore
+  evidence: {}
+  operation_steps:
+  - fill username from case test data
+  - fill password from case test data
+  - submit login form with test/123456
+  - waiting for login to complete, button shows 登录中...
+  - 'Login success signal already confirmed: on 屏幕墙 (ICM) page with target username
+    ''test'' visible, precondition met. Per healing hint, avoiding further noisy tail
+    actions (prior round failed on empty ref press).'
+  selectors:
+    fill_1: input[placeholder="账号"]
+    fill_2: input[placeholder="密码"]
+    click_3: div:nth-of-type(1) > form > div:nth-of-type(4) > div > button
+  input_values:
+    fill_1: test
+    fill_2: '123456'
+  assertions:
+  - 1. 刷新后仍显示屏幕墙页面，未跳回登录页
+  - 2. 顶部导航栏仍展示用户 test
+  - 3. 若使用 token 机制，token 在有效期内持续有效

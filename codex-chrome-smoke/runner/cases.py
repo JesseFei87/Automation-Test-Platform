@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
 import sqlite3
 import traceback
@@ -34,6 +35,7 @@ from runner.flows.icm_case_009 import run as run_case_009
 from runner.flows.icm_case_010 import run as run_case_010
 from runner.flows.icm_case_011 import run as run_case_011
 from runner.flows.icm_case_012 import run as run_case_012
+from runner.step_details import finalize_step_details, initialize_step_details
 
 CaseRunner = Callable[[Page, dict[str, Any], dict[str, Any]], Awaitable[None]]
 
@@ -51,6 +53,25 @@ CASE_RUNNERS: dict[str, CaseRunner] = {
     "TC-ICM-011": run_case_011,
     "TC-ICM-012": run_case_012,
 }
+
+
+def _flow_path_for_case(case_id: str) -> Path:
+    tail = case_id.rsplit("-", 1)[-1].lower()
+    return Path(__file__).resolve().parent / "flows" / f"icm_case_{tail}.py"
+
+
+def _load_dynamic_runner(case_id: str) -> CaseRunner | None:
+    path = _flow_path_for_case(case_id)
+    if not path.exists():
+        return None
+    module_name = f"runner.flows.dynamic_{path.stem}_{abs(hash(path))}"
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    run = getattr(module, "run", None)
+    return run if callable(run) else None
 
 
 # 路线 B：每次 attempt 写入 case_runs 表 + retry 日志
@@ -121,6 +142,8 @@ async def run_case_data(
     case_id = str(case.get("id") or "")
     system = load_system(case["system"])
     apply_runtime_case_inputs(case, system)
+    run_started_at = _utc_now_iso()
+    initialize_step_details(run_id, case, mode="worker")
 
     # 防御：max_retries 限制 0~3（与 PRD US-B1 / main.py --retry 一致）
     if max_retries < 0:
@@ -133,10 +156,10 @@ async def run_case_data(
     final_attempt_no = 0
     last_result: dict[str, Any] | None = None
 
-    runner = CASE_RUNNERS.get(case_id)
+    runner = CASE_RUNNERS.get(case_id) or _load_dynamic_runner(case_id)
     if runner is None:
         error = f"Unsupported case: {case_id}. No Python flow is registered for this draft yet."
-        return {
+        result = {
             "case": case,
             "system": system,
             "screenshots": [],
@@ -147,6 +170,8 @@ async def run_case_data(
             "attempts": 0,
             "max_retries": max_retries,
         }
+        finalize_step_details(run_id, case, result, started_at=run_started_at, finished_at=_utc_now_iso(), mode="worker")
+        return result
 
     for attempt_no in range(1, attempts + 1):
         # attempt > 1 时先清理 page 状态再重试
@@ -266,6 +291,17 @@ async def run_case_data(
             "attempts": 0,
             "max_retries": max_retries,
         }
+
+    run_finished_at = _utc_now_iso()
+    last_result["final_url"] = getattr(page, "url", "")
+    finalize_step_details(
+        run_id,
+        case,
+        last_result,
+        started_at=run_started_at,
+        finished_at=run_finished_at,
+        mode="worker",
+    )
 
     return {
         **last_result,

@@ -34,6 +34,9 @@ class FakePage:
     async def goto(self, url: str) -> None:
         self.gotos.append(url)
 
+    def on(self, event: str, callback) -> None:
+        return None
+
 
 class _FakeRecorder:
     def __init__(self) -> None:

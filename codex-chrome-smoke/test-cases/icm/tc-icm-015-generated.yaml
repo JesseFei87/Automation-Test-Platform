@@ -1,0 +1,48 @@
+id: TC-ICM-015
+title: 未登录访问受保护页面被重定向至登录页
+module: 账号/登录
+priority: P0
+type: 权限
+precondition: 浏览器无登录态；系统中存在 /screenwall 等受保护路由
+test_data: 无
+steps:
+- 1. 在未登录状态下直接访问 https://192.168.16.203:49187/#/screenwall
+- 2. 观察页面跳转行为
+expected: &id001
+- 1. 自动跳转到登录页 URL
+- 2. 登录成功后自动回到原访问的 /screenwall 页面
+- 3. 受保护页面的实际内容不暴露给未登录用户
+requirement_id: REQ-LOGIN-008
+automation: 'Yes'
+author: AI
+date: '2026-06-09'
+note: 路由守卫验证
+context_info:
+  env_url: ''
+  test_account: ''
+  excluded: ''
+  refs: ''
+system: icm-internal
+expected_results: *id001
+preconditions:
+- 浏览器无登录态；系统中存在 /screenwall 等受保护路由
+status: formal
+source: agent-explore
+source_run_id: ui-74816e42b50f
+automation_asset:
+  status: verified
+  source: agent-explore
+  evidence: {}
+  operation_steps:
+  - verify redirected to login page when accessing protected page without authentication
+  - Successfully verified that accessing the protected page /screenwall without being
+    logged in redirected the user to the login page (URL is now /login?redirect=%2Fredirect),
+    and the login page is displayed showing '登录' button and login form fields.
+  selectors:
+    agent_candidate: candidate_flow.py
+  input_values:
+    assert_text_1: 登录
+  assertions:
+  - 1. 自动跳转到登录页 URL
+  - 2. 登录成功后自动回到原访问的 /screenwall 页面
+  - 3. 受保护页面的实际内容不暴露给未登录用户

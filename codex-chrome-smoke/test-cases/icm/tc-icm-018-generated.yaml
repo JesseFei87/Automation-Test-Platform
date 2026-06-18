@@ -1,0 +1,48 @@
+id: TC-ICM-018
+title: 账号为空时点击登录提示请输入账号
+module: 账号/登录
+priority: P0
+type: 异常
+precondition: 已打开登录页，账号密码均为空
+test_data: username=空, password=空
+steps:
+- 1. 访问登录页
+- 2. 不输入账号和密码
+- 3. 直接点击【登录】按钮
+expected: &id001
+- 1. 账号输入框下方出现红色校验文案“请输入账号”
+- 2. 密码输入框下方出现红色校验文案“请输入密码”
+- 3. 页面不发生跳转，停留在登录页
+requirement_id: REQ-LOGIN-003
+automation: 'Yes'
+author: AI
+date: '2026-06-09'
+note: ''
+context_info:
+  env_url: ''
+  test_account: ''
+  excluded: ''
+  refs: ''
+system: icm-internal
+expected_results: *id001
+preconditions:
+- 已打开登录页，账号密码均为空
+status: formal
+source: agent-explore
+source_run_id: ui-8313446d8be5
+automation_asset:
+  status: verified
+  source: agent-explore
+  evidence: {}
+  operation_steps:
+  - 点击登录按钮，账号密码均为空，期望提示请输入账号
+  - 验证空账号时点击登录后是否提示请输入账号
+  - 已验证：账号密码为空时点击登录按钮，页面提示'请输入您的账号'和'请输入您的密码'，符合预期结果。
+  selectors:
+    click_1: div:nth-of-type(1) > form > div:nth-of-type(4) > div > button
+  input_values:
+    assert_text_2: 请输入您的账号
+  assertions:
+  - 1. 账号输入框下方出现红色校验文案“请输入账号”
+  - 2. 密码输入框下方出现红色校验文案“请输入密码”
+  - 3. 页面不发生跳转，停留在登录页

@@ -1,89 +1,69 @@
 import { useEffect, useMemo, useState } from "react";
-import { API_ORIGIN, api, type ApiCase, type ApiRun, type ApiRunDetail, type ApiScreenshot } from "../data/api";
+import { API_ORIGIN, api, type ApiCase, type ApiRunDetailView } from "../data/api";
+import { buildExecutionListItems, buildRunDetailViewModel, legacyRunDetailToView, type ExecutionListItem } from "../data/runViewModels";
 import { Card } from "../components/Card";
 import { ConsolePanel } from "../components/ConsolePanel";
 import { FlowSteps } from "../components/FlowSteps";
-import { ScreenshotLightbox } from "../components/ScreenshotLightbox";
 import { StatusPill } from "../components/StatusPill";
 
+type ExecutionTab = "worker" | "agent";
+
 function statusTone(status: string): "green" | "red" | "amber" | "blue" {
-  if (status === "passed") return "green";
+  if (status === "completed" || status === "passed" || status === "success") return "green";
   if (status === "failed") return "red";
   if (status === "running") return "blue";
   return "amber";
 }
 
-function formatTime(value?: string | null) {
-  if (!value) return "--";
-  return new Date(value).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+function statusText(status: string) {
+  if (status === "completed" || status === "passed" || status === "success") return "已通过";
+  if (status === "failed") return "失败";
+  if (status === "running") return "运行中";
+  if (status === "queued") return "排队中";
+  return status || "未知";
 }
 
-function runIdFromReportPath(path?: string | null) {
-  if (!path) return "";
-  return path.replace(/\\/g, "/").split("/").pop()?.replace(/\.md$/, "") || "";
+function latestLine(detail: ApiRunDetailView | null) {
+  if (!detail?.logs?.length) return ["暂无真实运行日志。"];
+  return detail.logs.map((log) => `[${log.created_at}] ${log.line}`);
 }
 
-function reportTargetFor(run: ApiRun, detail: ApiRunDetail | null) {
-  if (run.mode === "run-case") return run.report_path ? run.id : "";
-  const children = detail?.children ?? [];
-  const failedChild = children.find((child) => child.status === "failed" && child.run_id);
-  const latestChild = [...children].reverse().find((child) => child.run_id);
-  return failedChild?.run_id || latestChild?.run_id || runIdFromReportPath(run.report_path);
+function tabForItem(item?: ExecutionListItem | null): ExecutionTab {
+  return item?.mode === "agent" ? "agent" : "worker";
 }
 
-function evidenceText(value: unknown) {
-  if (value === null || value === undefined) return "";
-  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
-  return JSON.stringify(value);
-}
-
-export function ExecutionCenter({ initialRunId = "", onOpenReport }: { initialRunId?: string; onOpenReport: (runId: string) => void }) {
+export function ExecutionCenter({
+  initialRunId = "",
+  onOpenReport,
+}: {
+  initialRunId?: string;
+  onOpenReport: (runId: string) => void;
+  onOpenCaseDraft?: (draftId: number) => void;
+}) {
   const [cases, setCases] = useState<ApiCase[]>([]);
-  const [runs, setRuns] = useState<ApiRun[]>([]);
   const [selectedCaseId, setSelectedCaseId] = useState("");
+  const [runs, setRuns] = useState<ExecutionListItem[]>([]);
   const [selectedRunId, setSelectedRunId] = useState("");
-  const [runDetail, setRunDetail] = useState<ApiRunDetail | null>(null);
-  const [message, setMessage] = useState("正在连接本机执行服务...");
+  const [runDetail, setRunDetail] = useState<ApiRunDetailView | null>(null);
+  const [message, setMessage] = useState("正在连接本地执行服务...");
   const [submitting, setSubmitting] = useState(false);
-  const [previewShot, setPreviewShot] = useState<ApiScreenshot | null>(null);
+  const [activeExecutionTab, setActiveExecutionTab] = useState<ExecutionTab>("worker");
+  const [selectedStepKey, setSelectedStepKey] = useState("");
+  const [promoting, setPromoting] = useState(false);
+  const [selfHealing, setSelfHealing] = useState(false);
+  const [deletingRunId, setDeletingRunId] = useState("");
+  const [lastPromotedCaseId, setLastPromotedCaseId] = useState("");
 
-  const selectedRun = useMemo(
-    () => runs.find((run) => run.id === selectedRunId) || runDetail?.task || null,
-    [runDetail, runs, selectedRunId],
-  );
-  const visibleRuns = useMemo(
-    () =>
-      [...runs].sort((left, right) => {
-        if (left.status === "failed" && right.status !== "failed") return -1;
-        if (left.status !== "failed" && right.status === "failed") return 1;
-        return right.created_at.localeCompare(left.created_at);
-      }),
-    [runs],
-  );
-  const activeCount = runs.filter((run) => run.summary?.is_active || run.status === "queued" || run.status === "running").length;
-  const passedCount = runs.filter((run) => run.status === "passed").length;
-  const failedCount = runs.filter((run) => run.status === "failed").length;
-  const latestScreenshot = runDetail?.screenshots?.at(-1);
-  const artifactReady = runDetail?.summary?.artifact_ready ?? Boolean(runDetail?.task?.report_path);
-  const screenshotCount = runDetail?.screenshots?.length ?? 0;
-  const batchChildren = runDetail?.children ?? [];
-  const reportTargetRunId = selectedRun ? reportTargetFor(selectedRun, runDetail) : "";
-  const evidence = runDetail?.evidence;
-  const liveLines = runDetail?.logs?.length
-    ? runDetail.logs.map((log) => `[${formatTime(log.created_at)}] ${log.line}`)
-    : ["暂无真实运行日志；创建或选择一个执行任务后这里会显示 runner 输出。"];
-
-  async function refreshRuns() {
-    try {
-      const result = await api.runs();
-      setRuns(result);
-      const priority = result.find((item) => item.status === "failed") || result[0];
-      setSelectedRunId((current) => current || priority?.id || "");
-      setMessage(`已连接后端队列，共 ${result.length} 条任务`);
-    } catch {
-      setMessage("后端未启动，暂时无法创建或查看真实执行任务");
-    }
-  }
+  const workerRuns = useMemo(() => runs.filter((item) => item.mode === "worker"), [runs]);
+  const agentRuns = useMemo(() => runs.filter((item) => item.mode === "agent"), [runs]);
+  const visibleRuns = useMemo(() => (activeExecutionTab === "agent" ? agentRuns : workerRuns), [activeExecutionTab, agentRuns, workerRuns]);
+  const selectedRun = useMemo(() => runs.find((item) => item.runId === selectedRunId) || null, [runs, selectedRunId]);
+  const detailModel = useMemo(() => buildRunDetailViewModel(runDetail), [runDetail]);
+  const latestScreenshot = detailModel.screenshots.at(-1) || null;
+  const selectedStep = useMemo(() => detailModel.steps.find((step) => step.key === selectedStepKey) || detailModel.steps[0] || null, [detailModel.steps, selectedStepKey]);
+  const previewScreenshotUrl = selectedStep?.screenshotUrl || latestScreenshot?.url || "";
+  const canPromoteRegression = detailModel.mode === "agent" && detailModel.status === "completed" && Boolean(detailModel.artifacts.candidate_flow_url);
+  const canSelfHeal = detailModel.mode === "agent" && detailModel.status === "failed" && Boolean(detailModel.artifacts.trace_download_url);
 
   async function loadCases() {
     try {
@@ -91,58 +71,140 @@ export function ExecutionCenter({ initialRunId = "", onOpenReport }: { initialRu
       setCases(result);
       setSelectedCaseId((current) => (result.some((item) => item.id === current) ? current : result[0]?.id || ""));
     } catch {
-      setMessage("后端未启动，无法读取 test-cases YAML 列表");
+      setMessage("无法读取正式用例。");
+    }
+  }
+
+  async function refreshRuns() {
+    try {
+      const result = buildExecutionListItems(await api.runs());
+      setRuns(result);
+      const preferred = result.find((item) => item.status === "running") || result.find((item) => item.status === "failed") || result[0];
+      setSelectedRunId((current) => (current && result.some((item) => item.runId === current) ? current : preferred?.runId || ""));
+      setMessage(`已加载 ${result.length} 条执行任务。`);
+    } catch {
+      setMessage("无法读取执行队列。");
     }
   }
 
   async function startRun(mode: "run-case" | "run-batch") {
-    if (mode === "run-case" && !selectedCaseId) {
-      setMessage("请先读取到正式 case 后再执行单条用例");
-      return;
-    }
+    if (mode === "run-case" && !selectedCaseId) return;
     setSubmitting(true);
-    setMessage(mode === "run-case" ? `正在提交 ${selectedCaseId}...` : "正在提交全量批跑 001-012...");
     try {
       const task = await api.createRun(mode, mode === "run-case" ? selectedCaseId : undefined);
+      setActiveExecutionTab("worker");
       setSelectedRunId(task.id);
       setRunDetail(null);
-      setMessage(`已入队：${task.id}`);
       await refreshRuns();
-    } catch {
-      setMessage("提交失败：请确认 FastAPI 后端已启动，且当前没有环境阻塞 runner");
+      setMessage(`已入队 ${task.id}`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "提交失败");
     } finally {
       setSubmitting(false);
     }
   }
 
+  async function promoteRegression() {
+    const runId = selectedRunId || initialRunId;
+    if (!runId) {
+      setMessage("请先选择一条执行记录");
+      return;
+    }
+    setPromoting(true);
+    try {
+      const result = await api.promoteRegression(runId);
+      setLastPromotedCaseId(result.case_id);
+      await loadCases();
+      setSelectedCaseId(result.case_id);
+      setMessage(`已沉淀为正式回归用例：${result.case_id}`);
+    } catch (error) {
+      setLastPromotedCaseId("");
+      setMessage(error instanceof Error ? error.message : "沉淀失败");
+    } finally {
+      setPromoting(false);
+    }
+  }
+
+  async function selfHealAgentRun() {
+    const runId = selectedRunId || initialRunId;
+    if (!runId) {
+      setMessage("请先选择一条执行记录");
+      return;
+    }
+    setSelfHealing(true);
+    try {
+      const task = await api.selfHealAgentExplore(runId);
+      setActiveExecutionTab("agent");
+      setSelectedRunId(task.id);
+      setRunDetail(null);
+      await refreshRuns();
+      setMessage(`已创建自愈任务：${task.id}`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Agent 自愈提交失败");
+    } finally {
+      setSelfHealing(false);
+    }
+  }
+
+  async function deleteRun(runId: string) {
+    if (!window.confirm("是否确认删除？")) return;
+    setDeletingRunId(runId);
+    try {
+      await api.deleteRun(runId);
+      if (selectedRunId === runId) {
+        setSelectedRunId("");
+        setRunDetail(null);
+        setSelectedStepKey("");
+      }
+      await refreshRuns();
+      setMessage(`已删除任务 ${runId}`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "删除任务失败");
+    } finally {
+      setDeletingRunId("");
+    }
+  }
+
   useEffect(() => {
-    loadCases();
-    refreshRuns();
-    const timer = window.setInterval(refreshRuns, 5000);
+    void loadCases();
+    void refreshRuns();
+    const timer = window.setInterval(() => void refreshRuns(), 5000);
     return () => window.clearInterval(timer);
   }, []);
 
   useEffect(() => {
-    if (initialRunId) {
-      setSelectedRunId(initialRunId);
-    }
+    if (initialRunId) setSelectedRunId(initialRunId);
   }, [initialRunId]);
+
+  useEffect(() => {
+    if (selectedRun) setActiveExecutionTab(tabForItem(selectedRun));
+  }, [selectedRun]);
+
+  useEffect(() => {
+    setSelectedStepKey("");
+  }, [selectedRunId]);
+
+  useEffect(() => {
+    if (!detailModel.steps.length) {
+      setSelectedStepKey("");
+      return;
+    }
+    setSelectedStepKey((current) => (detailModel.steps.some((step) => step.key === current) ? current : detailModel.steps[0].key));
+  }, [detailModel.steps]);
 
   useEffect(() => {
     if (!selectedRunId) return;
     let cancelled = false;
-
     async function loadDetail() {
       try {
-        const detail = await api.runDetail(selectedRunId);
+        const detail = await api.runDetailView(selectedRunId).catch(async () => legacyRunDetailToView(await api.runDetail(selectedRunId)));
         if (!cancelled) setRunDetail(detail);
       } catch {
         if (!cancelled) setRunDetail(null);
       }
     }
-
-    loadDetail();
-    const timer = window.setInterval(loadDetail, 2500);
+    void loadDetail();
+    const timer = window.setInterval(() => void loadDetail(), 2500);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
@@ -150,206 +212,215 @@ export function ExecutionCenter({ initialRunId = "", onOpenReport }: { initialRu
   }, [selectedRunId]);
 
   return (
-    <div className="page">
+    <div className="page execution-page">
       <FlowSteps activeIndex={5} />
       <div className="execution-grid">
         <div className="execution-left">
-          <Card title="发起执行" subtitle="前台提交任务，后台 worker 调用本地 Python runner">
-            <label className="field-label" htmlFor="case-select">选择用例</label>
-            <select
-              className="case-select"
-              id="case-select"
-              onChange={(event) => setSelectedCaseId(event.target.value)}
-              value={selectedCaseId}
-            >
-              {cases.length ? (
-                cases.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.id} {item.title ? `- ${item.title}` : ""}
-                  </option>
-                ))
-              ) : (
-                <option value="">暂无正式 case</option>
-              )}
+          <Card title="执行入口" subtitle="常规执行与智能探索共用同一调度台">
+            <label className="field-label" htmlFor="case-select">
+              选择正式用例
+            </label>
+            <select className="case-select" id="case-select" onChange={(event) => setSelectedCaseId(event.target.value)} value={selectedCaseId}>
+              {cases.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.id} {item.title ? `- ${item.title}` : ""}
+                </option>
+              ))}
             </select>
             <div className="button-row">
               <button className="btn btn--primary" disabled={submitting || !selectedCaseId} onClick={() => startRun("run-case")} type="button">
                 执行单条
               </button>
               <button className="btn btn--green" disabled={submitting} onClick={() => startRun("run-batch")} type="button">
-                跑 001-012
+                批量执行
               </button>
             </div>
-            <button className="btn btn--dark btn--wide" disabled={submitting} onClick={() => startRun("run-batch")} type="button">
-              全量批跑 TC-ICM-001~012
-            </button>
-            <p className="muted">{message}</p>
+            <p className="muted">
+              {message}
+              {lastPromotedCaseId ? (
+                <>
+                  {" "}
+                  <span className="muted">已选中 {lastPromotedCaseId}</span>
+                </>
+              ) : null}
+            </p>
           </Card>
 
-          <Card className="queue-card" title="任务队列" subtitle="失败任务置顶，便于优先定位">
-            <div className="queue-stats">
-              <StatusPill tone="green">{passedCount} Passed</StatusPill>
-              <StatusPill tone="blue">{activeCount} Active</StatusPill>
-              <StatusPill tone={failedCount ? "red" : "amber"}>{failedCount} Failed</StatusPill>
+          <Card className="queue-card" title="任务队列" subtitle="按模式拆分显示执行任务">
+            <div className="execution-tabs" role="tablist" aria-label="执行任务类型">
+              <button className={activeExecutionTab === "worker" ? "is-active" : ""} onClick={() => setActiveExecutionTab("worker")} role="tab" type="button">
+                常规执行 <span>{workerRuns.length}</span>
+              </button>
+              <button className={activeExecutionTab === "agent" ? "is-active" : ""} onClick={() => setActiveExecutionTab("agent")} role="tab" type="button">
+                智能探索 <span>{agentRuns.length}</span>
+              </button>
             </div>
-            <table className="table">
-              <thead>
-                <tr><th>Run ID</th><th>状态</th><th>耗时</th><th>报告</th></tr>
-              </thead>
-              <tbody>
-                {visibleRuns.length ? (
-                  visibleRuns.map((item) => {
-                    const rowReportRunId = item.id === selectedRunId && runDetail ? reportTargetFor(item, runDetail) : runIdFromReportPath(item.report_path) || (item.mode === "run-case" ? item.id : "");
-                    const canOpenReport = Boolean(rowReportRunId);
-                    return (
-                      <tr
-                        className={`${item.id === selectedRunId ? "is-selected-row" : ""} ${item.status === "failed" ? "is-failed-row" : ""}`}
-                        key={item.id}
-                        onClick={() => setSelectedRunId(item.id)}
+
+            <div className="execution-list">
+              {visibleRuns.map((item) => (
+                <div
+                  className={`execution-list__item ${item.runId === selectedRunId ? "is-active" : ""} ${item.status === "failed" ? "is-failed" : ""}`}
+                  key={item.runId}
+                  onClick={() => setSelectedRunId(item.runId)}
+                >
+                  <div className="execution-list__top">
+                    <div className="execution-list__select execution-list__select--title">
+                      <strong>{item.displayName}</strong>
+                    </div>
+                    <div className="execution-list__actions">
+                      <StatusPill tone={statusTone(item.status)}>{item.statusLabel}</StatusPill>
+                      <button
+                        aria-label={`删除任务 ${item.runId}`}
+                        className="icon-button icon-button--danger"
+                        disabled={Boolean(deletingRunId)}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void deleteRun(item.runId);
+                        }}
+                        title="删除任务"
+                        type="button"
                       >
-                        <td>{item.summary?.display_name || item.id}</td>
-                        <td>{item.summary?.status_label || item.status}</td>
-                        <td>{item.summary?.duration_label || "--"}</td>
-                        <td>
-                          <button
-                            className="link-button"
-                            disabled={!canOpenReport}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              setSelectedRunId(item.id);
-                              if (rowReportRunId) {
-                                onOpenReport(rowReportRunId);
-                              }
-                            }}
-                            type="button"
-                          >
-                            查看
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })
-                ) : (
-                  <tr><td colSpan={4}>暂无真实任务，点击上方按钮创建第一条执行任务。</td></tr>
-                )}
-              </tbody>
-            </table>
+                        <svg aria-hidden="true" fill="none" height="16" viewBox="0 0 24 24" width="16">
+                          <path d="M4 7h16" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
+                          <path d="M9 4h6" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
+                          <path d="M7 7l1 12h8l1-12" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+                          <path d="M10 11v5M14 11v5" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+                  <div className="execution-list__select execution-list__select--body execution-list__timebar">
+                    <small>
+                      {item.startedAtLabel} / {item.durationLabel}
+                    </small>
+                  </div>
+                  <div className="execution-list__meta">
+                    <StatusPill tone={item.hasReport ? "green" : "amber"}>{item.hasReport ? "有报告" : "无报告"}</StatusPill>
+                    <StatusPill tone={item.hasEvidence ? "blue" : "amber"}>{item.hasEvidence ? "有证据" : "待证据"}</StatusPill>
+                  </div>
+                </div>
+              ))}
+              {!visibleRuns.length ? <p className="empty-state">当前标签下暂无任务。</p> : null}
+            </div>
           </Card>
         </div>
 
         <div className="execution-right">
-          <Card title="运行控制台" subtitle="stdout / stderr / 阶段日志实时流式展示">
+          <Card title="执行预览" subtitle="左侧选中任务后，这里显示过程和结果">
             <div className="run-meta">
-              <StatusPill tone={statusTone(selectedRun?.status || "queued")}>
-                {selectedRun?.summary?.status_label || selectedRun?.status || "未选择"}
-              </StatusPill>
-              <span>{selectedRun?.id || "等待任务"}</span>
-              <span>{selectedRun?.command || "python -m runner.main ..."}</span>
+              <StatusPill tone={statusTone(detailModel.status)}>{detailModel.statusLabel}</StatusPill>
+              <span>{detailModel.runId || "等待任务"}</span>
+              {detailModel.mode === "agent" ? (
+                <StatusPill tone={detailModel.trigger === "self_heal" ? "blue" : "amber"}>{detailModel.trigger === "self_heal" ? "自愈探索" : "普通探索"}</StatusPill>
+              ) : null}
+              {selectedRun?.hasReport ? (
+                <button className="btn btn--outline" onClick={() => onOpenReport(selectedRun.runId)} type="button">
+                  查看报告
+                </button>
+              ) : null}
             </div>
-            <ConsolePanel lines={liveLines} running={selectedRun?.status === "running"} />
+            <div className="execution-preview-head">
+              <div className="execution-preview-stat">
+                <span>模式</span>
+                <strong>{detailModel.modeLabel}</strong>
+              </div>
+              <div className="execution-preview-stat">
+                <span>开始时间</span>
+                <strong>{detailModel.startedAtLabel}</strong>
+              </div>
+              <div className="execution-preview-stat">
+                <span>最终地址</span>
+                <strong>{detailModel.finalUrl || "--"}</strong>
+              </div>
+            </div>
+            <ConsolePanel lines={latestLine(runDetail)} running={detailModel.status === "running"} />
           </Card>
 
-          {evidence ? (
-            <Card title="执行证据链" subtitle="DOM / console / network / Playwright trace 自动归档">
-              <div className="evidence-summary-grid">
-                <StatusPill tone={evidence.trace.exists ? "green" : "amber"}>trace {evidence.trace.exists ? "ready" : "pending"}</StatusPill>
-                <StatusPill tone={evidence.events.count ? "green" : "amber"}>{evidence.events.count} events</StatusPill>
-                <StatusPill tone={evidence.console.count ? "green" : "amber"}>{evidence.console.count} console</StatusPill>
-                <StatusPill tone={evidence.network.count ? "green" : "amber"}>{evidence.network.count} network</StatusPill>
-                <StatusPill tone={evidence.dom.count ? "green" : "amber"}>{evidence.dom.count} DOM</StatusPill>
-              </div>
-              <div className="evidence-actions">
-                {evidence.trace.exists ? (
-                  <a className="btn btn--outline" href={`${API_ORIGIN}${evidence.trace.url}`} rel="noreferrer" target="_blank">
-                    下载 trace.zip
-                  </a>
-                ) : null}
-                {evidence.events.exists ? (
-                  <a className="btn btn--outline" href={`${API_ORIGIN}/api/runs/${evidence.run_id}/evidence/events`} rel="noreferrer" target="_blank">
-                    查看 events
-                  </a>
-                ) : null}
-                {evidence.console.exists ? (
-                  <a className="btn btn--outline" href={`${API_ORIGIN}/api/runs/${evidence.run_id}/evidence/console`} rel="noreferrer" target="_blank">
-                    查看 console
-                  </a>
-                ) : null}
-                {evidence.network.exists ? (
-                  <a className="btn btn--outline" href={`${API_ORIGIN}/api/runs/${evidence.run_id}/evidence/network`} rel="noreferrer" target="_blank">
-                    查看 network
-                  </a>
-                ) : null}
-              </div>
-              <div className="evidence-mini-list">
-                {evidence.events.latest.slice(-3).map((item, index) => (
-                  <p key={`event-${index}`}>
-                    <strong>{evidenceText(item.kind)}</strong>
-                    <span>{evidenceText(item.message)}</span>
-                  </p>
-                ))}
-                {evidence.console.latest.slice(-2).map((item, index) => (
-                  <p key={`console-${index}`}>
-                    <strong>console {evidenceText(item.level)}</strong>
-                    <span>{evidenceText(item.text)}</span>
-                  </p>
-                ))}
-                {evidence.network.latest.slice(-2).map((item, index) => (
-                  <p key={`network-${index}`}>
-                    <strong>{evidenceText(item.method)} {evidenceText(item.status)}</strong>
-                    <span>{evidenceText(item.url)}</span>
-                  </p>
-                ))}
-              </div>
-            </Card>
-          ) : null}
-
-          {batchChildren.length ? (
-            <Card title="Batch 子 case 进度" subtitle="失败子 case 可直接点击查看对应报告">
-              <div className="batch-progress">
-                {batchChildren.map((child) => (
+          <Card className="execution-live-card" title={detailModel.mode === "agent" ? "智能探索执行过程" : "执行步骤预览"} subtitle={detailModel.summaryText}>
+            <div className="execution-live-layout">
+              <div className="execution-live-steps">
+                {detailModel.steps.map((step) => (
                   <button
-                    className={`batch-step batch-step--${child.status}`}
-                    disabled={!child.run_id}
-                    key={child.case_id}
-                    onClick={() => child.run_id && onOpenReport(child.run_id)}
+                    className={`execution-live-step execution-live-step--${step.status} ${selectedStep?.key === step.key ? "is-active" : ""}`}
+                    key={step.key}
+                    onClick={() => setSelectedStepKey(step.key)}
                     type="button"
                   >
-                    <span>{String(child.order).padStart(2, "0")}</span>
-                    <strong>{child.case_id}</strong>
-                    <StatusPill tone={statusTone(child.status)}>{child.status}</StatusPill>
-                    <small>{child.screenshot_count} 张截图</small>
+                    <div className="execution-live-step__head">
+                      <StatusPill tone={statusTone(step.status)}>{statusText(step.status)}</StatusPill>
+                      <span className="link-button">详情</span>
+                    </div>
+                    <strong>
+                      步骤 {step.index} - {step.title}
+                    </strong>
+                    <span>{step.summary}</span>
                   </button>
                 ))}
+                {!detailModel.steps.length ? <p className="empty-state">暂无步骤明细。</p> : null}
               </div>
-            </Card>
-          ) : null}
 
-          <Card className="screenshot-card" title="当前截图" subtitle="点击截图可放大查看当前证据。">
-            {reportTargetRunId ? (
-              <button className="report-jump" onClick={() => onOpenReport(reportTargetRunId)} type="button">
-                查看报告详情
-              </button>
-            ) : null}
-            {latestScreenshot ? (
-              <button className="screenshot-real" onClick={() => setPreviewShot(latestScreenshot)} type="button">
-                <img alt={latestScreenshot.filename} src={`${API_ORIGIN}${latestScreenshot.url}`} />
-              </button>
-            ) : (
-              <div className="screenshot-stage">
-                <div className="remote-tile">等待<br />截图产物</div>
+              <div className="execution-live-preview">
+                <div className="execution-live-canvas">
+                  {previewScreenshotUrl ? (
+                    <img alt={selectedStep?.title || latestScreenshot?.filename || "执行截图"} src={`${API_ORIGIN}${previewScreenshotUrl}`} />
+                  ) : (
+                    <div className="empty-state">等待截图产物</div>
+                  )}
+                </div>
+                <div className="execution-live-side">
+                  <div className="execution-live-panel">
+                    <strong>{detailModel.mode === "agent" ? "智能探索结果" : "AI 执行说明"}</strong>
+                    <p>{selectedStep?.summary || detailModel.summaryText || "暂无执行摘要"}</p>
+                  </div>
+                  {detailModel.trigger === "self_heal" ? (
+                    <div className="execution-live-panel">
+                      <strong>自愈信息</strong>
+                      <p>{detailModel.parentRunId ? `来源运行：${detailModel.parentRunId}` : "来源运行：--"}</p>
+                      <p>{detailModel.healingHint || "已带入上一轮失败上下文进行重试。"}</p>
+                    </div>
+                  ) : null}
+                  <div className="execution-live-panel">
+                    <strong>最终地址</strong>
+                    <p>{selectedStep?.finalUrl || detailModel.finalUrl || "--"}</p>
+                  </div>
+                  <div className="execution-live-panel">
+                    <strong>命令输出</strong>
+                    <pre>{selectedStep?.commandOutput.join("\n") || "暂无命令输出"}</pre>
+                  </div>
+                  {selectedStep?.errorMessage || detailModel.failureText ? (
+                    <div className="execution-live-panel execution-live-panel--error">
+                      <strong>错误信息</strong>
+                      <p>{selectedStep?.errorMessage || detailModel.failureText}</p>
+                    </div>
+                  ) : null}
+                  <div className="evidence-actions">
+                    {canSelfHeal ? (
+                      <button className="btn btn--outline" disabled={selfHealing} onClick={selfHealAgentRun} type="button">
+                        {selfHealing ? "自愈中..." : "Agent 自愈"}
+                      </button>
+                    ) : null}
+                    {detailModel.artifacts.trace_download_url ? (
+                      <a className="btn btn--outline" href={`${API_ORIGIN}${detailModel.artifacts.trace_download_url}`} rel="noreferrer" target="_blank">
+                        执行轨迹
+                      </a>
+                    ) : null}
+                    {detailModel.artifacts.candidate_flow_url ? (
+                      <a className="btn btn--outline" href={`${API_ORIGIN}${detailModel.artifacts.candidate_flow_url}`} rel="noreferrer" target="_blank">
+                        候选脚本
+                      </a>
+                    ) : null}
+                    {detailModel.artifacts.candidate_flow_url ? (
+                      <button className="btn btn--primary" disabled={promoting || !canPromoteRegression} onClick={promoteRegression} type="button">
+                        {promoting ? "沉淀中..." : "沉淀为正式回归用例"}
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
               </div>
-            )}
-            <div className="screenshot-tags">
-              <StatusPill tone="blue">{latestScreenshot?.filename || "等待截图"}</StatusPill>
-              <StatusPill tone={artifactReady ? "green" : "amber"}>
-                {artifactReady ? "report.md 已生成" : "等待报告"}
-              </StatusPill>
-              <StatusPill tone="purple">{screenshotCount} 张截图</StatusPill>
             </div>
           </Card>
         </div>
       </div>
-      <ScreenshotLightbox screenshot={previewShot} onClose={() => setPreviewShot(null)} />
     </div>
   );
 }

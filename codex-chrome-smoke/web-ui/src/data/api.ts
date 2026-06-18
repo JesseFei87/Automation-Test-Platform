@@ -52,6 +52,10 @@ export type ApiCase = {
   has_automation_asset: boolean;
 };
 
+export type ApiCaseDetail = ApiCase & {
+  yaml: string;
+};
+
 export type AISettings = {
   provider: string;
   base_url: string;
@@ -121,6 +125,7 @@ export type Requirement = {
   title: string;
   document: string;
   status: string;
+  project_id?: string | null;
   analysis_summary?: string | null;
   risk_summary?: string | null;
   case_count?: number | null;
@@ -163,6 +168,20 @@ export type CaseDraft = {
   updated_at: string;
 };
 
+export type CaseDraftDeleteResult = {
+  ok: boolean;
+  draft_id: number;
+  promoted_case_id?: string | null;
+  deleted_files: number;
+  deleted_rows: number;
+};
+
+export type CaseDraftBatchDeleteResult = {
+  deleted: number;
+  failed: number;
+  results: Array<CaseDraftDeleteResult | { ok: false; draft_id: number; error: string }>;
+};
+
 export type CaseDraftValidation = {
   draft_id: number;
   valid: boolean;
@@ -189,8 +208,11 @@ export type ApiRunSummary = {
 
 export type ApiRun = {
   id: string;
-  mode: "run-case" | "run-batch";
+  mode: "run-case" | "run-batch" | "run-draft" | "agent-explore";
   case_id: string | null;
+  parent_run_id?: string | null;
+  trigger?: "manual" | "self_heal" | string | null;
+  healing_context_path?: string | null;
   status: string;
   command: string;
   created_at: string;
@@ -229,6 +251,25 @@ export type ApiEvidenceSummary = {
   dom: { count: number; files: Array<{ filename: string; path: string; url: string }> };
 };
 
+export type ApiAgentExploreDetail = {
+  trace_path: string;
+  candidate_flow_path: string;
+  trace: {
+    ok?: boolean;
+    status?: string;
+    run_id?: string;
+    case_id?: string;
+    case_arg?: string;
+    finalUrl?: string;
+    final_url?: string;
+    summary?: string;
+    error?: string;
+    history?: Array<Record<string, unknown>>;
+    evidence?: ApiEvidenceSummary;
+    [key: string]: unknown;
+  };
+};
+
 export type ApiRunDetail = {
   task: ApiRun;
   summary: ApiRunSummary;
@@ -237,6 +278,7 @@ export type ApiRunDetail = {
   report: string;
   screenshots: ApiScreenshot[];
   evidence?: ApiEvidenceSummary;
+  agent_explore?: ApiAgentExploreDetail | null;
   analysis: null | {
     provider: string;
     model?: string;
@@ -260,6 +302,78 @@ export type ApiReport = {
   path: string;
   updated_at: number;
   screenshot_count: number;
+};
+
+export type ApiStructuredStep = {
+  step_index: number;
+  step_code: string;
+  title: string;
+  status: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  duration_seconds?: number | null;
+  summary?: string;
+  error_message?: string;
+  screenshot_url?: string;
+  ai_analysis?: string;
+  final_url?: string;
+  command_output?: string[];
+  selectors?: string[];
+  inputs?: Array<{ name?: string; value?: string }>;
+  console_logs?: Array<Record<string, unknown>>;
+  network_logs?: Array<Record<string, unknown>>;
+  dom_snapshot_url?: string;
+  events?: Array<Record<string, unknown>>;
+};
+
+export type ApiRunDetailView = {
+  run_id: string;
+  case_id?: string | null;
+  case_name: string;
+  mode: "worker" | "agent";
+  trigger?: "manual" | "self_heal" | string;
+  parent_run_id?: string | null;
+  status: string;
+  operator?: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  duration_seconds?: number | null;
+  final_url?: string;
+  summary?: {
+    title?: string;
+    conclusion?: string;
+    failure_reason?: string;
+    ai_analysis?: string;
+  };
+  steps: ApiStructuredStep[];
+  artifacts: {
+    report_markdown_url?: string;
+    observed_asset_path?: string;
+    observed_asset_merge_url?: string;
+    trace_download_url?: string;
+    candidate_flow_url?: string;
+  };
+  raw_report?: string;
+  logs?: Array<{ id: number; run_id: string; stream: string; line: string; created_at: string }>;
+  screenshots?: ApiScreenshot[];
+  evidence?: ApiEvidenceSummary;
+  agent_explore?: ApiAgentExploreDetail | null;
+  analysis?: ApiRunDetail["analysis"];
+  healing_hint?: string;
+};
+
+export type ApiReportListItem = {
+  id: string;
+  run_id: string;
+  case_id?: string | null;
+  case_name: string;
+  mode: "worker" | "agent";
+  status: string;
+  operator?: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  has_report: boolean;
+  has_evidence: boolean;
 };
 
 export type ApiReportAnalysis = NonNullable<ApiRunDetail["analysis"]>;
@@ -434,14 +548,15 @@ export const api = {
       `/ai/ollama/models${baseUrl ? `?base_url=${encodeURIComponent(baseUrl)}` : ""}`,
     ),
   cases: () => request<ApiCase[]>("/cases"),
+  caseDetail: (caseId: string) => request<ApiCaseDetail>(`/cases/${encodeURIComponent(caseId)}`),
   requirements: () => request<Requirement[]>("/requirements"),
-  createRequirement: (payload: Pick<Requirement, "title" | "document">) =>
+  createRequirement: (payload: Pick<Requirement, "title" | "document"> & { project_id?: string | null }) =>
     request<RequirementDetail>("/requirements", {
       method: "POST",
       body: JSON.stringify(payload),
     }),
   requirementDetail: (id: number) => request<RequirementDetail>(`/requirements/${id}`),
-  updateRequirement: (id: number, payload: Partial<Pick<Requirement, "title" | "document" | "status">>) =>
+  updateRequirement: (id: number, payload: Partial<Pick<Requirement, "title" | "document" | "status" | "project_id">>) =>
     request<RequirementDetail>(`/requirements/${id}`, {
       method: "PATCH",
       body: JSON.stringify(payload),
@@ -473,7 +588,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ test_points: testPoints }),
     }),
-  reports: () => request<ApiReport[]>("/reports"),
+  reports: () => request<ApiReportListItem[]>("/reports"),
   testPoints: (status?: "confirmed") => testPointsWithFallback(status),
   createTestPoint: (payload: Partial<Pick<TestPoint, "requirement_id" | "parent_id" | "category" | "priority" | "status" | "description" | "module" | "source" | "sort_order">> & { name: string }) =>
     request<{ id: number; requirement_id: number }>("/test-points", { method: "POST", body: JSON.stringify(payload) }),
@@ -484,6 +599,11 @@ export const api = {
       body: JSON.stringify({ updates }),
     }),
   caseDrafts: () => request<CaseDraft[]>("/case-drafts"),
+  createCaseDraft: (payload: { requirement_id?: number | null; title?: string; yaml?: string; template?: string }) =>
+    request<CaseDraft>("/case-drafts", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   caseDraftDetail: (id: number) => request<CaseDraft>(`/case-drafts/${id}`),
   updateCaseDraft: (id: number, payload: Partial<Pick<CaseDraft, "title" | "yaml" | "status">>) =>
     request<CaseDraft>(`/case-drafts/${id}`, {
@@ -500,6 +620,12 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  deleteCaseDraft: (id: number) => request<CaseDraftDeleteResult>(`/case-drafts/${id}`, { method: "DELETE" }),
+  batchDeleteCaseDrafts: (draftIds: number[]) =>
+    request<CaseDraftBatchDeleteResult>("/case-drafts/batch-delete", {
+      method: "POST",
+      body: JSON.stringify({ draft_ids: draftIds }),
+    }),
   generateCasesFromTestPoints: (
     testPointIds: number[],
     options?: { template?: string; title?: string; generator?: "rule" | "ai" },
@@ -510,8 +636,8 @@ export const api = {
     }),
   exportRequirementCases: (requirementId: number, format: "xlsx" | "yaml") =>
     requestBlob(`/requirements/${requirementId}/export?format=${format}`, { method: "GET" }),
-  createRun: (mode: "run-case" | "run-batch" | "run-draft", caseId?: string, draftId?: number) =>
-    request<{ id: string; mode: "run-case" | "run-batch" | "run-draft"; case_id: string | null; status: string }>("/runs", {
+  createRun: (mode: "run-case" | "run-batch" | "run-draft" | "agent-explore", caseId?: string, draftId?: number) =>
+    request<{ id: string; mode: "run-case" | "run-batch" | "run-draft" | "agent-explore"; case_id: string | null; status: string }>("/runs", {
       method: "POST",
       body: JSON.stringify({ mode, case_id: caseId, draft_id: draftId }),
     }),
@@ -520,7 +646,28 @@ export const api = {
       method: "POST",
     }),
   runs: () => request<ApiRun[]>("/runs"),
+  deleteRun: (runId: string) =>
+    request<{ ok: boolean; run_id: string; deleted_files: number; deleted_dirs: number; deleted_rows: number }>(`/runs/${runId}`, {
+      method: "DELETE",
+    }),
   runDetail: (runId: string) => request<ApiRunDetail>(`/runs/${runId}`),
+  runDetailView: (runId: string) => request<ApiRunDetailView>(`/runs/${runId}/detail`),
+  promoteRegression: (runId: string) =>
+    request<{ case_id: string; case_path: string; flow_path: string; draft_id?: number | null; status: string }>(`/runs/${runId}/agent-explore/promote-regression`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
+  selfHealAgentExplore: (runId: string) =>
+    request<{ id: string; mode: "agent-explore"; case_id: string | null; status: string; parent_run_id: string; trigger: "self_heal" }>(`/runs/${runId}/agent-explore/self-heal`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
+  // 资产流通 · 增量：把 agent-explore 的 candidate_flow.py 提升为 case_draft
+  promoteCandidate: (runId: string) =>
+    request<CaseDraft>(`/runs/${runId}/agent-explore/promote-candidate`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
   reportDetail: (runId: string) =>
     request<{
       run_id: string;

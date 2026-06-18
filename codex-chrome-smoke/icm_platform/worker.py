@@ -6,6 +6,7 @@ import subprocess
 import sys
 import threading
 import uuid
+import json
 from pathlib import Path
 
 import yaml
@@ -27,37 +28,72 @@ class RunnerWorker:
         self._thread.start()
 
     def enqueue(self, mode: str, case_id: str | None = None, draft_id: int | None = None) -> dict[str, str | None]:
-        if mode not in {"run-case", "run-batch", "run-draft"}:
-            raise ValueError("mode must be run-case, run-batch, or run-draft")
+        if mode not in {"run-case", "run-batch", "run-draft", "agent-explore"}:
+            raise ValueError("mode must be run-case, run-batch, run-draft, or agent-explore")
         task_id = f"ui-{uuid.uuid4().hex[:12]}"
         draft_yaml_path: Path | None = None
-        if mode == "run-draft":
+        if mode in {"run-draft", "agent-explore"} and draft_id and not case_id:
             draft_yaml_path, case_id = self._prepare_draft_case(task_id, draft_id)
             arg = str(draft_yaml_path)
         else:
-            arg = case_id if mode == "run-case" else task_id
+            arg = case_id if mode in {"run-case", "agent-explore"} else task_id
         if not arg:
-            raise ValueError("case_id is required for run-case")
+            raise ValueError(f"case_id is required for {mode}")
         platform_run_id = task_id if mode == "run-case" else arg
         if mode == "run-draft":
             platform_run_id = task_id
         settings = get_platform_settings()
         runner_settings = settings["runner"]
         command_parts = [sys.executable, "-m", "runner.main", mode, arg, *self._runner_args(runner_settings)]
+        if mode == "agent-explore":
+            command_parts = [sys.executable, "-m", "runner.main", mode, arg, task_id, *self._runner_args(runner_settings)]
         if mode in {"run-case", "run-draft"}:
             command_parts.append(platform_run_id)
         command = subprocess.list2cmdline(command_parts)
-        now = utc_now()
-        with connect() as conn:
-            conn.execute(
-                """
-                insert into run_tasks(id, mode, case_id, status, command, created_at)
-                values (?, ?, ?, 'queued', ?, ?)
-                """,
-                (task_id, mode, case_id, command, now),
-            )
+        self._insert_task(task_id, mode, case_id, command)
         self._queue.put(task_id)
         return {"id": task_id, "mode": mode, "case_id": case_id, "status": "queued"}
+
+    def enqueue_agent_self_heal(self, parent_run_id: str, case_yaml: str, healing_context: dict, case_id: str | None = None) -> dict[str, str | None]:
+        task_id = f"ui-{uuid.uuid4().hex[:12]}"
+        data = yaml.safe_load(case_yaml) or {}
+        if not isinstance(data, dict):
+            raise ValueError("case YAML root must be an object")
+        resolved_case_id = str(case_id or data.get("id") or "").strip()
+        if not resolved_case_id:
+            raise ValueError("case_id is required for self heal")
+        if not data.get("id"):
+            data["id"] = resolved_case_id
+        if not data.get("system"):
+            data["system"] = "icm-internal"
+        yaml_text = yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
+        draft_dir = DRAFT_RUN_DIR / task_id
+        draft_dir.mkdir(parents=True, exist_ok=True)
+        draft_path = draft_dir / "case.yaml"
+        healing_context_path = draft_dir / "healing-context.json"
+        draft_path.write_text(yaml_text, encoding="utf-8")
+        healing_context_path.write_text(json.dumps(healing_context, ensure_ascii=False, indent=2), encoding="utf-8")
+        runner_settings = get_platform_settings()["runner"]
+        command_parts = [sys.executable, "-m", "runner.main", "agent-explore", str(draft_path), task_id, *self._runner_args(runner_settings)]
+        command = subprocess.list2cmdline(command_parts)
+        self._insert_task(
+            task_id,
+            "agent-explore",
+            resolved_case_id,
+            command,
+            parent_run_id=parent_run_id,
+            trigger="self_heal",
+            healing_context_path=str(healing_context_path),
+        )
+        self._queue.put(task_id)
+        return {
+            "id": task_id,
+            "mode": "agent-explore",
+            "case_id": resolved_case_id,
+            "status": "queued",
+            "parent_run_id": parent_run_id,
+            "trigger": "self_heal",
+        }
 
     def _prepare_draft_case(self, task_id: str, draft_id: int | None) -> tuple[Path, str]:
         if not draft_id:
@@ -84,6 +120,27 @@ class RunnerWorker:
         draft_path.write_text(draft_yaml, encoding="utf-8")
         return draft_path, case_id
 
+    def _insert_task(
+        self,
+        task_id: str,
+        mode: str,
+        case_id: str | None,
+        command: str,
+        *,
+        parent_run_id: str | None = None,
+        trigger: str | None = None,
+        healing_context_path: str | None = None,
+    ) -> None:
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                """
+                insert into run_tasks(id, mode, case_id, parent_run_id, trigger, healing_context_path, status, command, created_at)
+                values (?, ?, ?, ?, ?, ?, 'queued', ?, ?)
+                """,
+                (task_id, mode, case_id, parent_run_id, trigger, healing_context_path, command, now),
+            )
+
     def _loop(self) -> None:
         while True:
             task_id = self._queue.get()
@@ -102,7 +159,10 @@ class RunnerWorker:
         env = os.environ.copy()
         env["PYTHONIOENCODING"] = "utf-8"
         command = [sys.executable, "-m", "runner.main", task["mode"]]
-        if task["mode"] == "run-case":
+        if task["mode"] == "agent-explore":
+            draft_path = DRAFT_RUN_DIR / task["id"] / "case.yaml"
+            command.extend([str(draft_path) if draft_path.exists() else task["case_id"], task["id"]])
+        elif task["mode"] == "run-case":
             command.extend([task["case_id"], task["id"]])
         elif task["mode"] == "run-draft":
             command.extend([str(DRAFT_RUN_DIR / task["id"] / "case.yaml"), task["id"]])
@@ -154,6 +214,9 @@ class RunnerWorker:
         if mode == "run-batch":
             candidates = sorted((ROOT / "reports" / "runs").glob(f"{task_id}-*.md"))
             return candidates[-1] if candidates else None
+        if mode == "agent-explore":
+            path = ROOT / "reports" / "agent-explore" / task_id / "trace.json"
+            return path if path.exists() else None
         path = report_path_for_run(task_id)
         return path if path.exists() else None
 

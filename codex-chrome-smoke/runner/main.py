@@ -4,6 +4,7 @@ import asyncio
 import argparse
 import sys
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from runner.browser import close_browser, launch_browser, load_case, load_case_file, load_system
@@ -28,7 +29,7 @@ BATCH_ORDER = [
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="ICM Playwright runner")
-    parser.add_argument("command", choices=["run-case", "run-batch", "run-draft"])
+    parser.add_argument("command", choices=["run-case", "run-batch", "run-draft", "agent-explore"])
     parser.add_argument("arg")
     parser.add_argument("run_id", nargs="?")
     parser.add_argument("--headless", action="store_true")
@@ -62,6 +63,10 @@ def _preload_system_for_launch(command: str, arg: str) -> dict[str, Any] | None:
             case_id = BATCH_ORDER[0]
         elif command == "run-draft":
             case_data = load_case_file(arg)
+            return load_system(case_data["system"])
+        elif command == "agent-explore":
+            arg_path = Path(arg)
+            case_data = load_case_file(arg_path) if arg_path.exists() else load_case(arg)
             return load_system(case_data["system"])
         else:
             return None
@@ -106,7 +111,14 @@ async def main() -> int:
     exit_status = 0
     session = await launch_browser(headless=args.headless, system=system_for_launch)
     try:
-        if args.command == "run-batch":
+        if args.command == "agent-explore":
+            from runner.agent_explore import run_agent_explore
+
+            run_id = args.run_id or f"{datetime.now():%Y%m%d-%H%M}-{args.arg.lower()}-agent-explore"
+            result = await run_agent_explore(session.page, run_id, args.arg)
+            if result.get("status") != "passed":
+                exit_status = 1
+        elif args.command == "run-batch":
             run_id = args.arg
             try:
                 batch_cases = cases_for_batch(args.batch_range)

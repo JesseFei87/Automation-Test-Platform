@@ -44,6 +44,15 @@ export default function App() {
     setPage("execution");
   }
 
+  function openCaseDraft(draftId: number) {
+    // 跳转到用例工作台；draftId 通过 hash 透传（CaseToolbox 可后续按需解析）
+    if (typeof window !== "undefined") {
+      window.location.hash = `case-toolbox?draft=${draftId}`;
+    }
+    setActiveNavKey("cases");
+    setPage("cases");
+  }
+
   function navigate(pageId: PageId, navKey?: PlatformNavKey) {
     const item = navKey ? platformNavItems.find((candidate) => candidate.key === navKey) : null;
     setActiveNavKey(item?.key || platformNavItems.find((candidate) => candidate.page === pageId)?.key || "dashboard");
@@ -82,7 +91,7 @@ export default function App() {
         {page === "ai-generate" ? <RequirementsWorkspace /> : null}
         {page === "points" ? <TestPointsMap /> : null}
         {page === "cases" ? <CaseToolbox onRunCreated={openExecution} /> : null}
-        {page === "execution" ? <ExecutionCenter initialRunId={executionRunId} onOpenReport={openReport} /> : null}
+        {page === "execution" ? <ExecutionCenter initialRunId={executionRunId} onOpenReport={openReport} onOpenCaseDraft={openCaseDraft} /> : null}
         {page === "reports" ? <ReportDetail initialRunId={reportRunId} /> : null}
         {page === "settings" ? <SystemSettings onAISettingsChange={refreshAISettings} /> : null}
       </main>

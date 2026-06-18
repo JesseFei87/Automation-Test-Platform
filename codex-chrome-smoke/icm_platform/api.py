@@ -8,6 +8,7 @@ import subprocess
 import sys
 import threading
 import uuid
+import shutil
 from datetime import datetime
 from hashlib import sha256
 from pathlib import Path
@@ -40,10 +41,11 @@ from icm_platform.db import (
     update_project_profile,
     utc_now,
 )
-from icm_platform.paths import DB_PATH, OBSERVED_ASSET_DIR, REPORT_DIR, ROOT, SCREENSHOTS_LATEST_DIR, SCREENSHOTS_RUNS_DIR, SPEC_FILE, TEST_CASE_DIR
+from icm_platform.paths import DB_PATH, DRAFT_RUN_DIR, OBSERVED_ASSET_DIR, REPORT_DIR, ROOT, SCREENSHOTS_LATEST_DIR, SCREENSHOTS_RUNS_DIR, SPEC_FILE, TEST_CASE_DIR
 from icm_platform.run_views import summarize_run_task
 from icm_platform.worker import RunnerWorker
 from runner.evidence_recorder import EVIDENCE_ROOT, TRACE_ROOT, evidence_summary
+from runner.step_details import load_step_details
 
 app = FastAPI(title="ICM AI Automation Platform", version="0.2.0")
 app.add_middleware(
@@ -84,6 +86,7 @@ class RequirementPatchRequest(BaseModel):
     title: str | None = None
     document: str | None = None
     status: str | None = None
+    project_id: str | None = None
 
 
 class GenerateCasesRequest(BaseModel):
@@ -145,6 +148,17 @@ class CaseDraftPatchRequest(BaseModel):
     status: str | None = None
 
 
+class CaseDraftCreateRequest(BaseModel):
+    requirement_id: int | None = None
+    title: str = "新增用例草稿"
+    yaml: str | None = None
+    template: str = "manual"
+
+
+class CaseDraftBatchDeleteRequest(BaseModel):
+    draft_ids: list[int]
+
+
 class PromoteDraftRequest(BaseModel):
     case_id: str
     filename: str | None = None
@@ -160,7 +174,7 @@ class AnalyzeReportRequest(BaseModel):
 
 
 class RunRequest(BaseModel):
-    mode: Literal["run-case", "run-batch", "run-draft"]
+    mode: Literal["run-case", "run-batch", "run-draft", "agent-explore"]
     case_id: str | None = None
     draft_id: int | None = None
 
@@ -320,6 +334,37 @@ def cases() -> list[dict]:
     return list_cases()
 
 
+def resolve_requirement_project_id(project_id: str | None = None) -> str | None:
+    if project_id and get_project_profile(project_id):
+        return project_id
+    if get_project_profile("proj-icm-default"):
+        return "proj-icm-default"
+    projects = list_project_profiles()
+    return str(projects[0]["id"]) if projects else None
+
+
+@app.get("/api/cases/{case_id}")
+def case_detail(case_id: str) -> dict:
+    case_id_norm = normalize_case_id(case_id)
+    case_path = find_case_yaml(case_id_norm)
+    yaml_text = case_path.read_text(encoding="utf-8")
+    try:
+        data = yaml.safe_load(yaml_text) or {}
+    except yaml.YAMLError as exc:
+        raise HTTPException(status_code=400, detail=f"case YAML parse failed: {exc}") from exc
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="case YAML root must be an object")
+    automation_asset = data.get("automation_asset")
+    return {
+        "id": str(data.get("id") or case_id_norm),
+        "title": str(data.get("title") or case_id_norm),
+        "status": str(data.get("status") or ""),
+        "path": str(case_path),
+        "has_automation_asset": isinstance(automation_asset, dict) and bool(automation_asset),
+        "yaml": yaml_text,
+    }
+
+
 @app.get("/api/requirements")
 def requirements() -> list[dict]:
     with connect() as conn:
@@ -345,13 +390,14 @@ def create_requirement(payload: RequirementRequest) -> dict:
     if not document:
         raise HTTPException(status_code=400, detail="document cannot be empty")
     now = utc_now()
+    project_id = resolve_requirement_project_id(payload.project_id)
     with connect() as conn:
         cur = conn.execute(
             """
-            insert into requirements(title, document, status, created_at, updated_at)
-            values (?, ?, 'draft', ?, ?)
+            insert into requirements(title, document, status, project_id, created_at, updated_at)
+            values (?, ?, 'draft', ?, ?, ?)
             """,
-            (title, document, now, now),
+            (title, document, project_id, now, now),
         )
         requirement_id = cur.lastrowid
     detail = load_requirement_detail(int(requirement_id))
@@ -386,6 +432,8 @@ def update_requirement(requirement_id: int, payload: RequirementPatchRequest) ->
         if not status:
             raise HTTPException(status_code=400, detail="status cannot be empty")
         updates["status"] = status
+    if payload.project_id is not None:
+        updates["project_id"] = resolve_requirement_project_id(payload.project_id)
     if not updates:
         detail = load_requirement_detail(requirement_id)
         if not detail:
@@ -492,11 +540,12 @@ def analyze_requirement(payload: RequirementRequest) -> dict:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     now = utc_now()
+    project_id = resolve_requirement_project_id(payload.project_id)
     with connect() as conn:
         cur = conn.execute(
             """
-            insert into requirements(title, document, status, analysis_summary, risk_summary, case_count, created_at, updated_at)
-            values (?, ?, 'analyzed', ?, ?, ?, ?, ?)
+            insert into requirements(title, document, status, analysis_summary, risk_summary, case_count, project_id, created_at, updated_at)
+            values (?, ?, 'analyzed', ?, ?, ?, ?, ?, ?)
             """,
             (
                 payload.title,
@@ -504,6 +553,7 @@ def analyze_requirement(payload: RequirementRequest) -> dict:
                 result["analysis_summary"],
                 result["risk_summary"],
                 result["case_count"],
+                project_id,
                 now,
                 now,
             ),
@@ -712,9 +762,8 @@ def _load_spec_text() -> str:
 def analyze_requirement_spec(payload: RequirementRequest) -> dict:
     standard_text = _load_spec_text()
     # P0 · 增量：按 project_id 查 project_profiles（已有函数 db.get_project_profile），拿不到用空 dict
-    project: dict | None = None
-    if payload.project_id:
-        project = get_project_profile(payload.project_id) or None
+    project_id = resolve_requirement_project_id(payload.project_id)
+    project = get_project_profile(project_id) if project_id else None
     project_for_prompt: dict = project or {}
     context_info = payload.context_info or None
     try:
@@ -736,8 +785,8 @@ def analyze_requirement_spec(payload: RequirementRequest) -> dict:
     with connect() as conn:
         cur = conn.execute(
             """
-            insert into requirements(title, document, status, analysis_summary, risk_summary, case_count, created_at, updated_at)
-            values (?, ?, 'analyzed', ?, ?, ?, ?, ?)
+            insert into requirements(title, document, status, analysis_summary, risk_summary, case_count, project_id, created_at, updated_at)
+            values (?, ?, 'analyzed', ?, ?, ?, ?, ?, ?)
             """,
             (
                 payload.title,
@@ -745,6 +794,7 @@ def analyze_requirement_spec(payload: RequirementRequest) -> dict:
                 analysis_summary,
                 risk_summary,
                 len(cases),
+                project_id,
                 now,
                 now,
             ),
@@ -965,6 +1015,108 @@ def case_drafts() -> list[dict]:
     return [normalize_case_draft(row) for row in rows_to_dicts(rows)]
 
 
+def build_blank_case_yaml(title: str) -> str:
+    payload = {
+        "id": "TC-ICM-DRAFT",
+        "title": title or "新增用例草稿",
+        "status": "draft",
+        "type": "功能",
+        "priority": "P1",
+        "author": "AI",
+        "precondition": ["请补充前置条件"],
+        "steps": ["请补充执行步骤"],
+        "expected_results": ["请补充预期结果"],
+        "automation_asset": {
+            "operation_steps": ["请补充自动化操作步骤"],
+            "selectors": {"todo": ["请补充选择器"]},
+            "input_values": {},
+            "assertions": ["请补充断言"],
+        },
+    }
+    return yaml.safe_dump(payload, allow_unicode=True, sort_keys=False)
+
+
+@app.post("/api/case-drafts")
+def create_case_draft(payload: CaseDraftCreateRequest) -> dict:
+    title = (payload.title or "新增用例草稿").strip() or "新增用例草稿"
+    requirement_id = payload.requirement_id or ensure_manual_requirement()
+    yaml_text = payload.yaml or build_blank_case_yaml(title)
+    now = utc_now()
+    with connect() as conn:
+        requirement = conn.execute("select id from requirements where id = ?", (requirement_id,)).fetchone()
+        if not requirement:
+            raise HTTPException(status_code=404, detail="requirement not found")
+        cur = conn.execute(
+            """
+            insert into case_drafts(requirement_id, title, yaml, status, created_at, updated_at, template)
+            values (?, ?, ?, 'draft', ?, ?, ?)
+            """,
+            (requirement_id, title, yaml_text, now, now, payload.template or "manual"),
+        )
+        draft_id = int(cur.lastrowid)
+    return case_draft_detail(draft_id)
+
+
+def _safe_unlink(path: Path, allowed_root: Path) -> bool:
+    target = path.resolve()
+    root = allowed_root.resolve()
+    if not target.exists():
+        return False
+    if root not in target.parents and target != root:
+        raise HTTPException(status_code=400, detail=f"refuse to delete outside allowed root: {path}")
+    if target.is_dir():
+        raise HTTPException(status_code=400, detail=f"refuse to delete directory: {path}")
+    target.unlink()
+    return True
+
+
+def delete_case_draft_assets(draft_id: int) -> dict:
+    draft = load_case_draft(draft_id)
+    if not draft:
+        raise HTTPException(status_code=404, detail="case draft not found")
+    deleted_files = 0
+    promoted_case_id = str(draft.get("promoted_case_id") or "").strip()
+    promoted_path = str(draft.get("promoted_path") or "").strip()
+    if promoted_path:
+        deleted_files += int(_safe_unlink(Path(promoted_path), TEST_CASE_DIR))
+    elif promoted_case_id:
+        try:
+            deleted_files += int(_safe_unlink(find_case_yaml(promoted_case_id), TEST_CASE_DIR))
+        except HTTPException as exc:
+            if exc.status_code != 404:
+                raise
+    if promoted_case_id:
+        deleted_files += int(_safe_unlink(compute_target_path(promoted_case_id), ROOT / "runner" / "flows"))
+    with connect() as conn:
+        deleted_rows = conn.execute("delete from case_drafts where id = ?", (draft_id,)).rowcount
+    return {
+        "draft_id": draft_id,
+        "promoted_case_id": promoted_case_id or None,
+        "deleted_files": deleted_files,
+        "deleted_rows": deleted_rows,
+    }
+
+
+@app.post("/api/case-drafts/batch-delete")
+def batch_delete_case_drafts(payload: CaseDraftBatchDeleteRequest) -> dict:
+    results = []
+    for draft_id in dict.fromkeys(payload.draft_ids):
+        try:
+            results.append({"ok": True, **delete_case_draft_assets(int(draft_id))})
+        except HTTPException as exc:
+            results.append({"ok": False, "draft_id": draft_id, "error": exc.detail})
+    return {
+        "deleted": sum(1 for item in results if item["ok"]),
+        "failed": sum(1 for item in results if not item["ok"]),
+        "results": results,
+    }
+
+
+@app.delete("/api/case-drafts/{draft_id}")
+def delete_case_draft(draft_id: int) -> dict:
+    return {"ok": True, **delete_case_draft_assets(draft_id)}
+
+
 @app.get("/api/case-drafts/{draft_id}")
 def case_draft_detail(draft_id: int) -> dict:
     draft = load_case_draft(draft_id)
@@ -1054,6 +1206,47 @@ def runs() -> list[dict]:
     return [{**task, "summary": summarize_run_task(task)} for task in tasks]
 
 
+def _delete_run_artifacts(run_id: str, task_dict: dict) -> dict[str, int]:
+    deleted_files = 0
+    deleted_dirs = 0
+    deleted_rows = 0
+    report_path = str(task_dict.get("report_path") or "").strip()
+    file_candidates = [
+        Path(report_path) if report_path else None,
+        REPORT_DIR / f"{run_id}.md",
+        (ROOT / "reports" / "step-details" / f"{run_id}.json"),
+    ]
+    dir_candidates = [
+        ROOT / "reports" / "agent-explore" / run_id,
+        DRAFT_RUN_DIR / run_id,
+        SCREENSHOTS_RUNS_DIR / run_id,
+        EVIDENCE_ROOT / run_id,
+        TRACE_ROOT / run_id,
+    ]
+    for path in file_candidates:
+        if path and path.exists() and path.is_file():
+            path.unlink()
+            deleted_files += 1
+    for path in dir_candidates:
+        if path.exists() and path.is_dir():
+            shutil.rmtree(path)
+            deleted_dirs += 1
+    with connect() as conn:
+        deleted_rows += conn.execute("delete from run_logs where run_id = ?", (run_id,)).rowcount
+        deleted_rows += conn.execute("delete from run_tasks where id = ?", (run_id,)).rowcount
+    return {"deleted_files": deleted_files, "deleted_dirs": deleted_dirs, "deleted_rows": deleted_rows}
+
+
+@app.delete("/api/runs/{run_id}")
+def delete_run(run_id: str) -> dict:
+    with connect() as conn:
+        task = conn.execute("select * from run_tasks where id = ?", (run_id,)).fetchone()
+    if not task:
+        raise HTTPException(status_code=404, detail="run not found")
+    result = _delete_run_artifacts(run_id, dict(task))
+    return {"ok": True, "run_id": run_id, **result}
+
+
 @app.get("/api/runs/{run_id}")
 def run_detail(run_id: str) -> dict:
     with connect() as conn:
@@ -1074,7 +1267,10 @@ def run_detail(run_id: str) -> dict:
             report = ""
     if not screenshots and task_dict.get("case_id"):
         screenshots = [screenshot_payload(task_dict["case_id"], path) for path in latest_screenshots(task_dict["case_id"])]
+    agent_explore = load_agent_explore_artifacts(run_id) if task_dict.get("mode") == "agent-explore" else None
     log_dicts = rows_to_dicts(logs)
+    if not log_dicts and task_dict.get("mode") == "agent-explore":
+        log_dicts = _synthetic_logs_from_evidence(run_id)
     evidence_lines = evidence_log_lines(run_id)
     return {
         "task": task_dict,
@@ -1084,8 +1280,516 @@ def run_detail(run_id: str) -> dict:
         "report": report,
         "screenshots": screenshots,
         "evidence": evidence_summary(run_id),
+        "agent_explore": agent_explore,
         "analysis": ai_service.analyze_run_report(report, screenshots, [row["line"] for row in log_dicts] + evidence_lines) if report else None,
     }
+
+
+def _normalized_mode(mode: str) -> str:
+    return "agent" if mode == "agent-explore" else "worker"
+
+
+def _normalized_status(status: str) -> str:
+    if status == "passed":
+        return "completed"
+    return status or "queued"
+
+
+def _run_screenshots(run_id: str) -> list[dict[str, str]]:
+    run_dir = SCREENSHOTS_RUNS_DIR / run_id
+    if not run_dir.exists():
+        return []
+    return [run_screenshot_payload(run_id, str(path)) for path in sorted(run_dir.glob("*.png"))]
+
+
+def _report_screenshots(task_dict: dict, report_text: str) -> list[dict[str, str]]:
+    screenshots: list[dict[str, str]] = []
+    if report_text:
+        screenshots = parse_report(report_text)["screenshots"]
+    if not screenshots:
+        screenshots = _run_screenshots(str(task_dict.get("id") or ""))
+    if not screenshots and task_dict.get("case_id"):
+        screenshots = [screenshot_payload(task_dict["case_id"], path) for path in latest_screenshots(task_dict["case_id"])]
+    return screenshots
+
+
+def _build_agent_steps(agent_explore: dict | None, logs: list[dict], screenshots: list[dict[str, str]]) -> list[dict]:
+    trace = (agent_explore or {}).get("trace") or {}
+    history = trace.get("history") or []
+    steps: list[dict] = []
+    for index, item in enumerate(history, start=1):
+        decision = item.get("decision") if isinstance(item, dict) else {}
+        execution = item.get("execution") if isinstance(item, dict) else {}
+        decision = decision if isinstance(decision, dict) else {}
+        execution = execution if isinstance(execution, dict) else {}
+        screenshot = screenshots[min(index - 1, len(screenshots) - 1)] if screenshots else None
+        steps.append(
+            {
+                "step_index": int(item.get("step", index)) if isinstance(item, dict) else index,
+                "step_code": f"agent_{index:02d}",
+                "title": str(decision.get("action") or f"Step {index}"),
+                "status": "failed" if execution.get("error") else ("completed" if trace.get("ok") else "running"),
+                "started_at": None,
+                "finished_at": None,
+                "duration_seconds": None,
+                "summary": str(decision.get("reason") or execution.get("result") or ""),
+                "error_message": str(execution.get("error") or ""),
+                "screenshot_url": screenshot["url"] if screenshot else "",
+                "ai_analysis": str(decision.get("reason") or ""),
+                "final_url": str(trace.get("finalUrl") or trace.get("final_url") or ""),
+                "command_output": [row["line"] for row in logs[-8:]],
+                "selectors": [],
+                "inputs": [],
+                "console_logs": [],
+                "network_logs": [],
+                "dom_snapshot_url": "",
+                "events": [item] if isinstance(item, dict) else [],
+            }
+        )
+    return steps
+
+
+def _build_unified_run_detail(run_id: str) -> dict:
+    with connect() as conn:
+        task = conn.execute("select * from run_tasks where id = ?", (run_id,)).fetchone()
+        logs = conn.execute("select * from run_logs where run_id = ? order by id", (run_id,)).fetchall()
+    if not task:
+        raise HTTPException(status_code=404, detail="run not found")
+    task_dict = dict(task)
+    log_dicts = rows_to_dicts(logs)
+    if not log_dicts and task_dict.get("mode") == "agent-explore":
+        log_dicts = _synthetic_logs_from_evidence(run_id)
+    report_text = ""
+    if task_dict.get("report_path") and Path(str(task_dict["report_path"])).suffix.lower() == ".md":
+        try:
+            report_text = read_report(run_id)
+        except FileNotFoundError:
+            report_text = ""
+    screenshots = _report_screenshots(task_dict, report_text)
+    analysis = ai_service.analyze_run_report(report_text, screenshots, [row["line"] for row in log_dicts] + evidence_log_lines(run_id)) if report_text else None
+    agent_explore = load_agent_explore_artifacts(run_id) if task_dict.get("mode") == "agent-explore" else None
+    step_detail_payload = load_step_details(run_id)
+    if step_detail_payload:
+        steps = step_detail_payload.get("steps") or []
+        final_url = step_detail_payload.get("final_url") or ""
+        summary = step_detail_payload.get("summary") or {}
+    else:
+        steps = _build_agent_steps(agent_explore, log_dicts, screenshots)
+        trace = (agent_explore or {}).get("trace") or {}
+        final_url = str(trace.get("finalUrl") or trace.get("final_url") or "")
+        summary = {
+            "title": task_dict.get("case_id") or run_id,
+            "conclusion": str(trace.get("summary") or ""),
+            "failure_reason": str(trace.get("error") or task_dict.get("error") or ""),
+            "ai_analysis": str(trace.get("summary") or ""),
+        }
+    case_name = task_dict.get("case_id") or run_id
+    if report_text:
+        report_meta = parse_report(report_text)
+        case_name = report_meta.get("case_name") or case_name
+    return {
+        "run_id": run_id,
+        "case_id": task_dict.get("case_id"),
+        "case_name": case_name,
+        "mode": _normalized_mode(str(task_dict.get("mode") or "")),
+        "trigger": str(task_dict.get("trigger") or "manual"),
+        "parent_run_id": task_dict.get("parent_run_id"),
+        "status": _normalized_status(str(task_dict.get("status") or "")),
+        "operator": "admin",
+        "started_at": task_dict.get("started_at") or task_dict.get("created_at"),
+        "finished_at": task_dict.get("finished_at"),
+        "duration_seconds": task_dict.get("summary", {}).get("duration_seconds") if isinstance(task_dict.get("summary"), dict) else None,
+        "final_url": final_url,
+        "summary": {
+            "title": summary.get("title") or case_name,
+            "conclusion": summary.get("conclusion") or "",
+            "failure_reason": summary.get("failure_reason") or "",
+            "ai_analysis": analysis["conclusion"] if analysis else (summary.get("ai_analysis") or ""),
+        },
+        "steps": steps,
+        "artifacts": {
+            "report_markdown_url": f"/api/reports/{run_id}" if report_text else "",
+            "observed_asset_path": (step_detail_payload or {}).get("artifacts", {}).get("observed_asset_path", ""),
+            "observed_asset_merge_url": f"/api/runs/{run_id}/merge-observed-asset",
+            "trace_download_url": f"/api/runs/{run_id}/evidence/trace" if evidence_summary(run_id).get("trace", {}).get("exists") else "",
+            "candidate_flow_url": f"/api/runs/{run_id}/agent-explore/candidate-flow" if agent_explore and agent_explore.get("candidate_flow_path") else "",
+        },
+        "raw_report": report_text,
+        "logs": log_dicts,
+        "screenshots": screenshots,
+        "evidence": evidence_summary(run_id),
+        "agent_explore": agent_explore,
+        "analysis": analysis,
+        "healing_hint": str(((agent_explore or {}).get("trace") or {}).get("healing_hint") or ""),
+    }
+
+
+@app.get("/api/runs/{run_id}/detail")
+def run_detail_view(run_id: str) -> dict:
+    return _build_unified_run_detail(run_id)
+
+
+def load_agent_explore_artifacts(run_id: str) -> dict | None:
+    root = ROOT / "reports" / "agent-explore" / run_id
+    trace_path = root / "trace.json"
+    if not trace_path.exists():
+        return None
+    candidate_path = root / "candidate_flow.py"
+    try:
+        trace = json.loads(trace_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        trace = {"ok": False, "error": "invalid agent trace json"}
+    return {
+        "trace_path": str(trace_path.relative_to(ROOT)),
+        "candidate_flow_path": str(candidate_path.relative_to(ROOT)) if candidate_path.exists() else "",
+        "trace": trace,
+    }
+
+
+def _load_case_source_for_agent_run(run_id: str, task_dict: dict, trace: dict) -> tuple[str, str]:
+    draft_path = DRAFT_RUN_DIR / run_id / "case.yaml"
+    if draft_path.exists():
+        return draft_path.read_text(encoding="utf-8"), str(draft_path)
+    case_arg = str(trace.get("case_arg") or "").strip()
+    if case_arg:
+        path = Path(case_arg)
+        if path.exists():
+            return path.read_text(encoding="utf-8"), str(path)
+    case_id = str(task_dict.get("case_id") or "").strip()
+    if case_id:
+        path = find_case_yaml(case_id)
+        return path.read_text(encoding="utf-8"), str(path)
+    raise HTTPException(status_code=404, detail="case source not found for self heal")
+
+
+def _self_heal_hint(trace: dict, events: list[dict]) -> str:
+    error = str(trace.get("error") or "").strip()
+    if "unknown ref: empty" in error:
+        return "上一轮在成功页后又追加了空 ref 尾动作；若已离开登录页且出现目标用户名，立即 finish，不要再补无意义点击或填充。"
+    if "login" in error.lower():
+        return "优先使用用例 test_data 中的账号密码；一旦进入目标工作台且出现目标用户名，不要继续尝试默认账号。"
+    for item in reversed(events):
+        if str(item.get("kind") or "") == "agent_action_failed":
+            return f"避免重复失败动作：{item.get('message') or 'agent_action_failed'}。"
+    return "结合上一轮失败尾部步骤修复，不要重复无效动作；若成功信号已出现，优先 finish。"
+
+
+def _build_self_heal_context(run_id: str, task_dict: dict, trace: dict) -> dict:
+    events = evidence_summary(run_id).get("events", {}).get("latest", [])
+    history = trace.get("history") or []
+    return {
+        "parent_run_id": run_id,
+        "trigger": "self_heal",
+        "failure_summary": str(trace.get("error") or task_dict.get("error") or trace.get("summary") or "").strip(),
+        "healing_hint": _self_heal_hint(trace, events if isinstance(events, list) else []),
+        "last_history": history[-5:] if isinstance(history, list) else [],
+    }
+
+
+@app.get("/api/runs/{run_id}/agent-explore/trace")
+def agent_explore_trace_file(run_id: str) -> FileResponse:
+    path = ROOT / "reports" / "agent-explore" / run_id / "trace.json"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="agent trace not found")
+    return FileResponse(path, media_type="application/json", filename=f"{run_id}-agent-trace.json")
+
+
+@app.get("/api/runs/{run_id}/agent-explore/candidate-flow")
+def agent_explore_candidate_flow_file(run_id: str) -> FileResponse:
+    path = ROOT / "reports" / "agent-explore" / run_id / "candidate_flow.py"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="agent candidate flow not found")
+    return FileResponse(path, media_type="text/x-python", filename=f"{run_id}-candidate-flow.py")
+
+
+def _next_agent_case_id() -> str:
+    numbers = [
+        int(match.group(1))
+        for path in TEST_CASE_DIR.glob("TC-ICM-*.yaml")
+        for match in [re.search(r"TC-ICM-(\d+)", path.name, flags=re.IGNORECASE)]
+        if match
+    ]
+    return f"TC-ICM-{(max(numbers) if numbers else 12) + 1:03d}"
+
+
+def _draft_for_agent_run(run_id: str) -> tuple[dict, Path]:
+    draft_path = DRAFT_RUN_DIR / run_id / "case.yaml"
+    if not draft_path.exists():
+        raise HTTPException(status_code=400, detail="only draft Agent Explore runs can be promoted")
+    try:
+        data = yaml.safe_load(draft_path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as exc:
+        raise HTTPException(status_code=400, detail=f"draft case YAML is invalid: {exc}") from exc
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="draft case YAML root must be an object")
+    return data, draft_path
+
+
+def _formal_case_id_for_draft(data: dict) -> str:
+    raw_case_id = str(data.get("id") or "").strip().upper()
+    if re.fullmatch(r"TC-ICM-[0-9A-Z-]+", raw_case_id):
+        try:
+            find_case_yaml(raw_case_id)
+        except HTTPException:
+            return raw_case_id
+    return _next_agent_case_id()
+
+
+def _existing_promoted_case_for_draft(draft_path: Path) -> str | None:
+    yaml_text = draft_path.read_text(encoding="utf-8")
+    with connect() as conn:
+        row = conn.execute(
+            """
+            select promoted_case_id from case_drafts
+            where yaml = ? and promoted_case_id is not null and promoted_case_id != ''
+            order by id desc limit 1
+            """,
+            (yaml_text,),
+        ).fetchone()
+    return str(row["promoted_case_id"]) if row else None
+
+
+def _existing_promoted_case_for_run(run_id: str) -> tuple[str, Path] | None:
+    matches: list[tuple[str, Path]] = []
+    for path in sorted(TEST_CASE_DIR.glob("*.yaml")):
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError):
+            continue
+        if not isinstance(data, dict) or str(data.get("source_run_id") or "") != run_id:
+            continue
+        case_id = str(data.get("id") or "").strip()
+        if case_id:
+            matches.append((case_id, path))
+    return matches[0] if matches else None
+
+
+def _mark_matching_draft_promoted(draft_path: Path, case_id: str, target: Path) -> int | None:
+    yaml_text = draft_path.read_text(encoding="utf-8")
+    now = utc_now()
+    with connect() as conn:
+        row = conn.execute("select id from case_drafts where yaml = ? order by id desc limit 1", (yaml_text,)).fetchone()
+        if not row:
+            data = yaml.safe_load(yaml_text) or {}
+            row = conn.execute(
+                "select id from case_drafts where title = ? order by id desc limit 1",
+                (str(data.get("title") or ""),),
+            ).fetchone()
+        if not row:
+            return None
+        draft_id = int(row["id"])
+        conn.execute(
+            """
+            update case_drafts
+            set status = 'promoted', promoted_case_id = ?, promoted_path = ?, updated_at = ?
+            where id = ?
+            """,
+            (case_id, str(target), now, draft_id),
+        )
+        return draft_id
+
+
+def _agent_trace_asset(trace: dict, draft_data: dict) -> dict:
+    history = trace.get("history") or []
+    operation_steps: list[str] = []
+    selectors: dict[str, str] = {}
+    input_values: dict[str, str] = {}
+    for index, item in enumerate(history, start=1):
+        decision = item.get("decision") if isinstance(item, dict) else {}
+        execution = item.get("execution") if isinstance(item, dict) else {}
+        decision = decision if isinstance(decision, dict) else {}
+        execution = execution if isinstance(execution, dict) else {}
+        action = str(decision.get("action") or f"step_{index}")
+        selector = str(execution.get("selector") or "").strip()
+        value = str(decision.get("value") or "").strip()
+        operation_steps.append(str(decision.get("reason") or action))
+        if selector:
+            selectors[f"{action}_{index}"] = selector
+        if value:
+            input_values[f"{action}_{index}"] = value
+    expected = draft_data.get("expected_results") or draft_data.get("expected") or []
+    assertions = [str(item) for item in expected] if isinstance(expected, list) else [str(expected)] if expected else []
+    return {
+        "status": "verified",
+        "source": "agent-explore",
+        "operation_steps": operation_steps or [str(item) for item in (draft_data.get("steps") or [])],
+        "selectors": selectors or {"agent_candidate": "candidate_flow.py"},
+        "input_values": input_values,
+        "assertions": assertions or [str(trace.get("summary") or "Agent Explore passed")],
+    }
+
+
+def _normalize_agent_draft_for_regression(draft_data: dict, case_id: str, run_id: str, trace: dict) -> dict:
+    data = dict(draft_data)
+    if "expected_results" not in data and "expected" in data:
+        data["expected_results"] = data.get("expected")
+    if "preconditions" not in data and "precondition" in data:
+        data["preconditions"] = [str(data.get("precondition"))]
+    data["id"] = case_id
+    data["status"] = "formal"
+    data["source"] = "agent-explore"
+    data["source_run_id"] = run_id
+    data["automation"] = "Yes"
+    data["automation_asset"] = merge_automation_asset(data.get("automation_asset") if isinstance(data.get("automation_asset"), dict) else {}, _agent_trace_asset(trace, data))
+    return data
+
+
+@app.post("/api/runs/{run_id}/agent-explore/promote-regression")
+def promote_agent_explore_regression(run_id: str) -> dict:
+    with connect() as conn:
+        task = conn.execute("select * from run_tasks where id = ?", (run_id,)).fetchone()
+    if not task:
+        raise HTTPException(status_code=404, detail="run not found")
+    task_dict = dict(task)
+    if task_dict.get("mode") != "agent-explore":
+        raise HTTPException(status_code=400, detail="only Agent Explore runs can be promoted")
+    if _normalized_status(str(task_dict.get("status") or "")) != "completed":
+        raise HTTPException(status_code=400, detail="only passed Agent Explore runs can be promoted")
+
+    agent_explore = load_agent_explore_artifacts(run_id)
+    trace = (agent_explore or {}).get("trace") or {}
+    if trace.get("ok") is False or str(trace.get("status") or "").lower() in {"failed", "error"}:
+        raise HTTPException(status_code=400, detail="only passed Agent Explore traces can be promoted")
+
+    candidate_path = ROOT / "reports" / "agent-explore" / run_id / "candidate_flow.py"
+    if not candidate_path.exists():
+        raise HTTPException(status_code=404, detail=f"candidate flow not found for run_id={run_id}")
+    candidate_text = candidate_path.read_text(encoding="utf-8")
+    if not candidate_text.strip():
+        raise HTTPException(status_code=400, detail="candidate_flow.py is empty")
+    try:
+        ast.parse(candidate_text)
+    except SyntaxError as exc:
+        raise HTTPException(status_code=400, detail=f"candidate_flow.py syntax error: {exc}") from exc
+
+    draft_data, draft_path = _draft_for_agent_run(run_id)
+    existing_by_run = _existing_promoted_case_for_run(run_id)
+    if existing_by_run:
+        existing_case_id, existing_case_path = existing_by_run
+        existing_flow_path = compute_target_path(existing_case_id)
+        return {
+            "case_id": existing_case_id,
+            "case_path": str(existing_case_path),
+            "flow_path": str(existing_flow_path),
+            "draft_id": _mark_matching_draft_promoted(draft_path, existing_case_id, existing_case_path),
+            "status": "promoted",
+        }
+    case_id = _existing_promoted_case_for_draft(draft_path) or _formal_case_id_for_draft(draft_data)
+    case_filename = normalize_case_filename(None, case_id)
+    case_target = TEST_CASE_DIR / case_filename
+    flow_target = compute_target_path(case_id)
+    if case_target.exists() and flow_target.exists():
+        return {
+            "case_id": case_id,
+            "case_path": str(case_target),
+            "flow_path": str(flow_target),
+            "draft_id": _mark_matching_draft_promoted(draft_path, case_id, case_target),
+            "status": "promoted",
+        }
+    if case_target.exists():
+        raise HTTPException(status_code=409, detail=f"case file already exists: {case_filename}")
+    if flow_target.exists():
+        raise HTTPException(status_code=409, detail=f"flow file already exists: {flow_target.name}")
+
+    draft_data = _normalize_agent_draft_for_regression(draft_data, case_id, run_id, trace)
+    yaml_text = yaml.safe_dump(draft_data, allow_unicode=True, sort_keys=False)
+    validation = validate_case_yaml(yaml_text)
+    if not validation["valid"]:
+        raise HTTPException(status_code=400, detail=f"YAML validation failed: {'; '.join(validation['errors'])}")
+
+    TEST_CASE_DIR.mkdir(parents=True, exist_ok=True)
+    flow_target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        case_target.write_text(yaml_text, encoding="utf-8")
+        flow_target.write_text(candidate_text, encoding="utf-8")
+        py_compile.compile(str(flow_target), doraise=True)
+    except Exception as exc:
+        case_target.unlink(missing_ok=True)
+        flow_target.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail=f"failed to promote regression case: {exc}") from exc
+
+    draft_id = _mark_matching_draft_promoted(draft_path, case_id, case_target)
+    return {
+        "case_id": case_id,
+        "case_path": str(case_target),
+        "flow_path": str(flow_target),
+        "draft_id": draft_id,
+        "status": "promoted",
+    }
+
+
+@app.post("/api/runs/{run_id}/agent-explore/self-heal")
+def self_heal_agent_explore(run_id: str) -> dict:
+    with connect() as conn:
+        task = conn.execute("select * from run_tasks where id = ?", (run_id,)).fetchone()
+    if not task:
+        raise HTTPException(status_code=404, detail="run not found")
+    task_dict = dict(task)
+    if task_dict.get("mode") != "agent-explore":
+        raise HTTPException(status_code=400, detail="only Agent Explore runs can self heal")
+    agent_explore = load_agent_explore_artifacts(run_id)
+    trace = (agent_explore or {}).get("trace") or {}
+    if not trace:
+        raise HTTPException(status_code=404, detail="trace not found for self heal")
+    case_yaml, _ = _load_case_source_for_agent_run(run_id, task_dict, trace)
+    context = _build_self_heal_context(run_id, task_dict, trace)
+    return worker.enqueue_agent_self_heal(run_id, case_yaml, context, case_id=task_dict.get("case_id"))
+
+
+@app.post("/api/runs/{run_id}/agent-explore/promote-candidate")
+def promote_agent_explore_candidate(run_id: str) -> dict:
+    """资产流通闭环（路线 D · 增量）：把 agent-explore 生成的 candidate_flow.py
+    提升为 case_drafts 草稿。
+
+    - 读取 ``reports/agent-explore/{run_id}/candidate_flow.py``
+    - 解析为 case_draft YAML 顶层骨架（标题默认用 run_id；status=draft；template=spec）
+    - 复制 candidate_flow.py 全文到 ``operation_steps`` 注释区，方便后续手工补全
+    - 失败：文件不存在 → 404；内容不是 UTF-8 → 400
+    - 成功：返回新建 case_draft 详情（同 ``case_draft_detail``）
+    """
+    candidate_path = ROOT / "reports" / "agent-explore" / run_id / "candidate_flow.py"
+    if not candidate_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"candidate flow not found for run_id={run_id}",
+        )
+    try:
+        candidate_text = candidate_path.read_text(encoding="utf-8")
+    except (UnicodeDecodeError, OSError) as exc:
+        raise HTTPException(status_code=400, detail=f"candidate_flow.py is not readable: {exc}") from exc
+    if not candidate_text.strip():
+        raise HTTPException(status_code=400, detail="candidate_flow.py is empty")
+
+    # 骨架：top-level 字段 + 占位步骤骨架 + 注释区贴候选脚本原文
+    # 避免 Python 文件里出现非 ASCII YAML 转义问题，统一 allow_unicode
+    draft_payload: dict = {
+        "title": run_id,
+        "template": "spec",
+        "status": "draft",
+        "priority": "P2",
+        "type": "智能探索采纳",
+        "source": "agent-explore",
+        "source_run_id": run_id,
+        "steps": [
+            f"待补充：从 {run_id} 的 candidate_flow 拷贝逻辑",
+        ],
+        "_candidate_flow_excerpt": candidate_text,
+    }
+    yaml_text = yaml.safe_dump(draft_payload, allow_unicode=True, sort_keys=False)
+
+    now = utc_now()
+    title = run_id[:200]
+    requirement_id = ensure_manual_requirement()
+    with connect() as conn:
+        cur = conn.execute(
+            """
+            insert into case_drafts(requirement_id, title, yaml, status, created_at, updated_at, template)
+            values (?, ?, ?, 'draft', ?, ?, 'spec')
+            """,
+            (requirement_id, title, yaml_text, now, now),
+        )
+        new_id = int(cur.lastrowid)
+    return case_draft_detail(new_id)
 
 
 def evidence_log_lines(run_id: str) -> list[str]:
@@ -1103,6 +1807,40 @@ def evidence_log_lines(run_id: str) -> list[str]:
     if dom_count:
         lines.append(f"[evidence:dom] {dom_count} DOM snapshots generated")
     return lines
+
+
+def _synthetic_logs_from_evidence(run_id: str) -> list[dict]:
+    summary = evidence_summary(run_id)
+    rows: list[dict] = []
+    index = 1
+    for item in summary.get("events", {}).get("latest", []):
+        line = f"[{item.get('kind', '')}] {item.get('message', '')}".strip()
+        if item.get("value") not in (None, ""):
+            line = f"{line} value={item.get('value')}"
+        if item.get("url"):
+            line = f"{line} url={item.get('url')}"
+        rows.append(
+            {
+                "id": index,
+                "run_id": run_id,
+                "stream": "evidence",
+                "line": line,
+                "created_at": item.get("created_at") or "",
+            }
+        )
+        index += 1
+    for item in summary.get("console", {}).get("latest", []):
+        rows.append(
+            {
+                "id": index,
+                "run_id": run_id,
+                "stream": "console",
+                "line": f"[console:{item.get('level', '')}] {item.get('text', '')}".strip(),
+                "created_at": item.get("created_at") or "",
+            }
+        )
+        index += 1
+    return rows
 
 
 @app.get("/api/runs/{run_id}/evidence/trace")
@@ -1978,7 +2716,31 @@ def get_stability_scan(scan_id: str) -> dict:
 
 @app.get("/api/reports")
 def reports() -> list[dict]:
-    return list_reports()
+    with connect() as conn:
+        rows = conn.execute("select * from run_tasks order by created_at desc limit 100").fetchall()
+    tasks = rows_to_dicts(rows)
+    report_meta = {item["run_id"]: item for item in list_reports(limit=100)}
+    items: list[dict] = []
+    for task in tasks:
+        detail = load_step_details(str(task["id"])) or {}
+        report = report_meta.get(str(task["id"]), {})
+        items.append(
+            {
+                "id": str(task["id"]),
+                "run_id": str(task["id"]),
+                "case_id": task.get("case_id"),
+                "case_name": detail.get("case_name") or report.get("case_name") or task.get("case_id") or str(task["id"]),
+                "mode": _normalized_mode(str(task.get("mode") or "")),
+                "status": _normalized_status(str(task.get("status") or "")),
+                "operator": "admin",
+                "started_at": task.get("started_at") or task.get("created_at"),
+                "finished_at": task.get("finished_at"),
+                "has_report": bool(task.get("report_path")),
+                "has_evidence": bool(evidence_summary(str(task["id"])).get("root")),
+            }
+        )
+    items.sort(key=lambda item: (0 if item["status"] == "failed" else 1, item.get("finished_at") or item.get("started_at") or ""), reverse=False)
+    return items
 
 
 @app.get("/api/reports/{run_id}")
@@ -2051,6 +2813,14 @@ def screenshot_file(case_id: str, filename: str) -> FileResponse:
     return FileResponse(path)
 
 
+@app.get("/api/screenshots/runs/{run_id}/{filename}")
+def run_screenshot_file(run_id: str, filename: str) -> FileResponse:
+    path = SCREENSHOTS_RUNS_DIR / run_id / filename
+    if not path.exists() or path.suffix.lower() != ".png":
+        raise HTTPException(status_code=404, detail="screenshot not found")
+    return FileResponse(path)
+
+
 def screenshot_payload(case_id: str, path: str) -> dict[str, str]:
     filename = path.replace("\\", "/").rsplit("/", 1)[-1]
     return {
@@ -2058,6 +2828,16 @@ def screenshot_payload(case_id: str, path: str) -> dict[str, str]:
         "filename": filename,
         "path": path,
         "url": f"/api/screenshots/latest/{case_id}/{filename}",
+    }
+
+
+def run_screenshot_payload(run_id: str, path: str) -> dict[str, str]:
+    filename = path.replace("\\", "/").rsplit("/", 1)[-1]
+    return {
+        "case_id": run_id,
+        "filename": filename,
+        "path": path,
+        "url": f"/api/screenshots/runs/{run_id}/{filename}",
     }
 
 
@@ -2209,15 +2989,17 @@ def next_test_point_sort_order(parent_id: int | None) -> int:
 
 def ensure_manual_requirement() -> int:
     title = "测试点思维导图手工维护"
+    project_id = resolve_requirement_project_id()
     with connect() as conn:
         row = conn.execute("select id from requirements where title = ? order by id limit 1", (title,)).fetchone()
         if row:
+            conn.execute("update requirements set project_id = coalesce(nullif(project_id, ''), ?) where id = ?", (project_id, int(row["id"])))
             return int(row["id"])
         now = utc_now()
         cur = conn.execute(
             """
-            insert into requirements(title, document, status, analysis_summary, risk_summary, case_count, created_at, updated_at)
-            values (?, ?, 'manual', '', '', 0, ?, ?)
+            insert into requirements(title, document, status, analysis_summary, risk_summary, case_count, project_id, created_at, updated_at)
+            values (?, ?, 'manual', '', '', 0, 'proj-icm-default', ?, ?)
             """,
             (title, "测试点菜单中手工新增的测试点。", now, now),
         )
@@ -2231,8 +3013,8 @@ def ensure_generated_requirement(points: list[dict]) -> int:
     with connect() as conn:
         cur = conn.execute(
             """
-            insert into requirements(title, document, status, analysis_summary, risk_summary, case_count, created_at, updated_at)
-            values (?, ?, 'draft', '', '', ?, ?, ?)
+            insert into requirements(title, document, status, analysis_summary, risk_summary, case_count, project_id, created_at, updated_at)
+            values (?, ?, 'draft', '', '', ?, 'proj-icm-default', ?, ?)
             """,
             (title, document, len(points), now, now),
         )

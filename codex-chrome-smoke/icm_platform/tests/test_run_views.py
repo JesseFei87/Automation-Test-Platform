@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from icm_platform import db
+from icm_platform import api as api_module
 from icm_platform.worker import RunnerWorker
 from icm_platform.run_views import summarize_run_task
 from runner.main import cases_for_batch
@@ -115,6 +116,48 @@ class RunViewTests(unittest.TestCase):
         self.assertFalse(summary["is_active"])
         self.assertTrue(summary["artifact_ready"])
         self.assertEqual(summary["duration_label"], "02:05")
+
+    def test_report_screenshots_include_run_archive_without_markdown(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            run_dir = root / "ui-agent"
+            run_dir.mkdir(parents=True)
+            (run_dir / "01-entry.png").write_bytes(b"png")
+
+            with patch.object(api_module, "SCREENSHOTS_RUNS_DIR", root):
+                screenshots = api_module._report_screenshots({"id": "ui-agent", "case_id": "TC-ICM-001"}, "")
+
+        self.assertEqual(len(screenshots), 1)
+        self.assertEqual(screenshots[0]["url"], "/api/screenshots/runs/ui-agent/01-entry.png")
+
+    def test_agent_run_uses_evidence_as_log_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            evidence_root = root / "evidence"
+            run_root = evidence_root / "ui-agent"
+            run_root.mkdir(parents=True, exist_ok=True)
+            (run_root / "events.jsonl").write_text(
+                '{"created_at":"2026-06-16T10:00:00Z","kind":"agent_action","message":"executed fill","value":"test","url":"https://example.test/login"}\n',
+                encoding="utf-8",
+            )
+            (run_root / "console.jsonl").write_text(
+                '{"created_at":"2026-06-16T10:00:01Z","level":"info","text":"after login click"}\n',
+                encoding="utf-8",
+            )
+            (run_root / "network.jsonl").write_text("", encoding="utf-8")
+
+            with (
+                patch.object(api_module, "EVIDENCE_ROOT", evidence_root),
+                patch.object(api_module, "TRACE_ROOT", root / "traces"),
+                patch("runner.evidence_recorder.ROOT", root),
+                patch("runner.evidence_recorder.EVIDENCE_ROOT", evidence_root),
+                patch("runner.evidence_recorder.TRACE_ROOT", root / "traces"),
+            ):
+                logs = api_module._synthetic_logs_from_evidence("ui-agent")
+
+        self.assertEqual(len(logs), 2)
+        self.assertIn("executed fill", logs[0]["line"])
+        self.assertIn("after login click", logs[1]["line"])
 
 
 if __name__ == "__main__":

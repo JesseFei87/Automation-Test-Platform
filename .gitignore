@@ -43,12 +43,17 @@ desktop.ini
 
 # Runtime / Test data
 .codex-tmp/
+task_plan.md
+progress.md
+findings.md
+task_issue.md
 .chrome-profile-clone/
 platform-data/
 logs/
 screenshots/runs/
 reports/runs/
 codex-chrome-smoke/reports/runs/
+codex-chrome-smoke/reports/agent-explore/
 codex-chrome-smoke/reports/evidence/
 codex-chrome-smoke/reports/traces/
 codex-chrome-smoke/reports/draft-runs/

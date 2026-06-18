@@ -1,0 +1,52 @@
+id: TC-ICM-013
+title: 仅密码为空时提示请输入密码
+module: 账号/登录
+priority: P1
+type: 异常
+precondition: 已打开登录页
+test_data: username=test, password=空
+steps:
+- 1. 访问登录页
+- 2. 账号输入框输入 test，密码输入框留空
+- 3. 点击【登录】按钮
+expected: &id001
+- 1. 密码输入框下方显示红色校验文案“请输入密码”
+- 2. 账号输入框无校验提示
+- 3. 页面不发生跳转
+requirement_id: REQ-LOGIN-003
+automation: 'Yes'
+author: AI
+date: '2026-06-09'
+note: ''
+context_info:
+  env_url: ''
+  test_account: ''
+  excluded: ''
+  refs: ''
+system: icm-internal
+expected_results: *id001
+preconditions:
+- 已打开登录页
+status: formal
+source: agent-explore
+source_run_id: ui-3945a2c50271
+automation_asset:
+  status: verified
+  source: agent-explore
+  evidence: {}
+  operation_steps:
+  - fill username with test
+  - click login button to test empty password validation
+  - verify password required prompt is shown when password is empty
+  - 'Goal achieved: successfully verified that when only password is empty, the system
+    displays ''请输入您的密码'' prompt message'
+  selectors:
+    fill_1: input[placeholder="账号"]
+    click_2: div:nth-of-type(1) > form > div:nth-of-type(4) > div > button
+  input_values:
+    fill_1: test
+    assert_text_3: 请输入您的密码
+  assertions:
+  - 1. 密码输入框下方显示红色校验文案“请输入密码”
+  - 2. 账号输入框无校验提示
+  - 3. 页面不发生跳转
