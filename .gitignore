@@ -88,3 +88,7 @@ doc/tc_icm_012_probe/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+doc/task_plan.md
+doc/progress.md
+doc/findings.md
+doc/task_issue.md

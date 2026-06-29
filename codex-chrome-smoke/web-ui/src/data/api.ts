@@ -360,6 +360,37 @@ export type ApiRunDetailView = {
   agent_explore?: ApiAgentExploreDetail | null;
   analysis?: ApiRunDetail["analysis"];
   healing_hint?: string;
+  agent_plan?: {
+    planner_version?: string;
+    case_id?: string;
+    stages?: Array<{
+      stage_id: string;
+      index: number;
+      name: string;
+      scene_type: string;
+      target_route?: string;
+      strategy: string;
+      fallback?: string;
+    }>;
+  };
+  agent_stage_runs?: Array<{
+    stage_id: string;
+    index?: number;
+    name: string;
+    scene_type: string;
+    scene_label?: string;
+    strategy: string;
+    strategy_label?: string;
+    fallback_used: boolean;
+    status: string;
+    started_at?: string | null;
+    finished_at?: string | null;
+    error?: string;
+    target_route?: string;
+  }>;
+  current_stage_id?: string;
+  current_stage_name?: string;
+  current_strategy?: string;
 };
 
 export type ApiReportListItem = {

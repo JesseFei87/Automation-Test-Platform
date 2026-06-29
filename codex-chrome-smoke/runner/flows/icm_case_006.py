@@ -24,7 +24,7 @@ async def run(page: Page, system: dict[str, Any], case: dict[str, Any]) -> None:
     device_type = values.get("device_type", "\u6807\u51c6\u8bbe\u5907")
     device_ip = values.get("device_ip", "192.168.16.11")
     device_port = values.get("device_port", "5900")
-    vnc_password = values.get("vnc_password", "")
+    vnc_password = values.get("vnc_password", "BCService")
     allow_control = values.get("allow_control", "\u662f")
     device_enabled = values.get("device_enabled", True)
 

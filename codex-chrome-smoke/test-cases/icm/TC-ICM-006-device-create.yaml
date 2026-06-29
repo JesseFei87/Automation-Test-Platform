@@ -74,7 +74,7 @@ automation_asset:
     device_name: "Test_Ins01"
     device_ip: "192.168.16.11"
     device_port: "5900"
-    vnc_password: ""
+    vnc_password: "BCService"
     connection_type: "连接器-1"
     device_type: "标准设备"
     allow_control: "是"

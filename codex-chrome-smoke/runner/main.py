@@ -77,6 +77,10 @@ def _preload_system_for_launch(command: str, arg: str) -> dict[str, Any] | None:
         return None
 
 
+def _should_reuse_storage_state(command: str) -> bool:
+    return False
+
+
 def cases_for_batch(batch_range: str) -> list[str]:
     value = batch_range.strip()
     if not value or value == "TC-ICM-001..TC-ICM-012":
@@ -109,7 +113,11 @@ async def main() -> int:
     system_for_launch = _preload_system_for_launch(args.command, args.arg)
 
     exit_status = 0
-    session = await launch_browser(headless=args.headless, system=system_for_launch)
+    session = await launch_browser(
+        headless=args.headless,
+        system=system_for_launch,
+        reuse_storage_state=_should_reuse_storage_state(args.command),
+    )
     try:
         if args.command == "agent-explore":
             from runner.agent_explore import run_agent_explore
@@ -127,6 +135,7 @@ async def main() -> int:
                 return 1
             for case_id in batch_cases:
                 case_run_id = f"{run_id}-{case_id.lower()}"
+                print(f"::batch-case-start run_id={case_run_id} case_id={case_id}", flush=True)
                 result = await run_case(
                     session.page,
                     case_run_id,
@@ -143,6 +152,7 @@ async def main() -> int:
                     result.get("error", ""),
                     result.get("observed_asset_path", ""),
                 )
+                print(f"::batch-case-end run_id={case_run_id} case_id={case_id} status={result['status']}", flush=True)
                 if result["status"] != "passed":
                     exit_status = 1
         elif args.command == "run-case":

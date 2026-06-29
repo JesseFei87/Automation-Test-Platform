@@ -184,6 +184,27 @@ expected_results:
         self.assertEqual(payload.mode, "agent-explore")
         self.assertEqual(payload.case_id, "TC-ICM-013")
 
+    def test_batch_progress_events_create_child_run_tasks(self) -> None:
+        with isolated_db():
+            with db.connect() as conn:
+                conn.execute(
+                    """
+                    insert into run_tasks(id, mode, case_id, status, command, created_at)
+                    values ('ui-batch', 'run-batch', null, 'running', '', '2026-06-26T00:00:00Z')
+                    """
+                )
+            worker = RunnerWorker()
+            worker._handle_batch_progress("ui-batch", "::batch-case-start run_id=ui-batch-tc-icm-001 case_id=TC-ICM-001")
+            worker._handle_batch_progress("ui-batch", "::batch-case-end run_id=ui-batch-tc-icm-001 case_id=TC-ICM-001 status=passed")
+
+            with db.connect() as conn:
+                row = conn.execute("select * from run_tasks where id = 'ui-batch-tc-icm-001'").fetchone()
+
+        self.assertEqual(row["parent_run_id"], "ui-batch")
+        self.assertEqual(row["case_id"], "TC-ICM-001")
+        self.assertEqual(row["status"], "passed")
+        self.assertEqual(row["return_code"], 0)
+
 
 class isolated_db:
     def __init__(self) -> None:

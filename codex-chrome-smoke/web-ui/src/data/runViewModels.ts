@@ -1,4 +1,5 @@
 import type { ApiReportListItem, ApiRun, ApiRunDetail, ApiRunDetailView, ApiScreenshot, ApiStructuredStep } from "./api";
+import { translateStepText } from "./stepTextZh";
 
 export type ExecutionListItem = {
   runId: string;
@@ -75,6 +76,21 @@ export type RunDetailViewModel = {
   artifacts: ApiRunDetailView["artifacts"];
   logs: Array<{ id: number; run_id: string; stream: string; line: string; created_at: string }>;
   healingHint: string;
+  stagePlan: Array<{
+    stageId: string;
+    index: number;
+    name: string;
+    sceneType: string;
+    sceneLabel: string;
+    strategy: string;
+    strategyLabel: string;
+    status: string;
+    fallbackUsed: boolean;
+    error: string;
+    isCurrent: boolean;
+  }>;
+  currentStageName: string;
+  currentStrategy: string;
 };
 
 function timeLabel(value?: string | null) {
@@ -208,19 +224,47 @@ export function legacyRunDetailToView(detail: ApiRunDetail): ApiRunDetailView {
     agent_explore: detail.agent_explore,
     analysis: detail.analysis,
     healing_hint: "",
+    agent_plan: { planner_version: "legacy", case_id: detail.task.case_id || "", stages: [] },
+    agent_stage_runs: [],
+    current_stage_id: "",
+    current_stage_name: "",
+    current_strategy: "",
   };
+}
+
+function sceneLabel(sceneType: string) {
+  if (sceneType === "login") return "登录";
+  if (sceneType === "navigation") return "导航";
+  if (sceneType === "list") return "列表";
+  if (sceneType === "dialog_form") return "弹窗表单";
+  if (sceneType === "detail") return "详情";
+  if (sceneType === "assertion") return "结果校验";
+  return "通用探索";
+}
+
+function strategyLabel(strategy: string) {
+  if (strategy === "login_guard") return "登录守卫";
+  if (strategy === "route_open") return "直达路由";
+  if (strategy === "menu_navigation") return "菜单导航";
+  if (strategy === "list_filter") return "列表筛选";
+  if (strategy === "dialog_form_fill") return "弹窗表单";
+  if (strategy === "detail_assert") return "结果校验";
+  return "通用探索";
 }
 
 function mapStep(step: ApiStructuredStep, screenshots: ApiScreenshot[]): StepDetailViewModel {
   const shot = screenshotFromUrl(step.screenshot_url || "", screenshots);
+  const sourceTitle = step.title || `步骤 ${step.step_index}`;
+  const title = translateStepText(sourceTitle, `执行步骤 ${step.step_index}`);
+  const summary = translateStepText(step.summary || sourceTitle, title);
   return {
     key: step.step_code || `step-${step.step_index}`,
     index: step.step_index,
-    title: step.title || `步骤 ${step.step_index}`,
+    title,
     status: step.status || "queued",
-    summary: step.summary || step.title || "",
+    summary,
     screenshotUrl: shot?.url || step.screenshot_url || "",
-    aiAnalysis: step.ai_analysis || "",
+    aiAnalysis: translateStepText(step.ai_analysis || step.summary || sourceTitle, summary),
     finalUrl: step.final_url || "",
     commandOutput: step.command_output || [],
     errorMessage: step.error_message || "",
@@ -254,25 +298,49 @@ export function buildExecutionListItems(runs: ApiRun[]): ExecutionListItem[] {
 }
 
 export function buildReportListItems(reports: ApiReportListItem[]): ReportListItem[] {
-  return reports.map((report) => ({
-    runId: report.run_id,
-    caseId: report.case_id || "--",
-    caseName: report.case_name || report.case_id || report.run_id,
-    mode: report.mode,
-    modeLabel: modeLabel(report.mode),
-    status: report.status,
-    operator: report.operator || "admin",
-    startedAtLabel: timeLabel(report.started_at),
-    finishedAtLabel: timeLabel(report.finished_at),
-    hasReport: report.has_report,
-    hasEvidence: report.has_evidence,
-    source: report,
-  }));
+  return [...reports]
+    .sort((left, right) => {
+      const leftTime = Date.parse(left.finished_at || left.started_at || "") || 0;
+      const rightTime = Date.parse(right.finished_at || right.started_at || "") || 0;
+      return rightTime - leftTime;
+    })
+    .map((report) => ({
+      runId: report.run_id,
+      caseId: report.case_id || "--",
+      caseName: report.case_name || report.case_id || report.run_id,
+      mode: report.mode,
+      modeLabel: modeLabel(report.mode),
+      status: report.status,
+      operator: report.operator || "admin",
+      startedAtLabel: timeLabel(report.started_at),
+      finishedAtLabel: timeLabel(report.finished_at),
+      hasReport: report.has_report,
+      hasEvidence: report.has_evidence,
+      source: report,
+    }));
 }
 
 export function buildRunDetailViewModel(detail: ApiRunDetailView | null): RunDetailViewModel {
   const screenshots = detail?.screenshots || [];
   const steps = (detail?.steps || []).map((step) => mapStep(step, screenshots));
+  const stageRunMap = new Map((detail?.agent_stage_runs || []).map((stage) => [stage.stage_id, stage]));
+  const stageSources = (((detail?.agent_plan?.stages || []).length ? detail?.agent_plan?.stages : detail?.agent_stage_runs) || []) as Array<Record<string, unknown>>;
+  const stagePlan = stageSources.map((stage) => {
+    const runtime = (stageRunMap.get(String(stage.stage_id || "")) || stage) as Record<string, unknown>;
+    return {
+      stageId: String(stage.stage_id || runtime.stage_id || ""),
+      index: Number(stage.index || runtime.index || 0),
+      name: String(stage.name || runtime.name || "单阶段探索"),
+      sceneType: String(runtime.scene_type || stage.scene_type || "generic"),
+      sceneLabel: String(runtime.scene_label || sceneLabel(String(runtime.scene_type || stage.scene_type || "generic"))),
+      strategy: String(runtime.strategy || stage.strategy || "generic_explore"),
+      strategyLabel: String(runtime.strategy_label || strategyLabel(String(runtime.strategy || stage.strategy || "generic_explore"))),
+      status: String(runtime.status || "queued"),
+      fallbackUsed: Boolean(runtime.fallback_used),
+      error: String(runtime.error || ""),
+      isCurrent: detail?.current_stage_id ? detail.current_stage_id === String(stage.stage_id || runtime.stage_id || "") : false,
+    };
+  });
   return {
     runId: detail?.run_id || "",
     caseId: detail?.case_id || "--",
@@ -299,5 +367,8 @@ export function buildRunDetailViewModel(detail: ApiRunDetailView | null): RunDet
     artifacts: detail?.artifacts || {},
     logs: detail?.logs || [],
     healingHint: detail?.healing_hint || "",
+    stagePlan,
+    currentStageName: detail?.current_stage_name || stagePlan.find((stage) => stage.isCurrent)?.name || "",
+    currentStrategy: detail?.current_strategy ? strategyLabel(detail.current_strategy) : stagePlan.find((stage) => stage.isCurrent)?.strategyLabel || "",
   };
 }

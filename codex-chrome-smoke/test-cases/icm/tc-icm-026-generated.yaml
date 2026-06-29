@@ -1,0 +1,52 @@
+id: TC-ICM-026
+title: 必填字段为空提交触发非空校验
+module: ICM-设备信息
+priority: P0
+type: 异常
+precondition: 已登录并进入添加设备信息弹窗
+test_data: 设备名称、设备IP、设备端口、MAC、网络掩码、VNC账号、VNC密码、设备状态均留空；连接类型与设备类型保留默认值
+steps:
+- 1. 打开添加设备信息弹窗
+- 2. 清空所有必填字段（除固定下拉项）
+- 3. 点击【确定】
+expected: &id001
+- 1. 弹窗正常打开
+- 2. 各必填字段输入框显示为空
+- 3. 各必填字段下方出现红色'此项必填'或'不能为空'提示，提交被拦截，弹窗不关闭，列表无新增记录
+requirement_id: REQ-ICM-DEV-ADD
+automation: 'Yes'
+author: AI
+date: '2026-06-09'
+note: ''
+context_info:
+  env_url: https://192.168.16.203:49187/#/login?redirect=%2Fredirect
+  test_account: admin/Hubble_Service!1088
+  excluded: ''
+  refs: ''
+system: icm-internal
+expected_results: *id001
+preconditions:
+- 已登录并进入添加设备信息弹窗
+status: formal
+source: agent-explore
+source_run_id: ui-37579383d66b
+source_draft_case_id: ICMDEV_EXC_010
+automation_asset:
+  status: verified
+  source: agent-explore
+  evidence: {}
+  operation_steps:
+  - 使用 admin 完成登录阶段
+  - '打开目标路由 #/hubble/device'
+  - 打开添加设备信息弹窗
+  - 填写其他必填合法字段
+  - 点击确定提交设备信息
+  - 'exception case quoted assert hit: 不能为空'
+  selectors:
+    agent_candidate: candidate_flow.py
+  input_values:
+    assert_text_6: 不能为空
+  assertions:
+  - 1. 弹窗正常打开
+  - 2. 各必填字段输入框显示为空
+  - 3. 各必填字段下方出现红色'此项必填'或'不能为空'提示，提交被拦截，弹窗不关闭，列表无新增记录

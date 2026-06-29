@@ -296,6 +296,82 @@ class PromoteCandidateEndpointTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200, resp.text)
         self.assertEqual(resp.json()["case_id"], "TC-ICM-013")
 
+    def test_promote_regression_reuses_existing_case_by_source_draft_case_id(self):
+        case_dir = self.root / "test-cases" / "icm"
+        flow_dir = self.root / "runner" / "flows"
+        case_dir.mkdir(parents=True)
+        flow_dir.mkdir(parents=True)
+        existing_case_id = "TC-ICM-021"
+        existing_case_path = case_dir / f"{existing_case_id.lower()}-generated.yaml"
+        existing_flow_path = flow_dir / "icm_case_021.py"
+        existing_case_path.write_text(
+            yaml.safe_dump(
+                {
+                    "id": existing_case_id,
+                    "system": "icm-internal",
+                    "title": "old device create",
+                    "status": "formal",
+                    "source_draft_case_id": "ICMDEV_FUN_001",
+                    "source_run_id": "ui-old-run",
+                    "steps": ["old step"],
+                    "expected_results": ["old ok"],
+                    "automation_asset": {
+                        "operation_steps": ["old step"],
+                        "selectors": {"a": "b"},
+                        "input_values": {},
+                        "assertions": ["old ok"],
+                    },
+                },
+                allow_unicode=True,
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        existing_flow_path.write_text("OLD_FLOW = True\n", encoding="utf-8")
+
+        draft_dir = self.root / "reports" / "draft-runs" / self.run_id
+        draft_dir.mkdir(parents=True)
+        draft_yaml = (
+            "id: ICMDEV_FUN_001\n"
+            "system: icm-internal\n"
+            "title: create device\n"
+            "status: draft\n"
+            "steps:\n- create device\n"
+            "expected_results:\n- ok\n"
+        )
+        (draft_dir / "case.yaml").write_text(draft_yaml, encoding="utf-8")
+        requirement_id = self.api.ensure_manual_requirement()
+        with db.connect() as conn:
+            conn.execute(
+                """
+                insert into run_tasks(id, mode, case_id, status, command, created_at, report_path)
+                values (?, 'agent-explore', 'ICMDEV_FUN_001', 'passed', '', '2026-06-16T00:00:00Z', ?)
+                """,
+                (self.run_id, str(self.root / "reports" / "agent-explore" / self.run_id / "trace.json")),
+            )
+            conn.execute(
+                """
+                insert into case_drafts(requirement_id, title, yaml, status, created_at, updated_at)
+                values (?, 'create device', ?, 'draft', '2026-06-16T00:00:00Z', '2026-06-16T00:00:00Z')
+                """,
+                (requirement_id, draft_yaml),
+            )
+        (self.root / "reports" / "agent-explore" / self.run_id / "trace.json").write_text(
+            '{"ok": true, "status": "passed", "history": [{"decision": {"action": "goto", "url": "#/hubble/device"}}]}',
+            encoding="utf-8",
+        )
+        (self.root / "reports" / "agent-explore" / self.run_id / "candidate_flow.py").write_text(
+            CANDIDATE_FLOW_TEMPLATE,
+            encoding="utf-8",
+        )
+
+        resp = self.client.post(f"/api/runs/{self.run_id}/agent-explore/promote-regression")
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(resp.json()["case_id"], existing_case_id)
+        self.assertIn("source_run_id", existing_case_path.read_text(encoding="utf-8"))
+        self.assertNotIn("OLD_FLOW = True", existing_flow_path.read_text(encoding="utf-8"))
+
     def test_self_heal_agent_explore_creates_child_run(self):
         draft_dir = self.root / "reports" / "draft-runs" / self.run_id
         draft_dir.mkdir(parents=True)

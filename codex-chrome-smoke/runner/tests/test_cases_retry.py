@@ -90,6 +90,7 @@ def _stub_dependencies(monkey_attempt_runner):
         patch.object(cases_module, "apply_runtime_case_inputs", lambda c, s: None),
         patch.object(cases_module, "attach_case_runtime", lambda page, run_id, case_id: None),
         patch.object(cases_module, "open_login_page", lambda page, system: asyncio.sleep(0)),
+        patch.object(cases_module, "ensure_logged_out", _async_return(None)),
         patch.object(cases_module, "screenshot", lambda page, run_id, case_id, name: asyncio.sleep(0)),
         patch.object(cases_module, "finalize_screenshots", lambda run_id, case_id, names, keep_archive: ["a.png"]),
         patch.object(cases_module, "get_asset_recorder", lambda page: _FakeRecorder()),
@@ -152,6 +153,48 @@ class RetryLoopTests(unittest.TestCase):
             self.assertEqual(rows[0][2], "rid-001")  # run_id
             self.assertEqual(rows[0][3], 1)  # passed
             self.assertEqual(rows[0][6], 1)  # attempt
+        finally:
+            for p in patchers:
+                p.stop()
+
+    def test_precondition_logged_in_triggers_fresh_login_before_runner(self):
+        calls = {"login": 0}
+
+        async def runner(page, system, case):
+            return None
+
+        async def ensure_logged_in(page, system, username=None, password=None):
+            calls["login"] += 1
+            self.assertEqual(username, "admin")
+            self.assertEqual(password, "Hubble_Service!1088")
+
+        patchers = _stub_dependencies(runner)
+        patchers.extend(
+            [
+                patch.object(
+                    cases_module,
+                    "load_case",
+                    lambda case_id: {
+                        "id": "TC-ICM-FAKE",
+                        "system": "icm-internal",
+                        "title": "fake",
+                        "status": "active",
+                        "precondition": "已使用 admin/Hubble_Service!1088 登录系统",
+                        "automation_asset": {"input_values": {}},
+                    },
+                ),
+                patch.object(cases_module, "ensure_logged_in", ensure_logged_in),
+            ]
+        )
+        for p in patchers:
+            p.start()
+        try:
+            page = FakePage()
+            result = self._run_async(
+                cases_module.run_case(page, "rid-login", "TC-ICM-FAKE", keep_archive=False, max_retries=0)
+            )
+            self.assertEqual(result["status"], "passed")
+            self.assertEqual(calls["login"], 1)
         finally:
             for p in patchers:
                 p.stop()

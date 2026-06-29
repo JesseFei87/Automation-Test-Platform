@@ -273,14 +273,17 @@ class AIService:
         except (KeyError, IndexError, TypeError) as exc:
             raise AIProviderError("model response missing choices[0].message.content") from exc
         data = parse_json_content(str(content))
+        conclusion = first_text(data, "conclusion", "analysis", "current_analysis", "summary")
+        risks = first_list(data, "risks", "risk_tips", "risk_summary", "risk")
+        retest_suggestions = first_list(data, "retest_suggestions", "retest_advice", "suggestions", "recommendations")
         return {
             "provider": settings.get("provider", self.provider),
             "model": settings.get("model", ""),
             "source": "ai",
             "status": str(data.get("status") or ("failed" if "status: failed" in report.lower() else "passed")),
-            "conclusion": str(data.get("conclusion") or "").strip(),
-            "risks": normalize_string_list(data.get("risks", [])),
-            "retest_suggestions": normalize_string_list(data.get("retest_suggestions", [])),
+            "conclusion": conclusion,
+            "risks": risks,
+            "retest_suggestions": retest_suggestions,
             "screenshot_count": len(screenshots),
             "log_count": len(logs),
         }
@@ -444,7 +447,9 @@ class AIService:
             payload['thinking'] = {'type': 'adaptive'}
             payload['max_completion_tokens'] = 4096
         else:
-            payload['max_tokens'] = 4096
+            payload['max_tokens'] = 12288
+        if provider == 'ollama-local':
+            payload['reasoning_effort'] = 'none'
         return {key: value for key, value in payload.items() if value is not None}
 
     def generate_test_cases_spec(
@@ -471,15 +476,35 @@ class AIService:
             self.chat_completions_url(settings['base_url']),
             self.api_key_for_provider(settings),
             payload,
-            timeout=max(self.request_timeout(provider), 240),
+            timeout=max(self.request_timeout(provider), 900) if provider == 'ollama-local' else max(self.request_timeout(provider), 240),
         )
         # 调试用：暴露最近一次完整 prompt（与 generate_cases_with_ai 一致；P0-6 / P1-3 端到端可视）
         self._last_prompt = json.dumps(payload, ensure_ascii=False)
         try:
-            content = raw['choices'][0]['message']['content']
+            message = raw['choices'][0]['message']
         except (KeyError, IndexError, TypeError) as exc:
             raise AIProviderError('model did not return a chat completion') from exc
+        content = self._message_text(message.get('content'))
+        if not content:
+            content = self._message_text(message.get('reasoning'))
         return {'cases': self._parse_spec_cases(content), 'raw': content}
+
+    @staticmethod
+    def _message_text(value: Any) -> str:
+        if value is None:
+            return ''
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, list):
+            chunks = [AIService._message_text(item) for item in value]
+            return "\n".join(chunk for chunk in chunks if chunk).strip()
+        if isinstance(value, dict):
+            for key in ('text', 'content', 'reasoning', 'output_text'):
+                text = AIService._message_text(value.get(key))
+                if text:
+                    return text
+            return ''
+        return str(value).strip()
 
     @staticmethod
     def _parse_spec_cases(content: str) -> list[dict[str, Any]]:
@@ -489,6 +514,15 @@ class AIService:
             data = json.loads(text)
         except json.JSONDecodeError:
             data = AIService._parse_json_fragment(text)
+        if not ((isinstance(data, dict) and 'cases' in data) or isinstance(data, list)):
+            for candidate in _json_fragments(text):
+                try:
+                    fragment = json.loads(candidate)
+                except json.JSONDecodeError:
+                    continue
+                if (isinstance(fragment, dict) and 'cases' in fragment) or isinstance(fragment, list):
+                    data = fragment
+                    break
         if isinstance(data, dict) and 'cases' in data:
             cases = data['cases']
         elif isinstance(data, list):
@@ -502,16 +536,7 @@ class AIService:
     @staticmethod
     def _parse_json_fragment(text: str) -> Any:
         text = strip_think_blocks(text)
-        candidates = []
-        object_start = text.find('{')
-        object_end = text.rfind('}')
-        if 0 <= object_start < object_end:
-            candidates.append(text[object_start : object_end + 1])
-        array_start = text.find('[')
-        array_end = text.rfind(']')
-        if 0 <= array_start < array_end:
-            candidates.append(text[array_start : array_end + 1])
-        for candidate in candidates:
+        for candidate in _json_fragments(text):
             try:
                 return json.loads(candidate)
             except json.JSONDecodeError:
@@ -688,11 +713,67 @@ def strip_markdown_fence(content: str) -> str:
     return "\n".join(lines).strip()
 
 
+def _json_fragments(text: str) -> list[str]:
+    fragments: list[str] = []
+    stack: list[str] = []
+    start_index = -1
+    in_string = False
+    escaped = False
+    quote_char = ""
+    pairs = {"{": "}", "[": "]"}
+
+    for index, char in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+                continue
+            if char == "\\":
+                escaped = True
+                continue
+            if char == quote_char:
+                in_string = False
+            continue
+
+        if char in {'"', "'"}:
+            in_string = True
+            quote_char = char
+            continue
+
+        if char in pairs:
+            if not stack:
+                start_index = index
+            stack.append(pairs[char])
+            continue
+
+        if stack and char == stack[-1]:
+            stack.pop()
+            if not stack and start_index >= 0:
+                fragments.append(text[start_index : index + 1])
+                start_index = -1
+    return fragments
+
+
 def normalize_string_list(value: Any) -> list[str]:
     if isinstance(value, list):
         return [str(item).strip() for item in value if str(item).strip()]
     if isinstance(value, str) and value.strip():
         return [value.strip()]
+    return []
+
+
+def first_text(data: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def first_list(data: dict[str, Any], *keys: str) -> list[str]:
+    for key in keys:
+        items = normalize_string_list(data.get(key))
+        if items:
+            return items
     return []
 
 

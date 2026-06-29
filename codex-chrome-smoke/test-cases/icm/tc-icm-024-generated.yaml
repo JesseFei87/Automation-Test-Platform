@@ -1,0 +1,53 @@
+id: TC-ICM-024
+title: 备注输入恰好500个字符通过校验
+module: ICM-设备信息
+priority: P2
+type: 边界
+precondition: 已登录并进入添加设备信息弹窗，其他字段均为合法值
+test_data: 设备名称=ABCD；备注=500个字符'a'；其他字段同FUN_001
+steps:
+- 1. 打开添加设备信息弹窗
+- 2. 在'设备名称'输入ABCD，'备注'输入恰好500个字符
+- 3. 填写其他必填合法字段
+- 4. 点击【确定】
+expected: &id001
+- 1-3. 输入与字段无校验报错
+- 4. 新增成功，列表备注列完整显示500字符内容
+requirement_id: REQ-ICM-DEV-ADD
+automation: 'Yes'
+author: AI
+date: '2026-06-09'
+note: ''
+context_info:
+  env_url: https://192.168.16.203:49187/#/login?redirect=%2Fredirect
+  test_account: admin/Hubble_Service!1088
+  excluded: ''
+  refs: ''
+system: icm-internal
+expected_results: *id001
+preconditions:
+- 已登录并进入添加设备信息弹窗，其他字段均为合法值
+status: formal
+source: agent-explore
+source_run_id: ui-3a55fa7606a1
+source_draft_case_id: ICMDEV_BND_004
+automation_asset:
+  status: verified
+  source: agent-explore
+  evidence: {}
+  operation_steps:
+  - 使用 admin 完成登录阶段
+  - '打开目标路由 #/hubble/device'
+  - 打开添加设备信息弹窗
+  - 填写设备名称
+  - 填写其他必填合法字段
+  - 点击确定提交设备信息
+  - 校验设备新增成功、弹窗关闭且列表出现新记录
+  selectors:
+    agent_candidate: candidate_flow.py
+  input_values:
+    fill_4: ABCD
+    assert_text_7: ABCD
+  assertions:
+  - 1-3. 输入与字段无校验报错
+  - 4. 新增成功，列表备注列完整显示500字符内容

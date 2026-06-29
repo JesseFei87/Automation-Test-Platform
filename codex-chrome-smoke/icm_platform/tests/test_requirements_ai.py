@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from icm_platform import db
-from icm_platform.api import load_cached_report_analysis, load_report_analysis_versions, save_report_analysis
+from icm_platform.api import app, load_cached_report_analysis, load_report_analysis_versions, save_report_analysis
 from icm_platform.ai_service import AIConfigurationError, AIProviderError, AIService
 
 
@@ -79,6 +79,133 @@ class RequirementAITests(unittest.TestCase):
         parsed = AIService._parse_spec_cases('```json\n{"cases": [{"id": "CASE_001", "title": "ok"}]}\n```')
 
         self.assertEqual(parsed[0]["id"], "CASE_001")
+
+    def test_parse_spec_cases_accepts_qwen_wrapped_json_with_schema_text(self) -> None:
+        wrapped = (
+            '下面先给出结果，字段格式参考 {"id":"MODULE_TYPE_NNN"}。\n'
+            '```json\n'
+            '{"cases":[{"id":"CASE_001","title":"ok"}]}\n'
+            '```\n'
+            '说明：以上 {schema} 仅供参考。'
+        )
+
+        parsed = AIService._parse_spec_cases(wrapped)
+
+        self.assertEqual(parsed[0]["id"], "CASE_001")
+
+    def test_spec_generation_payload_disables_ollama_thinking_and_raises_token_cap(self) -> None:
+        service = AIService()
+
+        payload = service._spec_generation_payload(
+            "qwen3.6:35b",
+            "需求：登录",
+            "标准",
+            provider="ollama-local",
+        )
+
+        self.assertEqual(payload["reasoning_effort"], "none")
+        self.assertNotIn("think", payload)
+        self.assertEqual(payload["max_tokens"], 12288)
+
+    def test_generate_test_cases_spec_uses_longer_timeout_for_ollama(self) -> None:
+        service = AIService()
+
+        with patch.object(service, "_post_json", return_value={"choices": [{"message": {"content": '{"cases": []}'}}]}) as mocked:
+            service.generate_test_cases_spec(
+                "需求：登录",
+                "标准",
+                {
+                    "provider": "ollama-local",
+                    "api_key": "",
+                    "base_url": "http://127.0.0.1:11434/v1",
+                    "model": "qwen3.6:35b",
+                },
+            )
+
+        self.assertEqual(mocked.call_args.kwargs["timeout"], 900)
+
+    def test_generate_test_cases_spec_falls_back_to_reasoning_when_content_is_empty(self) -> None:
+        service = AIService()
+        raw = {
+            "choices": [
+                {
+                    "message": {
+                        "content": "",
+                        "reasoning": '{"cases":[{"id":"CASE_001","title":"ok"}]}',
+                    }
+                }
+            ]
+        }
+
+        with patch.object(service, "_post_json", return_value=raw):
+            result = service.generate_test_cases_spec(
+                "需求：登录",
+                "标准",
+                {
+                    "provider": "ollama-local",
+                    "api_key": "",
+                    "base_url": "http://127.0.0.1:11434/v1",
+                    "model": "qwen3.6:35b",
+                },
+            )
+
+        self.assertEqual(result["cases"][0]["id"], "CASE_001")
+        self.assertIn('"cases"', result["raw"])
+
+    def test_generate_test_cases_spec_accepts_content_block_list(self) -> None:
+        service = AIService()
+        raw = {
+            "choices": [
+                {
+                    "message": {
+                        "content": [
+                            {"type": "text", "text": '{"cases":[{"id":"CASE_001","title":"ok"}]}'},
+                        ],
+                    }
+                }
+            ]
+        }
+
+        with patch.object(service, "_post_json", return_value=raw):
+            result = service.generate_test_cases_spec(
+                "需求：登录",
+                "标准",
+                {
+                    "provider": "ollama-local",
+                    "api_key": "",
+                    "base_url": "http://127.0.0.1:11434/v1",
+                    "model": "qwen3.6:35b",
+                },
+            )
+
+        self.assertEqual(result["cases"][0]["id"], "CASE_001")
+
+    def test_generate_test_cases_spec_accepts_reasoning_object(self) -> None:
+        service = AIService()
+        raw = {
+            "choices": [
+                {
+                    "message": {
+                        "content": "",
+                        "reasoning": {"text": '{"cases":[{"id":"CASE_001","title":"ok"}]}'},
+                    }
+                }
+            ]
+        }
+
+        with patch.object(service, "_post_json", return_value=raw):
+            result = service.generate_test_cases_spec(
+                "需求：登录",
+                "标准",
+                {
+                    "provider": "ollama-local",
+                    "api_key": "",
+                    "base_url": "http://127.0.0.1:11434/v1",
+                    "model": "qwen3.6:35b",
+                },
+            )
+
+        self.assertEqual(result["cases"][0]["id"], "CASE_001")
 
     def test_parse_chat_completion_json_response(self) -> None:
         content = {
@@ -183,6 +310,43 @@ class RequirementAITests(unittest.TestCase):
         self.assertEqual(analysis["model"], "qwen3.6:35b")
         self.assertEqual(analysis["risks"], ["截图缺少 final 阶段"])
 
+    def test_report_analysis_accepts_ui_field_aliases(self) -> None:
+        service = AIService()
+        raw = {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "status": "passed",
+                                "current_analysis": "用例已按预期通过。",
+                                "risk_tips": ["缺少最终页面截图"],
+                                "retest_advice": ["补充一次带截图的复测"],
+                            },
+                            ensure_ascii=False,
+                        )
+                    }
+                }
+            ]
+        }
+
+        with patch.object(service, "_post_json", return_value=raw):
+            analysis = service.analyze_run_report_with_ai(
+                "status: passed",
+                [],
+                [],
+                {
+                    "provider": "ollama-local",
+                    "api_key": "",
+                    "base_url": "http://127.0.0.1:11434/v1",
+                    "model": "qwen3.6:35b",
+                },
+            )
+
+        self.assertEqual(analysis["conclusion"], "用例已按预期通过。")
+        self.assertEqual(analysis["risks"], ["缺少最终页面截图"])
+        self.assertEqual(analysis["retest_suggestions"], ["补充一次带截图的复测"])
+
     def test_switching_to_ollama_clears_saved_key(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             db_path = Path(folder) / "test.sqlite3"
@@ -272,6 +436,105 @@ class RequirementAITests(unittest.TestCase):
         self.assertEqual(len(versions), 2)
         self.assertEqual(versions[0]["analysis"]["conclusion"], "second result")
         self.assertEqual(versions[1]["analysis"]["conclusion"], "first result")
+
+    def test_analyze_report_endpoint_runs_ai_and_saves_version(self) -> None:
+        try:
+            from fastapi.testclient import TestClient
+        except Exception as exc:  # pragma: no cover
+            self.skipTest(f"TestClient unavailable: {exc}")
+
+        settings = {
+            "provider": "ollama-local",
+            "base_url": "http://127.0.0.1:11434/v1",
+            "model": "qwen3.6:35b",
+        }
+        analysis = {
+            "provider": "ollama-local",
+            "model": "qwen3.6:35b",
+            "source": "ai",
+            "status": "failed",
+            "conclusion": "AI 已完成报告解读",
+            "risks": ["断言截图不足"],
+            "retest_suggestions": ["重新执行失败步骤"],
+            "screenshot_count": 1,
+            "log_count": 0,
+        }
+        with tempfile.TemporaryDirectory() as folder:
+            db_path = Path(folder) / "test.sqlite3"
+            with (
+                patch("icm_platform.db.DB_PATH", db_path),
+                patch("icm_platform.db.DATA_DIR", db_path.parent),
+                patch("icm_platform.api.read_report", return_value="status: failed\nerror: assert failed"),
+                patch("icm_platform.api.parse_report", return_value={"screenshots": [{"filename": "final.png"}], "case_id": "TC-ICM-001"}),
+                patch("icm_platform.api.ai_service.analyze_run_report_with_ai", return_value=analysis) as analyze,
+            ):
+                db.init_db()
+                db.save_ai_settings(settings)
+                client = TestClient(app)
+                response = client.post("/api/reports/run-9/analyze", json={"force": True})
+                versions = client.get("/api/reports/run-9/analyses")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["conclusion"], "AI 已完成报告解读")
+        self.assertFalse(response.json()["cached"])
+        self.assertEqual(versions.status_code, 200)
+        self.assertEqual(versions.json()[0]["analysis"]["conclusion"], "AI 已完成报告解读")
+        analyze.assert_called_once()
+
+    def test_analyze_report_endpoint_falls_back_to_run_detail_without_markdown(self) -> None:
+        try:
+            from fastapi.testclient import TestClient
+        except Exception as exc:  # pragma: no cover
+            self.skipTest(f"TestClient unavailable: {exc}")
+
+        settings = {
+            "provider": "ollama-local",
+            "base_url": "http://127.0.0.1:11434/v1",
+            "model": "qwen3.6:35b",
+        }
+        detail = {
+            "run_id": "run-no-md",
+            "case_id": "ICMDEV_BND_007",
+            "case_name": "ICMDEV_BND_007 - 执行报告",
+            "mode": "agent",
+            "status": "completed",
+            "started_at": "2026-06-23 10:00:00",
+            "finished_at": "2026-06-23 10:01:00",
+            "final_url": "https://example.test/#/hubble/device",
+            "summary": {"conclusion": "执行完成", "failure_reason": ""},
+            "steps": [{"step_index": 1, "title": "点击确定", "status": "completed", "summary": "弹窗关闭"}],
+            "screenshots": [{"filename": "final.png", "case_id": "ICMDEV_BND_007"}],
+        }
+        analysis = {
+            "provider": "ollama-local",
+            "model": "qwen3.6:35b",
+            "source": "ai",
+            "status": "passed",
+            "conclusion": "结构化报告已分析",
+            "risks": [],
+            "retest_suggestions": [],
+            "screenshot_count": 1,
+            "log_count": 0,
+        }
+        with tempfile.TemporaryDirectory() as folder:
+            db_path = Path(folder) / "test.sqlite3"
+            with (
+                patch("icm_platform.db.DB_PATH", db_path),
+                patch("icm_platform.db.DATA_DIR", db_path.parent),
+                patch("icm_platform.api.read_report", side_effect=FileNotFoundError("run-no-md")),
+                patch("icm_platform.api._build_unified_run_detail", return_value=detail),
+                patch("icm_platform.api.ai_service.analyze_run_report_with_ai", return_value=analysis),
+            ):
+                db.init_db()
+                db.save_ai_settings(settings)
+                client = TestClient(app)
+                response = client.post("/api/reports/run-no-md/analyze", json={"force": True})
+                versions = client.get("/api/reports/run-no-md/analyses")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["conclusion"], "结构化报告已分析")
+        self.assertEqual(versions.status_code, 200)
+        self.assertEqual(versions.json()[0]["analysis"]["conclusion"], "结构化报告已分析")
 
 
 if __name__ == "__main__":

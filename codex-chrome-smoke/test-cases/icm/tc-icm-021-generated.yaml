@@ -1,0 +1,59 @@
+id: TC-ICM-021
+title: 填写全部合法字段新增设备信息成功
+module: ICM-设备信息
+priority: P0
+type: 功能
+precondition: 已使用 admin/Hubble_Service!1088 登录系统，且具有新增设备权限；连接器-1已存在并可用
+test_data: 连接类型=连接器-1；设备类型=标准设备；设备名称=TestDev_01；设备IP=192.168.1.100；设备端口=22；设备MAC=00-1A-2B-3C-4D-5E；网络掩码=255.255.255.0；VNC账号=vncuser；VNC密码=Vnc@1234；是否允许控制=是；设备状态=在线；备注=自动化测试新增
+steps:
+  - 1. 访问 https://192.168.16.203:49187/#/login?redirect=%2Fredirect 并使用 admin/Hubble_Service!1088 登录
+  - 2. 在左侧导航栏点击 ICM 项目，再点击设备信息
+  - 3. 点击【新增】按钮，打开“添加设备信息”弹窗
+  - 4. 连接类型选择“连接器-1”
+  - 5. 设备类型选择“标准设备”
+  - 6. 依次填写设备名称、设备IP、设备端口、MAC、网络掩码、VNC账号、VNC密码
+  - 7. 将“是否允许控制”置为“是”，设备状态选择“在线”，填写备注
+  - 8. 点击【确定】按钮
+expected: &expected_results
+  - 1. 登录成功，跳转至系统首页
+  - 2. 设备信息列表正常加载
+  - 3. 弹出“添加设备信息”弹窗，字段完整可编辑
+  - 4-7. 各字段可正常下拉选择与输入，无校验报错
+  - 8. 弹窗关闭并提示“新增成功”，列表内新增一行记录，设备名称为 TestDev_01，IP 为 192.168.1.100，状态为 在线
+requirement_id: REQ-ICM-DEV-ADD
+automation: "Yes"
+author: AI
+date: "2026-06-09"
+note: ""
+context_info:
+  env_url: https://192.168.16.203:49187/#/login?redirect=%2Fredirect
+  test_account: admin/Hubble_Service!1088
+  excluded: ""
+  refs: ""
+system: icm-internal
+expected_results: *expected_results
+preconditions:
+  - 已使用 admin/Hubble_Service!1088 登录系统，且具有新增设备权限；连接器-1已存在并可用
+status: formal
+source: agent-explore
+source_run_id: ui-132a24f2a6d4
+source_draft_case_id: ICMDEV_FUN_001
+automation_asset:
+  status: verified
+  source: agent-explore
+  evidence: {}
+  operation_steps:
+    - 使用 admin 完成登录
+    - 打开目标路由 #/hubble/device
+    - 打开“添加设备信息”弹窗并填写表单
+    - 提交后校验新增成功提示与列表记录
+  selectors:
+    agent_candidate: candidate_flow.py
+  input_values:
+    device_name: TestDev_01
+    device_ip: 192.168.1.100
+  assertions:
+    - 登录成功，跳转至系统首页
+    - 设备信息列表正常加载
+    - 弹出“添加设备信息”弹窗，字段完整可编辑
+    - 提交后列表出现 TestDev_01、192.168.1.100、在线

@@ -12,12 +12,34 @@ import { ExecutionCenter } from "./pages/ExecutionCenter";
 import { ReportDetail } from "./pages/ReportDetail";
 import { SystemSettings } from "./pages/SystemSettings";
 
+const LAST_PAGE_STORAGE_KEY = "icm.currentPage";
+const PAGE_IDS: PageId[] = ["dashboard", "projects", "requirements", "ai-generate", "points", "cases", "execution", "reports", "settings"];
+
+function navKeyForPage(pageId: PageId, navKey?: PlatformNavKey): PlatformNavKey {
+  return navKey || platformNavItems.find((candidate) => candidate.page === pageId)?.key || "dashboard";
+}
+
+function readInitialPage(): PageId {
+  if (typeof window === "undefined") return "dashboard";
+  if (window.location.hash.startsWith("#case-toolbox")) return "cases";
+  const storedPage = window.localStorage.getItem(LAST_PAGE_STORAGE_KEY);
+  return PAGE_IDS.includes(storedPage as PageId) ? (storedPage as PageId) : "dashboard";
+}
+
+function rememberPage(pageId: PageId) {
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem(LAST_PAGE_STORAGE_KEY, pageId);
+  }
+}
+
 export default function App() {
-  const [page, setPage] = useState<PageId>("dashboard");
-  const [activeNavKey, setActiveNavKey] = useState<PlatformNavKey>("dashboard");
+  const [page, setPage] = useState<PageId>(() => readInitialPage());
+  const [activeNavKey, setActiveNavKey] = useState<PlatformNavKey>(() => navKeyForPage(readInitialPage()));
   const [reportRunId, setReportRunId] = useState("");
   const [executionRunId, setExecutionRunId] = useState("");
   const [aiSettings, setAiSettings] = useState<AISettings | null>(null);
+  const [hasOpenedAIGenerate, setHasOpenedAIGenerate] = useState(() => readInitialPage() === "ai-generate");
+  const [modelSwitching, setModelSwitching] = useState(false);
   const modelLabel = aiSettings?.model || "AI 未配置";
 
   async function refreshAISettings() {
@@ -32,16 +54,20 @@ export default function App() {
     void refreshAISettings();
   }, []);
 
+  useEffect(() => {
+    setModelSwitching(true);
+    const timer = window.setTimeout(() => setModelSwitching(false), 520);
+    return () => window.clearTimeout(timer);
+  }, [modelLabel]);
+
   function openReport(runId: string) {
     setReportRunId(runId);
-    setActiveNavKey("reports");
-    setPage("reports");
+    navigate("reports", "reports");
   }
 
   function openExecution(runId: string) {
     setExecutionRunId(runId);
-    setActiveNavKey("ai-test");
-    setPage("execution");
+    navigate("execution", "ai-test");
   }
 
   function openCaseDraft(draftId: number) {
@@ -49,14 +75,16 @@ export default function App() {
     if (typeof window !== "undefined") {
       window.location.hash = `case-toolbox?draft=${draftId}`;
     }
-    setActiveNavKey("cases");
-    setPage("cases");
+    navigate("cases", "cases");
   }
 
   function navigate(pageId: PageId, navKey?: PlatformNavKey) {
-    const item = navKey ? platformNavItems.find((candidate) => candidate.key === navKey) : null;
-    setActiveNavKey(item?.key || platformNavItems.find((candidate) => candidate.page === pageId)?.key || "dashboard");
+    if (pageId === "ai-generate") {
+      setHasOpenedAIGenerate(true);
+    }
+    setActiveNavKey(navKeyForPage(pageId, navKey));
     setPage(pageId);
+    rememberPage(pageId);
   }
 
   return (
@@ -70,6 +98,7 @@ export default function App() {
           {platformNavItems.map((item) => (
             <button
               className={`platform-nav__item ${activeNavKey === item.key ? "is-active" : ""} ${item.badge ? "has-badge" : ""}`}
+              data-nav-key={item.key}
               key={item.key}
               onClick={() => navigate(item.page, item.key)}
               type="button"
@@ -80,7 +109,7 @@ export default function App() {
           ))}
         </nav>
         <div className="platform-user">
-          <span>{modelLabel}</span>
+          <span className={modelSwitching ? "is-switching" : undefined}>{modelLabel}</span>
           <strong>admin (System Admin)</strong>
         </div>
       </header>
@@ -88,7 +117,11 @@ export default function App() {
         {page === "dashboard" ? <Dashboard onNavigate={navigate} /> : null}
         {page === "projects" ? <ProjectManagement /> : null}
         {page === "requirements" ? <RequirementManagement onNavigate={navigate} /> : null}
-        {page === "ai-generate" ? <RequirementsWorkspace /> : null}
+        {hasOpenedAIGenerate ? (
+          <div hidden={page !== "ai-generate"}>
+            <RequirementsWorkspace />
+          </div>
+        ) : null}
         {page === "points" ? <TestPointsMap /> : null}
         {page === "cases" ? <CaseToolbox onRunCreated={openExecution} /> : null}
         {page === "execution" ? <ExecutionCenter initialRunId={executionRunId} onOpenReport={openReport} onOpenCaseDraft={openCaseDraft} /> : null}

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Card } from "../components/Card";
 import { StatusPill } from "../components/StatusPill";
 import {
@@ -7,6 +7,7 @@ import {
   type ApiCaseDetail,
   type CaseDraft,
   type CaseDraftValidation,
+  type PlatformSettings,
   type Project,
   type Requirement,
 } from "../data/api";
@@ -56,6 +57,49 @@ function extractDraftMeta(draft: CaseDraft) {
   };
 }
 
+function searchableDraftCaseId(draft: CaseDraft) {
+  return draft.promoted_case_id || readYamlScalar(draft.yaml, "id");
+}
+
+type CaseActionIcon = "agent" | "mode" | "copy" | "delete";
+
+function CaseActionSvg({ icon }: { icon: CaseActionIcon }) {
+  const paths: Record<CaseActionIcon, ReactNode> = {
+    agent: (
+      <>
+        <path d="M12 3v3" />
+        <path d="M7 8h10a3 3 0 0 1 3 3v5a4 4 0 0 1-4 4H8a4 4 0 0 1-4-4v-5a3 3 0 0 1 3-3Z" />
+        <path d="M9 13h.01M15 13h.01M10 17h4" />
+      </>
+    ),
+    mode: (
+      <>
+        <path d="M3 12s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6Z" />
+        <circle cx="12" cy="12" r="3" />
+      </>
+    ),
+    copy: (
+      <>
+        <rect x="8" y="8" width="11" height="11" rx="2" />
+        <path d="M5 15H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1" />
+      </>
+    ),
+    delete: (
+      <>
+        <path d="M4 7h16" />
+        <path d="M10 11v6M14 11v6" />
+        <path d="M6 7l1 14h10l1-14" />
+        <path d="M9 7V4h6v3" />
+      </>
+    ),
+  };
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24">
+      {paths[icon]}
+    </svg>
+  );
+}
+
 export function CaseToolbox({ onRunCreated }: { onRunCreated?: (runId: string) => void }) {
   const [cases, setCases] = useState<ApiCase[]>([]);
   const [drafts, setDrafts] = useState<CaseDraft[]>([]);
@@ -76,6 +120,7 @@ export function CaseToolbox({ onRunCreated }: { onRunCreated?: (runId: string) =
   const [startedDate, setStartedDate] = useState("");
   const [busy, setBusy] = useState(false);
   const [batchBusy, setBatchBusy] = useState(false);
+  const [browserMode, setBrowserModeState] = useState<PlatformSettings["runner"]["browser_mode"]>("background");
   const [status, setStatus] = useState("正在读取用例资产...");
 
   const selectedDraft = useMemo(() => drafts.find((draft) => draft.id === selectedDraftId) || null, [drafts, selectedDraftId]);
@@ -105,7 +150,7 @@ export function CaseToolbox({ onRunCreated }: { onRunCreated?: (runId: string) =
         selectedProjectId === "all" || requirementProjectId === selectedProjectId,
         !startedDate || (draft.created_at?.slice(0, 10) || "") >= startedDate,
       ];
-      const searchable = [draft.title, draft.promoted_case_id || "", draft.requirement_title || "", draft.status, requirement?.title || ""]
+      const searchable = [searchableDraftCaseId(draft), draft.title]
         .join(" ")
         .toLowerCase();
       return filters.every(Boolean) && (!query || searchable.includes(query));
@@ -167,16 +212,18 @@ export function CaseToolbox({ onRunCreated }: { onRunCreated?: (runId: string) =
   async function refresh(preferredDraftId?: number | null) {
     setBusy(true);
     try {
-      const [caseResult, draftResult, requirementResult, projectResult] = await Promise.all([
+      const [caseResult, draftResult, requirementResult, projectResult, platformResult] = await Promise.all([
         api.cases(),
         api.caseDrafts(),
         api.requirements(),
         api.listProjects(),
+        api.platformSettings(),
       ]);
       setCases(caseResult);
       setDrafts(draftResult);
       setRequirements(requirementResult);
       setProjects(projectResult);
+      setBrowserModeState(platformResult.runner.browser_mode || "background");
       const next =
         (preferredDraftId ? draftResult.find((item) => item.id === preferredDraftId) : null) ||
         (selectedDraftId ? draftResult.find((item) => item.id === selectedDraftId) : null) ||
@@ -299,17 +346,65 @@ export function CaseToolbox({ onRunCreated }: { onRunCreated?: (runId: string) =
   }
 
   async function runAgentExplore(draft: CaseDraft) {
-    const targetLabel = draft.promoted_case_id || `draft #${draft.id}`;
+    const targetLabel = defaultCaseId(draft) || `draft #${draft.id}`;
     setBusy(true);
-    setStatus(`正在提交 Agent Explore：${targetLabel}...`);
+    setStatus(`正在提交 Agent Explore：${targetLabel}，将按当前草稿最新内容执行...`);
     try {
-      const task = draft.promoted_case_id
-        ? await api.createRun("agent-explore", draft.promoted_case_id)
-        : await api.createRun("agent-explore", undefined, draft.id);
+      let sourceDraft = draft;
+      if (draft.id === selectedDraftId && detailMode === "draft") {
+        sourceDraft = await api.updateCaseDraft(draft.id, { title, yaml });
+        setDrafts((items) => items.map((item) => (item.id === sourceDraft.id ? sourceDraft : item)));
+        selectDraft(sourceDraft);
+      }
+      const task = await api.createRun("agent-explore", undefined, sourceDraft.id);
       setStatus(`已创建 Agent Explore 任务：${task.id}`);
       onRunCreated?.(task.id);
     } catch (error) {
       setStatus(`Agent Explore 提交失败：${errorMessage(error)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function toggleAiExecutionMode() {
+    setBusy(true);
+    try {
+      const current = await api.platformSettings();
+      const nextMode = current.runner.browser_mode === "background" ? "visible" : "background";
+      const updated = await api.savePlatformSettings({
+        runner: {
+          ...current.runner,
+          browser_mode: nextMode,
+          headless: nextMode === "background",
+        },
+      });
+      setBrowserModeState(updated.runner.browser_mode || nextMode);
+      setStatus(nextMode === "background" ? "AI 执行模式已切换为无头模式。" : "AI 执行模式已切换为有头模式。");
+    } catch (error) {
+      setStatus(`AI 执行模式切换失败：${errorMessage(error)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function copyDraft(draft: CaseDraft) {
+    setBusy(true);
+    try {
+      let sourceDraft = draft;
+      if (draft.id === selectedDraftId && detailMode === "draft") {
+        sourceDraft = await api.updateCaseDraft(draft.id, { title, yaml });
+      }
+      const copied = await api.createCaseDraft({
+        requirement_id: sourceDraft.requirement_id,
+        title: `${sourceDraft.title || "未命名用例"} - 副本`,
+        yaml: sourceDraft.yaml,
+        template: sourceDraft.template || "manual",
+      });
+      setSelectedDraftIds([]);
+      await refresh(copied.id);
+      setStatus(`已复制用例：#${copied.id}`);
+    } catch (error) {
+      setStatus(`复制用例失败：${errorMessage(error)}`);
     } finally {
       setBusy(false);
     }
@@ -364,7 +459,7 @@ export function CaseToolbox({ onRunCreated }: { onRunCreated?: (runId: string) =
           <div className="case-filters">
             <label className="case-filter-field">
               <span>关键字</span>
-              <input className="text-input" value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索标题 / 用例ID / 需求" />
+              <input className="text-input" value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索用例ID / 标题" />
             </label>
             <label className="case-filter-field">
               <span>状态</span>
@@ -492,17 +587,23 @@ export function CaseToolbox({ onRunCreated }: { onRunCreated?: (runId: string) =
                       <td>{formatTime(draft.created_at)}</td>
                       <td>
                         <div className="case-row-actions" onClick={(event) => event.stopPropagation()}>
-                          <button className="case-row-action case-row-action--primary" type="button" title="查看用例详情" onClick={() => selectDraft(draft)}>
-                            看
+                          <button className="case-row-action case-row-action--agent" type="button" title="执行 Agent 模式" disabled={busy} onClick={() => void runAgentExplore(draft)}>
+                            <CaseActionSvg icon="agent" />
                           </button>
-                          <button className="case-row-action" type="button" title="校验 YAML" disabled={busy} onClick={() => void validateDraft(draft)}>
-                            验
+                          <button
+                            className={`case-row-action case-row-action--mode ${browserMode === "background" ? "is-headless" : "is-headed"}`}
+                            type="button"
+                            title={browserMode === "background" ? "当前无头模式，点击切换为有头模式" : "当前有头模式，点击切换为无头模式"}
+                            disabled={busy || batchBusy}
+                            onClick={() => void toggleAiExecutionMode()}
+                          >
+                            <CaseActionSvg icon="mode" />
                           </button>
-                          <button className="case-row-action" type="button" title="Agent Explore" disabled={busy} onClick={() => void runAgentExplore(draft)}>
-                            AG
+                          <button className="case-row-action case-row-action--copy" type="button" title="复制当前用例" disabled={busy || batchBusy} onClick={() => void copyDraft(draft)}>
+                            <CaseActionSvg icon="copy" />
                           </button>
-                          <button className="case-row-action case-row-action--danger" type="button" title="删除用例" disabled={busy || batchBusy} onClick={() => void deleteDraft(draft)}>
-                            删除
+                          <button className="case-row-action case-row-action--danger" type="button" title="删除当前用例" disabled={busy || batchBusy} onClick={() => void deleteDraft(draft)}>
+                            <CaseActionSvg icon="delete" />
                           </button>
                         </div>
                       </td>
@@ -575,7 +676,7 @@ export function CaseToolbox({ onRunCreated }: { onRunCreated?: (runId: string) =
               <button className="btn btn--primary" type="button" disabled={!selectedDraft || busy || detailMode === "formal"} onClick={promoteDraft}>
                 转正式
               </button>
-              <button className="btn btn--outline" type="button" disabled={!selectedDraft || busy} onClick={() => selectedDraft && void runAgentExplore(selectedDraft)}>
+              <button className="btn btn--outline" type="button" title="按当前草稿最新内容执行 Agent Explore" disabled={!selectedDraft || busy} onClick={() => selectedDraft && void runAgentExplore(selectedDraft)}>
                 AG
               </button>
             </div>

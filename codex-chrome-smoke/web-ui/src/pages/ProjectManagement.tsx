@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
-import { api, type Project } from "../data/api";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Card } from "../components/Card";
 import { StatusPill } from "../components/StatusPill";
+import { api, type Project } from "../data/api";
 
 type ProjectForm = {
   name: string;
@@ -34,6 +34,32 @@ function formatTime(value?: string | null) {
   return date.toLocaleString("zh-CN", { hour12: false });
 }
 
+type ProjectActionIcon = "edit" | "delete";
+
+function ProjectActionSvg({ icon }: { icon: ProjectActionIcon }) {
+  const paths: Record<ProjectActionIcon, ReactNode> = {
+    edit: (
+      <>
+        <path d="M12 20h9" />
+        <path d="m16.5 3.5 4 4L8 20l-4 1 1-4Z" />
+      </>
+    ),
+    delete: (
+      <>
+        <path d="M4 7h16" />
+        <path d="M10 11v6M14 11v6" />
+        <path d="M6 7l1 14h10l1-14" />
+        <path d="M9 7V4h6v3" />
+      </>
+    ),
+  };
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24">
+      {paths[icon]}
+    </svg>
+  );
+}
+
 export function ProjectManagement() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedId, setSelectedId] = useState("");
@@ -53,8 +79,8 @@ export function ProjectManagement() {
     try {
       const items = await api.listProjects();
       setProjects(items);
-      const nextId = nextSelectedId || selectedId;
-      const selected = items.find((item) => item.id === nextId) || items[0] || null;
+      const resolvedId = nextSelectedId ?? selectedId;
+      const selected = items.find((item) => item.id === resolvedId) || items[0] || null;
       setSelectedId(selected?.id || "");
       setMode(selected ? "edit" : "create");
       setForm(selected ? projectToForm(selected) : EMPTY_FORM);
@@ -121,7 +147,7 @@ export function ProjectManagement() {
   }
 
   async function deleteProject(project: Project) {
-    const confirmed = window.confirm(`确认删除项目"${project.name}"？该操作只删除项目档案，不会删除已生成的需求、用例或报告。`);
+    const confirmed = window.confirm(`确认删除项目“${project.name}”？该操作只删除项目档案，不会删除已生成的需求、用例或报告。`);
     if (!confirmed) return;
     setBusy(true);
     try {
@@ -138,13 +164,11 @@ export function ProjectManagement() {
   return (
     <div className="page project-page">
       <section className="project-summary">
-        <Card title="项目概览" subtitle="项目档案用于需求生成时关联业务范围，暂不影响正式 case 文件。">
-          <div className="project-metrics">
-            <Metric label="项目总数" value={projects.length} />
-            <Metric label="已配置入口" value={projects.filter((project) => project.base_url).length} />
-            <Metric label="当前项目" value={selectedProject?.name || "--"} />
-          </div>
-        </Card>
+        <div className="project-metrics">
+          <Metric label="项目总数" value={projects.length} />
+          <Metric label="已配置入口" value={projects.filter((project) => project.base_url).length} />
+          <Metric label="当前项目" value={selectedProject?.name || "--"} />
+        </div>
       </section>
 
       <section className="project-layout">
@@ -155,6 +179,7 @@ export function ProjectManagement() {
             </button>
             <StatusPill tone={mode === "create" ? "green" : "blue"}>{mode === "create" ? "新增模式" : "编辑模式"}</StatusPill>
           </div>
+
           <table className="table">
             <thead>
               <tr>
@@ -175,12 +200,14 @@ export function ProjectManagement() {
                   <td>{project.base_url || "未配置"}</td>
                   <td>{formatTime(project.updated_at)}</td>
                   <td>
-                    <button className="link-button" onClick={() => selectProject(project)} type="button">
-                      编辑
-                    </button>
-                    <button className="link-button link-button--danger" disabled={busy} onClick={() => deleteProject(project)} type="button">
-                      删除
-                    </button>
+                    <div className="project-row-actions">
+                      <button className="project-row-action project-row-action--edit" onClick={() => selectProject(project)} title="编辑项目" type="button">
+                        <ProjectActionSvg icon="edit" />
+                      </button>
+                      <button className="project-row-action project-row-action--delete" disabled={busy} onClick={() => deleteProject(project)} title="删除项目" type="button">
+                        <ProjectActionSvg icon="delete" />
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -220,10 +247,10 @@ export function ProjectManagement() {
 
 function Metric({ label, value }: { label: string; value: number | string }) {
   return (
-    <div className="project-metric">
+    <article className="project-metric">
       <span>{label}</span>
       <strong>{value}</strong>
-    </div>
+    </article>
   );
 }
 
@@ -237,19 +264,9 @@ function ProjectFields({
   return (
     <div className="project-fields">
       <label className="field-label">项目名称</label>
-      <input
-        className="text-input"
-        onChange={(event) => onChange({ ...form, name: event.target.value })}
-        placeholder="例如：ICM"
-        value={form.name}
-      />
+      <input className="text-input" onChange={(event) => onChange({ ...form, name: event.target.value })} placeholder="例如：ICM" value={form.name} />
       <label className="field-label">Base URL</label>
-      <input
-        className="text-input"
-        onChange={(event) => onChange({ ...form, base_url: event.target.value })}
-        placeholder="例如：https://example.com"
-        value={form.base_url}
-      />
+      <input className="text-input" onChange={(event) => onChange({ ...form, base_url: event.target.value })} placeholder="例如：https://example.com" value={form.base_url} />
       <label className="field-label">项目说明</label>
       <textarea
         className="text-input project-description"

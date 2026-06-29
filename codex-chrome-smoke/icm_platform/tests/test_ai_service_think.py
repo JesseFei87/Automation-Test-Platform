@@ -18,6 +18,7 @@ import unittest
 from icm_platform.ai_service import (
     AIService,
     AIProviderError,
+    _json_fragments,
     parse_json_content,
     strip_think_blocks,
 )
@@ -31,6 +32,12 @@ class TestStripThinkBlocks(unittest.TestCase):
         text = ('<think>a {"b":"c"} first</think>middle'
                 '<think>second with {"x":1} inside</think>{"x":1}')
         self.assertEqual(strip_think_blocks(text), 'middle{"x":1}')
+
+
+class TestJsonFragments(unittest.TestCase):
+    def test_extracts_complete_json_when_schema_text_contains_braces(self):
+        text = 'schema {"id":"DEMO"} ignored\n{"cases":[{"id":"CASE_001"}]}\ntrailing {note}'
+        self.assertIn('{"cases":[{"id":"CASE_001"}]}', _json_fragments(text))
 
 
 class TestParseSpecCases(unittest.TestCase):

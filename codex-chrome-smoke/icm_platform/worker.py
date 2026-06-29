@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -11,9 +12,12 @@ from pathlib import Path
 
 import yaml
 
-from icm_platform.assets import report_path_for_run
+from icm_platform.assets import list_batch_child_reports, report_path_for_run
 from icm_platform.db import connect, get_platform_settings, utc_now
 from icm_platform.paths import DRAFT_RUN_DIR, ROOT
+
+_BATCH_CASE_START_RE = re.compile(r"^::batch-case-start\s+run_id=(\S+)\s+case_id=(\S+)")
+_BATCH_CASE_END_RE = re.compile(r"^::batch-case-end\s+run_id=(\S+)\s+case_id=(\S+)\s+status=(\S+)")
 
 
 class RunnerWorker:
@@ -181,11 +185,18 @@ class RunnerWorker:
         )
         assert process.stdout is not None
         for line in process.stdout:
-            self._append_log(task_id, "stdout", line.rstrip())
+            clean_line = line.rstrip()
+            self._append_log(task_id, "stdout", clean_line)
+            if task["mode"] == "run-batch":
+                self._handle_batch_progress(task_id, clean_line)
         return_code = process.wait()
 
-        report_path = self._resolve_report_path(task_id, task["mode"], task["case_id"])
         status = "passed" if return_code == 0 else "failed"
+        if task["mode"] == "run-batch":
+            self._sync_batch_children_from_reports(task_id)
+            report_path = self._write_batch_summary_report(task_id, status)
+        else:
+            report_path = self._resolve_report_path(task_id, task["mode"], task["case_id"])
         with connect() as conn:
             conn.execute(
                 """
@@ -210,10 +221,98 @@ class RunnerWorker:
                 (task_id, stream, line, utc_now()),
             )
 
+    def _handle_batch_progress(self, parent_run_id: str, line: str) -> None:
+        start_match = _BATCH_CASE_START_RE.match(line)
+        if start_match:
+            run_id, case_id = start_match.groups()
+            self._upsert_batch_child(parent_run_id, run_id, case_id, "running")
+            return
+        end_match = _BATCH_CASE_END_RE.match(line)
+        if end_match:
+            run_id, case_id, status = end_match.groups()
+            self._upsert_batch_child(parent_run_id, run_id, case_id, "passed" if status == "passed" else "failed")
+
+    def _upsert_batch_child(self, parent_run_id: str, run_id: str, case_id: str, status: str) -> None:
+        now = utc_now()
+        report_path = report_path_for_run(run_id)
+        report_value = str(report_path) if report_path.exists() else None
+        with connect() as conn:
+            existing = conn.execute("select id, started_at from run_tasks where id = ?", (run_id,)).fetchone()
+            if existing:
+                conn.execute(
+                    """
+                    update run_tasks
+                    set status = ?, case_id = ?, parent_run_id = ?, started_at = coalesce(started_at, ?),
+                        finished_at = case when ? in ('passed', 'failed') then ? else finished_at end,
+                        return_code = case when ? = 'passed' then 0 when ? = 'failed' then 1 else return_code end,
+                        report_path = coalesce(?, report_path),
+                        error = case when ? = 'failed' then coalesce(nullif(error, ''), 'case failed') else coalesce(error, '') end
+                    where id = ?
+                    """,
+                    (status, case_id, parent_run_id, now, status, now, status, status, report_value, status, run_id),
+                )
+                return
+            conn.execute(
+                """
+                insert into run_tasks(id, mode, case_id, parent_run_id, status, command, started_at, finished_at, return_code, report_path, error, created_at)
+                values (?, 'run-case', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    case_id,
+                    parent_run_id,
+                    status,
+                    f"batch child of {parent_run_id}",
+                    now,
+                    now if status in {"passed", "failed"} else None,
+                    0 if status == "passed" else (1 if status == "failed" else None),
+                    report_value,
+                    "case failed" if status == "failed" else "",
+                    now,
+                ),
+            )
+
+    def _sync_batch_children_from_reports(self, parent_run_id: str) -> None:
+        for child in list_batch_child_reports(parent_run_id):
+            run_id = child.get("run_id")
+            if not run_id:
+                continue
+            status = str(child.get("status") or "failed")
+            self._upsert_batch_child(parent_run_id, str(run_id), str(child.get("case_id") or ""), status)
+
+    def _write_batch_summary_report(self, parent_run_id: str, status: str) -> Path | None:
+        children = list_batch_child_reports(parent_run_id)
+        completed = [item for item in children if item.get("run_id")]
+        if not completed:
+            return None
+        passed = sum(1 for item in completed if item.get("status") == "passed")
+        failed = sum(1 for item in completed if item.get("status") == "failed")
+        report_dir = ROOT / "reports" / "runs"
+        report_dir.mkdir(parents=True, exist_ok=True)
+        path = report_dir / f"{parent_run_id}.md"
+        lines = [
+            f"# {parent_run_id}",
+            "",
+            "- case name: Batch 001-012",
+            "- environment: icm-internal",
+            f"- status: {status}",
+            f"- total: {len(completed)}",
+            f"- passed: {passed}",
+            f"- failed: {failed}",
+            "- child reports:",
+        ]
+        for child in children:
+            marker = child.get("status") or "pending"
+            report_path = child.get("report_path") or "none"
+            lines.append(f"  - {child.get('case_id')}: {marker} / {report_path}")
+        lines.append("- screenshot paths:")
+        path.write_text("\n".join(lines), encoding="utf-8")
+        return path
+
     def _resolve_report_path(self, task_id: str, mode: str, case_id: str | None) -> Path | None:
         if mode == "run-batch":
-            candidates = sorted((ROOT / "reports" / "runs").glob(f"{task_id}-*.md"))
-            return candidates[-1] if candidates else None
+            summary = ROOT / "reports" / "runs" / f"{task_id}.md"
+            return summary if summary.exists() else None
         if mode == "agent-explore":
             path = ROOT / "reports" / "agent-explore" / task_id / "trace.json"
             return path if path.exists() else None

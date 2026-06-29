@@ -1,0 +1,45 @@
+id: TC-ICM-019
+title: 密码输入框为掩码显示
+module: 账号/登录
+priority: P1
+type: 边界
+precondition: 已打开登录页
+test_data: username=test, password=123456
+steps:
+- 1. 访问登录页
+- 2. 在密码框输入 123456
+expected: &id001
+- 1. 密码输入框 type=password，屏幕显示为 6 个圆点/星号
+- 2. 源码中不出现明文 123456
+requirement_id: REQ-LOGIN-006
+automation: 'Yes'
+author: AI
+date: '2026-06-09'
+note: ''
+context_info:
+  env_url: ''
+  test_account: ''
+  excluded: ''
+  refs: ''
+system: icm-internal
+expected_results: *id001
+preconditions:
+- 已打开登录页
+status: formal
+source: agent-explore
+source_run_id: ui-ada851771fe5
+automation_asset:
+  status: verified
+  source: agent-explore
+  evidence: {}
+  operation_steps:
+  - fill password with test data 123456 to verify masked display behavior
+  - Password input field (ref e3) has type='password' confirming mask display, value
+    '123456' was filled successfully in step 1. Expected mask behavior verified.
+  selectors:
+    fill_1: input[placeholder="密码"]
+  input_values:
+    fill_1: '123456'
+  assertions:
+  - 1. 密码输入框 type=password，屏幕显示为 6 个圆点/星号
+  - 2. 源码中不出现明文 123456

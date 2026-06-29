@@ -19,6 +19,17 @@ def test_build_goal_includes_case_steps_and_expected_results():
     assert "Device list is visible" in goal
 
 
+def test_build_goal_falls_back_to_expected_field():
+    case = {
+        "id": "ICMDEV_BND_003",
+        "title": "Boundary validation",
+        "steps": ["Submit dialog"],
+        "expected": ["Validation error is visible"],
+    }
+    goal = build_agent_goal(case)
+    assert "Validation error is visible" in goal
+
+
 def test_build_goal_includes_precondition_and_test_data():
     case = {
         "id": "LOGIN_FUN_003",
@@ -77,3 +88,65 @@ def test_build_self_heal_goal_includes_failure_hint_and_tail_history():
     assert "Healing hint: Finish as soon as login success signal is visible." in goal
     assert "Recent failing tail:" in goal
     assert "action=press" in goal
+
+
+def test_build_self_heal_goal_includes_diagnosis_recovery_and_stop_sections():
+    case = {
+        "id": "ICMDEV_EXC_008",
+        "title": "port 65536 triggers validation",
+        "steps": ["open dialog", "fill port", "submit"],
+        "expected_results": ["red hint shows"],
+    }
+    goal = build_self_heal_goal(
+        case,
+        {
+            "failure_summary": "no assertion signal matched",
+            "healing_hint": "look for red text under port input",
+            "diagnosis": {
+                "category": "locator_drift",
+                "evidence": "expected_results text not found on page",
+            },
+            "attempt_index": 2,
+            "max_attempts": 3,
+        },
+    )
+    assert "失败诊断：" in goal
+    assert "- Category: locator_drift" in goal
+    assert "- 证据: expected_results text not found on page" in goal
+    assert "- 重试次数: 2/3" in goal
+    assert "恢复策略（按 Category 选一条）：" in goal
+    assert "locator_drift（定位漂移）：重新观察页面" in goal
+    assert "timing（时序问题）：等待 1-3 秒" in goal
+    assert "logic_understanding（业务理解偏差）：重读用例步骤" in goal
+    assert "unrecoverable（不可恢复）：不要重试" in goal
+    assert "停止条件（任一命中立刻 finish）：" in goal
+    assert "已是第 3 次重试。" in goal
+    assert "visibleText 已包含任意一条 Expected results。" in goal
+    assert "失败信号与上一轮 Category 相同。" in goal
+
+
+def test_build_self_heal_goal_falls_back_to_unknown_category_when_diagnosis_missing():
+    case = {
+        "id": "LOGIN_FUN_003",
+        "title": "login persists",
+        "steps": ["login"],
+        "expected_results": ["logged in"],
+    }
+    goal = build_self_heal_goal(case, {"failure_summary": "click failed"})
+    assert "- Category: unknown" in goal
+    assert "- 证据: click failed" in goal
+    assert "- 重试次数: 1/3" in goal
+
+
+def test_build_self_heal_goal_handles_empty_healing_context():
+    case = {
+        "id": "TC-ICM-001",
+        "title": "smoke",
+        "steps": ["open"],
+        "expected_results": ["page opens"],
+    }
+    goal = build_self_heal_goal(case, {})
+    assert "- Category: unknown" in goal
+    assert "- 证据: (no diagnosis provided)" in goal
+    assert "- 重试次数: 1/3" in goal
+    assert "停止条件" in goal

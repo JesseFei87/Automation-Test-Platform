@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { API_ORIGIN, api, type ApiCase, type ApiRunDetailView } from "../data/api";
-import { buildExecutionListItems, buildRunDetailViewModel, legacyRunDetailToView, type ExecutionListItem } from "../data/runViewModels";
+import { buildExecutionListItems, buildRunDetailViewModel, legacyRunDetailToView, type ExecutionListItem, type RunDetailViewModel } from "../data/runViewModels";
 import { Card } from "../components/Card";
 import { ConsolePanel } from "../components/ConsolePanel";
 import { FlowSteps } from "../components/FlowSteps";
@@ -23,9 +23,38 @@ function statusText(status: string) {
   return status || "未知";
 }
 
+function isLiveStatus(status: string) {
+  return status === "running" || status === "queued" || status === "pending";
+}
+
+function formatLogTimestamp(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  const pad = (part: number) => String(part).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
 function latestLine(detail: ApiRunDetailView | null) {
   if (!detail?.logs?.length) return ["暂无真实运行日志。"];
-  return detail.logs.map((log) => `[${log.created_at}] ${log.line}`);
+  return detail.logs.map((log) => `[${formatLogTimestamp(log.created_at)}] ${log.line}`);
+}
+
+function stepHeading(step: RunDetailViewModel["steps"][number]) {
+  const normalized = step.title.replace(/^(?:用例步骤|步骤)\s*\d+\s*[-－:：]?\s*/u, "").trim();
+  return `步骤 ${step.index} - ${normalized || step.title}`;
+}
+
+function findAutoFocusedStepKey(detailModel: RunDetailViewModel) {
+  const { steps } = detailModel;
+  if (!steps.length) return "";
+  const lastRunning = [...steps].reverse().find((step) => step.status === "running");
+  if (lastRunning) return lastRunning.key;
+  const lastFailed = [...steps].reverse().find((step) => step.status === "failed");
+  if (lastFailed) return lastFailed.key;
+  const lastCompleted = [...steps].reverse().find((step) => step.status === "completed" || step.status === "passed" || step.status === "success");
+  if (lastCompleted) return lastCompleted.key;
+  const firstQueued = steps.find((step) => step.status === "queued");
+  return firstQueued?.key || steps[0].key;
 }
 
 function tabForItem(item?: ExecutionListItem | null): ExecutionTab {
@@ -41,11 +70,11 @@ export function ExecutionCenter({
   onOpenCaseDraft?: (draftId: number) => void;
 }) {
   const [cases, setCases] = useState<ApiCase[]>([]);
-  const [selectedCaseId, setSelectedCaseId] = useState("");
   const [runs, setRuns] = useState<ExecutionListItem[]>([]);
+  const [selectedCaseId, setSelectedCaseId] = useState("");
+  const [message, setMessage] = useState("正在连接本地执行服务...");
   const [selectedRunId, setSelectedRunId] = useState("");
   const [runDetail, setRunDetail] = useState<ApiRunDetailView | null>(null);
-  const [message, setMessage] = useState("正在连接本地执行服务...");
   const [submitting, setSubmitting] = useState(false);
   const [activeExecutionTab, setActiveExecutionTab] = useState<ExecutionTab>("worker");
   const [selectedStepKey, setSelectedStepKey] = useState("");
@@ -58,7 +87,18 @@ export function ExecutionCenter({
   const agentRuns = useMemo(() => runs.filter((item) => item.mode === "agent"), [runs]);
   const visibleRuns = useMemo(() => (activeExecutionTab === "agent" ? agentRuns : workerRuns), [activeExecutionTab, agentRuns, workerRuns]);
   const selectedRun = useMemo(() => runs.find((item) => item.runId === selectedRunId) || null, [runs, selectedRunId]);
+  const hasLiveRuns = useMemo(() => runs.some((item) => isLiveStatus(item.status)), [runs]);
   const detailModel = useMemo(() => buildRunDetailViewModel(runDetail), [runDetail]);
+  const activeStageNumber = useMemo(() => {
+    const currentStage = detailModel.stagePlan.find((stage) => stage.isCurrent);
+    if (currentStage?.index) return currentStage.index;
+    const runningStage = detailModel.stagePlan.find((stage) => stage.status === "running");
+    if (runningStage?.index) return runningStage.index;
+    const failedStage = detailModel.stagePlan.find((stage) => stage.status === "failed");
+    if (failedStage?.index) return failedStage.index;
+    const completedStages = detailModel.stagePlan.filter((stage) => stage.status === "completed" || stage.status === "passed" || stage.status === "success");
+    return completedStages.at(-1)?.index || 0;
+  }, [detailModel.stagePlan]);
   const latestScreenshot = detailModel.screenshots.at(-1) || null;
   const selectedStep = useMemo(() => detailModel.steps.find((step) => step.key === selectedStepKey) || detailModel.steps[0] || null, [detailModel.steps, selectedStepKey]);
   const previewScreenshotUrl = selectedStep?.screenshotUrl || latestScreenshot?.url || "";
@@ -94,9 +134,8 @@ export function ExecutionCenter({
       const task = await api.createRun(mode, mode === "run-case" ? selectedCaseId : undefined);
       setActiveExecutionTab("worker");
       setSelectedRunId(task.id);
-      setRunDetail(null);
-      await refreshRuns();
       setMessage(`已入队 ${task.id}`);
+      await refreshRuns();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "提交失败");
     } finally {
@@ -168,9 +207,13 @@ export function ExecutionCenter({
   useEffect(() => {
     void loadCases();
     void refreshRuns();
+  }, []);
+
+  useEffect(() => {
+    if (!hasLiveRuns) return;
     const timer = window.setInterval(() => void refreshRuns(), 5000);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [hasLiveRuns]);
 
   useEffect(() => {
     if (initialRunId) setSelectedRunId(initialRunId);
@@ -189,34 +232,44 @@ export function ExecutionCenter({
       setSelectedStepKey("");
       return;
     }
-    setSelectedStepKey((current) => (detailModel.steps.some((step) => step.key === current) ? current : detailModel.steps[0].key));
-  }, [detailModel.steps]);
+    const autoFocusedStepKey = findAutoFocusedStepKey(detailModel);
+    setSelectedStepKey((current) => {
+      if (!detailModel.steps.some((step) => step.key === current)) return autoFocusedStepKey;
+      if (detailModel.status === "running") return autoFocusedStepKey;
+      if (detailModel.status === "failed" && detailModel.steps.some((step) => step.key === autoFocusedStepKey && step.status === "failed")) return autoFocusedStepKey;
+      return current;
+    });
+  }, [detailModel]);
 
   useEffect(() => {
     if (!selectedRunId) return;
     let cancelled = false;
+    let timer: number | undefined;
     async function loadDetail() {
       try {
         const detail = await api.runDetailView(selectedRunId).catch(async () => legacyRunDetailToView(await api.runDetail(selectedRunId)));
-        if (!cancelled) setRunDetail(detail);
+        if (cancelled) return;
+        setRunDetail(detail);
+        if (isLiveStatus(detail.status)) timer = window.setTimeout(() => void loadDetail(), 2500);
       } catch {
-        if (!cancelled) setRunDetail(null);
+        if (cancelled) return;
+        setRunDetail(null);
+        if (!selectedRun || isLiveStatus(selectedRun.status)) timer = window.setTimeout(() => void loadDetail(), 2500);
       }
     }
     void loadDetail();
-    const timer = window.setInterval(() => void loadDetail(), 2500);
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      if (timer) window.clearTimeout(timer);
     };
-  }, [selectedRunId]);
+  }, [selectedRunId, selectedRun?.status]);
 
   return (
     <div className="page execution-page">
       <FlowSteps activeIndex={5} />
       <div className="execution-grid">
         <div className="execution-left">
-          <Card title="执行入口" subtitle="常规执行与智能探索共用同一调度台">
+          <Card className="execution-entry-card" title="执行入口" subtitle="常规执行与智能探索共用同一调度台">
             <label className="field-label" htmlFor="case-select">
               选择正式用例
             </label>
@@ -309,7 +362,7 @@ export function ExecutionCenter({
           <Card title="执行预览" subtitle="左侧选中任务后，这里显示过程和结果">
             <div className="run-meta">
               <StatusPill tone={statusTone(detailModel.status)}>{detailModel.statusLabel}</StatusPill>
-              <span>{detailModel.runId || "等待任务"}</span>
+              <span>{detailModel.runId || "绛夊緟浠诲姟"}</span>
               {detailModel.mode === "agent" ? (
                 <StatusPill tone={detailModel.trigger === "self_heal" ? "blue" : "amber"}>{detailModel.trigger === "self_heal" ? "自愈探索" : "普通探索"}</StatusPill>
               ) : null}
@@ -337,6 +390,28 @@ export function ExecutionCenter({
           </Card>
 
           <Card className="execution-live-card" title={detailModel.mode === "agent" ? "智能探索执行过程" : "执行步骤预览"} subtitle={detailModel.summaryText}>
+            {detailModel.mode === "agent" && detailModel.stagePlan.length ? (
+              <div className={`execution-stage-strip ${detailModel.status === "running" ? "execution-stage-strip--running" : ""}`}>
+                {detailModel.stagePlan.map((stage) => (
+                  <div
+                    className={`execution-stage-chip execution-stage-chip--${stage.status} ${stage.index === activeStageNumber ? "is-current" : ""} ${stage.index < activeStageNumber ? "is-past" : ""}`}
+                    key={stage.stageId}
+                  >
+                    <div className="execution-stage-chip__node" aria-hidden="true">
+                      <span>{stage.index}</span>
+                    </div>
+                    <div className="execution-stage-chip__body">
+                      <div className="execution-stage-chip__head">
+                        <strong>{stage.name}</strong>
+                        <StatusPill tone={statusTone(stage.status)}>{statusText(stage.status)}</StatusPill>
+                      </div>
+                      <span>{stage.sceneLabel} / {stage.strategyLabel}</span>
+                      {stage.fallbackUsed ? <em>宸插洖閫€</em> : null}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
             <div className="execution-live-layout">
               <div className="execution-live-steps">
                 {detailModel.steps.map((step) => (
@@ -350,9 +425,7 @@ export function ExecutionCenter({
                       <StatusPill tone={statusTone(step.status)}>{statusText(step.status)}</StatusPill>
                       <span className="link-button">详情</span>
                     </div>
-                    <strong>
-                      步骤 {step.index} - {step.title}
-                    </strong>
+                    <strong>{stepHeading(step)}</strong>
                     <span>{step.summary}</span>
                   </button>
                 ))}
@@ -372,6 +445,13 @@ export function ExecutionCenter({
                     <strong>{detailModel.mode === "agent" ? "智能探索结果" : "AI 执行说明"}</strong>
                     <p>{selectedStep?.summary || detailModel.summaryText || "暂无执行摘要"}</p>
                   </div>
+                  {detailModel.mode === "agent" && detailModel.stagePlan.length ? (
+                    <div className="execution-live-panel">
+                      <strong>当前阶段</strong>
+                      <p>{detailModel.currentStageName || "待进入阶段"}</p>
+                      <p>{detailModel.currentStrategy || "通用探索"}</p>
+                    </div>
+                  ) : null}
                   {detailModel.trigger === "self_heal" ? (
                     <div className="execution-live-panel">
                       <strong>自愈信息</strong>
@@ -424,3 +504,4 @@ export function ExecutionCenter({
     </div>
   );
 }
+

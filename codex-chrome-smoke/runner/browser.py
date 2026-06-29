@@ -75,11 +75,13 @@ async def save_storage_state(context: BrowserContext, system: dict[str, Any]) ->
 async def relaunch_context(
     session: "BrowserSession",
     system: dict[str, Any] | None = None,
+    *,
+    reuse_storage_state: bool = True,
 ) -> None:
     """关闭当前 context，新建一个。如果 system 有 storage_state 落盘则加载复用。"""
     old_context = session.context
     storage_state_arg: str | None = None
-    if system is not None:
+    if reuse_storage_state and system is not None:
         path = auth_state_path_for(system)
         if path.exists():
             storage_state_arg = str(path)
@@ -140,6 +142,11 @@ def load_case(case_id: str) -> dict[str, Any]:
         data = yaml.safe_load(case_path.read_text(encoding="utf-8"))
         if data.get("id") == case_id:
             return data
+    normalized_case_id = str(case_id or "").strip().upper()
+    for case_path in sorted(ROOT.glob("test-cases/icm/*.yaml")):
+        data = yaml.safe_load(case_path.read_text(encoding="utf-8")) or {}
+        if str(data.get("source_draft_case_id") or "").strip().upper() == normalized_case_id:
+            return data
     raise FileNotFoundError(f"Case not found: {case_id}")
 
 
@@ -163,7 +170,12 @@ def case_url(system: dict[str, Any], route: str) -> str:
     return f"{_base_url(system)}{route}"
 
 
-async def launch_browser(headless: bool = False, system: dict[str, Any] | None = None) -> BrowserSession:
+async def launch_browser(
+    headless: bool = False,
+    system: dict[str, Any] | None = None,
+    *,
+    reuse_storage_state: bool = True,
+) -> BrowserSession:
     """系统级启动浏览器。
 
     - 若传 system 且存在对应 storage_state 落盘文件，则 context 加载该 state 复用登录会话
@@ -175,7 +187,7 @@ async def launch_browser(headless: bool = False, system: dict[str, Any] | None =
     except Exception:
         browser = await playwright.chromium.launch(headless=headless)
     storage_state_arg: str | None = None
-    if system is not None:
+    if reuse_storage_state and system is not None:
         path = auth_state_path_for(system)
         if path.exists():
             storage_state_arg = str(path)

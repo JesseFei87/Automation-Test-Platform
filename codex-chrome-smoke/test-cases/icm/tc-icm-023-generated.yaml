@@ -1,0 +1,57 @@
+id: TC-ICM-023
+title: 设备名称输入16个字符触发自动截断
+module: ICM-设备信息
+priority: P1
+type: 边界
+precondition: 已登录并进入添加设备信息弹窗，其他字段均为合法值
+test_data: 设备名称=BCDEFGHIJKLMNOPQ；其他字段同FUN_001
+steps:
+- 1. 打开添加设备信息弹窗
+- 2. 在'设备名称'输入框输入16个字符BCDEFGHIJKLMNOPQ
+- 3. 填写其他必填合法字段
+- 4. 点击【确定】
+expected: &id001
+- 1. 弹窗字段全部可编辑
+- 2. 输入框仅接受前15个字符
+- 3. 其他字段无报错
+- 4. 弹窗关闭，列表有新增记录，并且设备名称为BCDEFGHIJKLMNOP
+requirement_id: REQ-ICM-DEV-ADD
+automation: 'Yes'
+author: AI
+date: '2026-06-09'
+note: ''
+context_info:
+  env_url: https://192.168.16.203:49187/#/login?redirect=%2Fredirect
+  test_account: admin/Hubble_Service!1088
+  excluded: ''
+  refs: ''
+system: icm-internal
+expected_results: *id001
+preconditions:
+- 已登录并进入添加设备信息弹窗，其他字段均为合法值
+status: formal
+source: agent-explore
+source_run_id: ui-f1225d8efeb1
+source_draft_case_id: ICMDEV_BND_003
+automation_asset:
+  status: verified
+  source: agent-explore
+  evidence: {}
+  operation_steps:
+  - 使用 admin 完成登录阶段
+  - '打开目标路由 #/hubble/device'
+  - 打开添加设备信息弹窗
+  - 填写设备名称
+  - 填写其他必填合法字段
+  - 点击确定提交设备信息
+  - 校验设备新增成功、弹窗关闭且列表出现新记录
+  selectors:
+    agent_candidate: candidate_flow.py
+  input_values:
+    fill_4: BCDEFGHIJKLMNOPQ
+    assert_text_7: BCDEFGHIJKLMNOP
+  assertions:
+  - 1. 弹窗字段全部可编辑
+  - 2. 输入框仅接受前15个字符
+  - 3. 其他字段无报错
+  - 4. 弹窗关闭，列表有新增记录，并且设备名称为BCDEFGHIJKLMNOP

@@ -1,13 +1,25 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import MindElixir from "mind-elixir";
+import "mind-elixir/style.css";
 
 import { Card } from "../components/Card";
 import { StatusPill } from "../components/StatusPill";
 import { api, type AISettings, type CaseDraft, type ContextInfo, type Project, type Requirement, type RequirementDetail } from "../data/api";
 
-const DEFAULT_DOCUMENT = `示例：远程报修流程
-1. 用户发起设备请求协助
-2. 工单侧处理并打开远程界面
-3. 点击解决完成闭环`;
+const REQUIREMENT_DOCUMENT_PLACEHOLDER = `请粘贴完整的业务需求说明，例如：
+
+【业务背景】
+远程协助工单用于支持运维人员在用户授权后接入设备桌面，完成问题定位、处理和闭环。
+
+【核心流程】
+1. 用户在设备详情页发起远程协助请求，并填写问题描述。
+2. 工单处理人员在远程协助列表中接收请求，打开远程控制界面。
+3. 处理完成后点击“解决”，系统记录处理结果并更新工单状态。
+
+【验收规则】
+- 未授权或异常状态下不得进入远程界面。
+- 处理完成后列表状态、详情记录和操作日志应保持一致。
+- 失败场景需要给出明确提示并保留可追溯信息。`;
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : "unknown error";
@@ -28,15 +40,23 @@ function safeCount(value: number | null | undefined) {
   return typeof value === "number" ? value : 0;
 }
 
+function formatSecondTime(value?: string | null) {
+  if (!value) return "--";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  const pad = (part: number) => String(part).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
 function initialWorkspaceState() {
   return {
     title: "远程报修流程需求",
-    document: DEFAULT_DOCUMENT,
+    document: "",
   };
 }
 
 // ---- XMind 导出：Canvas 2D 手画脑图 PNG（不引入新依赖） ----
-function buildMindPngBlob(drafts: CaseDraft[]): Promise<Blob> {
+function buildLegacyMindPngBlob(drafts: CaseDraft[]): Promise<Blob> {
   return new Promise((resolve, reject) => {
     if (!drafts.length) {
       reject(new Error("没有可导出的用例"));
@@ -159,6 +179,102 @@ function buildMindMarkdown(drafts: CaseDraft[]): string {
   return lines.join("\n");
 }
 
+type ExportMindNode = {
+  id: string;
+  topic: string;
+  expanded?: boolean;
+  tags?: string[];
+  style?: Record<string, string>;
+  children?: ExportMindNode[];
+};
+
+type ExportMindData = {
+  nodeData: ExportMindNode;
+};
+
+type MindExportGroupMode = "type" | "priority";
+
+function readDraftYamlField(draft: CaseDraft, field: MindExportGroupMode) {
+  const match = draft.yaml.match(new RegExp(`^${field}:\\s*(.+)$`, "im"));
+  return match?.[1]?.trim().replace(/^['"]|['"]$/g, "") || "";
+}
+
+function groupDraftsForMind(drafts: CaseDraft[], mode: MindExportGroupMode) {
+  const fallback = mode === "type" ? "未标注功能类型" : "未标注优先级";
+  const groups = new Map<string, CaseDraft[]>();
+  drafts.forEach((draft) => {
+    const key = readDraftYamlField(draft, mode) || fallback;
+    groups.set(key, [...(groups.get(key) || []), draft]);
+  });
+  return [...groups.entries()].sort(([left], [right]) => left.localeCompare(right, "zh-Hans-CN"));
+}
+
+function buildExportMindData(drafts: CaseDraft[], requirementTitle: string, mode: MindExportGroupMode): ExportMindData {
+  const groupLabel = mode === "type" ? "按功能类型" : "按优先级";
+  return {
+    nodeData: {
+      id: "root",
+      topic: `${requirementTitle || "测试用例集"} - ${groupLabel} (${drafts.length})`,
+      expanded: true,
+      children: groupDraftsForMind(drafts, mode).map(([groupName, groupDrafts]) => ({
+        id: `group-${mode}-${encodeURIComponent(groupName)}`,
+        topic: `${groupName} (${groupDrafts.length})`,
+        expanded: true,
+        tags: [groupLabel],
+        style:
+          mode === "priority"
+            ? { color: "#7a4a00", background: "#fff0c8", border: "1px solid #f39a20" }
+            : { color: "#173b74", background: "#e6efff", border: "1px solid #2164f3" },
+        children: groupDrafts.map((draft, index) => ({
+          id: `draft-${draft.id}`,
+          topic: `${index + 1}. ${draft.title || `draft #${draft.id}`}`,
+          tags: [String(draft.status || "draft")],
+          style:
+            String(draft.status || "").toLowerCase() === "draft"
+              ? { color: "#7a4a00", background: "#fff0c8", border: "1px solid #f39a20" }
+              : { color: "#0f5132", background: "#dcfbea", border: "1px solid #12b981" },
+        })),
+      })),
+    },
+  };
+}
+
+async function buildMindPngBlob(drafts: CaseDraft[], requirementTitle: string, mode: MindExportGroupMode): Promise<Blob> {
+  if (!drafts.length) throw new Error("没有可导出的用例");
+  const host = document.createElement("div");
+  host.style.position = "fixed";
+  host.style.left = "-10000px";
+  host.style.top = "0";
+  host.style.width = "1200px";
+  host.style.height = "800px";
+  document.body.appendChild(host);
+  const mind = new (MindElixir as any)({
+    el: host,
+    direction: (MindElixir as any).SIDE || 2,
+    draggable: false,
+    contextMenu: false,
+    toolBar: false,
+    nodeMenu: false,
+    keypress: false,
+  });
+  try {
+    mind.init(buildExportMindData(drafts, requirementTitle, mode));
+    await new Promise((resolve) => window.setTimeout(resolve, 120));
+    mind.scaleFit?.();
+    await new Promise((resolve) => window.setTimeout(resolve, 80));
+    const png = await mind.exportPng?.();
+    if (png instanceof Blob) return png;
+    if (typeof png === "string") {
+      const response = await fetch(png);
+      return response.blob();
+    }
+    throw new Error("Mind Elixir PNG 导出失败");
+  } finally {
+    mind.destroy?.();
+    host.remove();
+  }
+}
+
 export function RequirementsWorkspace() {
   const [title, setTitle] = useState(initialWorkspaceState().title);
   const [document, setDocument] = useState(initialWorkspaceState().document);
@@ -182,14 +298,14 @@ export function RequirementsWorkspace() {
   const [newProjectError, setNewProjectError] = useState<string | null>(null);
   const [newProjectBusy, setNewProjectBusy] = useState(false);
 
-  // ---- P1 · 上下文信息结构化（增量 2026-06-10）：4 子字段，默认展开，不做 localStorage 记忆 ----
+  // ---- P1 · 上下文信息结构化（增量 2026-06-10）：4 子字段，默认折叠，不做 localStorage 记忆 ----
   const [contextFields, setContextFields] = useState<ContextInfo>({
     env_url: "",
     test_account: "",
     excluded: "",
     refs: "",
   });
-  const [showContextFields, setShowContextFields] = useState<boolean>(true);
+  const [showContextFields, setShowContextFields] = useState<boolean>(false);
 
   // 用 ref 维持项目列表 cache key，避免 useEffect 死循环
   const projectsLoadedRef = useRef(false);
@@ -207,6 +323,7 @@ export function RequirementsWorkspace() {
     const initial = initialWorkspaceState();
     setDetail(null);
     setSelectedDraftId(null);
+    setLinkedRequirementId(null);
     setTitle(initial.title);
     setDocument(initial.document);
     if (message) {
@@ -296,11 +413,6 @@ export function RequirementsWorkspace() {
       const [aiSettings, items] = await Promise.all([api.aiSettings(), api.requirements()]);
       setSettings(aiSettings);
       setRequirements(items);
-      if (items[0]) {
-        await openRequirement(items[0].id);
-      } else {
-        resetWorkspace("还没有历史需求，先创建一条新的需求记录。");
-      }
       setStatus(`当前模型：${aiSettings.provider} / ${aiSettings.model}`);
     } catch (error) {
       setStatus(`读取失败：${errorMessage(error)}`);
@@ -326,6 +438,7 @@ export function RequirementsWorkspace() {
     try {
       const result = await api.requirementDetail(id);
       setDetail(result);
+      setLinkedRequirementId(id);
       setTitle(result.requirement.title);
       setDocument(result.requirement.document);
       setSelectedDraftId(result.drafts[0]?.id ?? null);
@@ -335,6 +448,16 @@ export function RequirementsWorkspace() {
     } finally {
       setBusy(false);
     }
+  }
+
+  function handleLinkedRequirementChange(value: string) {
+    const nextId = value ? Number(value) : null;
+    setLinkedRequirementId(nextId);
+    if (!nextId) {
+      resetWorkspace("未关联已有需求，点击开始生成后再显示生成结果。");
+      return;
+    }
+    void openRequirement(nextId);
   }
 
   async function analyze() {
@@ -353,6 +476,7 @@ export function RequirementsWorkspace() {
       };
       const result = await api.analyzeRequirementSpec(payload);
       setDetail(result);
+      setLinkedRequirementId(result.requirement.id);
       setRequirements(await api.requirements());
       setSelectedDraftId(result.drafts[0]?.id ?? null);
       setStatus(`已生成 ${result.drafts.length} 条测试用例草稿。`);
@@ -418,7 +542,7 @@ export function RequirementsWorkspace() {
     }
   }
 
-  async function handleXmindPngExport() {
+  async function handleXmindPngExport(mode: MindExportGroupMode) {
     if (!requirement || !drafts.length) {
       setStatus("请先打开一条需求并生成用例。");
       return;
@@ -426,9 +550,9 @@ export function RequirementsWorkspace() {
     setXmindMenuOpen(false);
     setBusy(true);
     try {
-      const blob = await buildMindPngBlob(drafts);
+      const blob = await buildMindPngBlob(drafts, requirement.title, mode);
       const safeName = (requirement.title || `req-${requirement.id}`).replace(/[\\/:*?"<>|]/g, "_");
-      downloadBlob(blob, `${safeName}-mindmap.png`);
+      downloadBlob(blob, `${safeName}-mindmap-${mode}.png`);
       setStatus(`已导出脑图 PNG：${requirement.title}`);
     } catch (error) {
       setStatus(`导出失败：${errorMessage(error)}`);
@@ -509,21 +633,31 @@ export function RequirementsWorkspace() {
           display: grid;
           grid-template-columns: minmax(360px, 1fr) minmax(520px, 1.4fr);
           gap: 20px;
-          align-items: start;
+          align-items: stretch;
         }
 
         .requirements-left,
         .requirements-right {
           display: grid;
           gap: 20px;
-          align-content: start;
+          align-content: stretch;
+          align-items: stretch;
           min-width: 0;
+        }
+
+        .requirements-input-card,
+        .requirements-result-card {
+          display: flex;
+          flex-direction: column;
+          height: 100%;
+          min-height: 760px;
         }
 
         .dropzone {
           border: 1.5px dashed #D0D7DE;
           border-radius: 8px;
           padding: 8px;
+          margin-bottom: 14px;
           background: #FAFBFC;
           transition: border-color 0.2s, background 0.2s;
         }
@@ -572,9 +706,12 @@ export function RequirementsWorkspace() {
         .requirements-result-toolbar {
           display: flex;
           align-items: center;
-          justify-content: space-between;
+          justify-content: flex-end;
           gap: 12px;
           margin-bottom: 14px;
+        }
+        .requirements-import-placeholder {
+          display: none;
         }
         .requirements-result-toolbar__main,
         .requirements-result-toolbar__side {
@@ -606,7 +743,9 @@ export function RequirementsWorkspace() {
         .requirements-result-grid {
           display: grid;
           grid-template-columns: minmax(260px, 0.9fr) minmax(420px, 1.35fr);
+          align-items: stretch;
           gap: 16px;
+          flex: 1;
           min-height: 560px;
         }
         .requirements-draft-list,
@@ -616,6 +755,10 @@ export function RequirementsWorkspace() {
           border-radius: 8px;
           background: #fff;
           overflow: hidden;
+        }
+        .requirements-draft-list {
+          display: grid;
+          grid-template-rows: auto minmax(0, 1fr);
         }
         .requirements-draft-list__head {
           display: grid;
@@ -629,8 +772,9 @@ export function RequirementsWorkspace() {
           font-weight: 800;
         }
         .requirements-draft-list__body {
-          max-height: 520px;
-          overflow: auto;
+          min-height: 0;
+          overflow-y: auto;
+          overflow-x: hidden;
         }
         .requirements-draft-row {
           display: grid;
@@ -693,12 +837,17 @@ export function RequirementsWorkspace() {
           margin: 0;
           padding: 18px;
           overflow: auto;
-          color: #1e293b;
-          background: #fff;
+          color: #e6edf7;
+          background:
+            radial-gradient(circle at 12% 0%, rgba(37, 99, 235, 0.22), transparent 34%),
+            radial-gradient(circle at 92% 12%, rgba(16, 185, 129, 0.14), transparent 30%),
+            linear-gradient(145deg, #07111f 0%, #0b1324 48%, #020617 100%);
+          border-top: 1px solid rgba(148, 163, 184, 0.18);
           font-size: 13px;
           line-height: 1.58;
           white-space: pre-wrap;
           word-break: break-word;
+          scrollbar-color: rgba(96, 165, 250, 0.65) rgba(15, 23, 42, 0.85);
         }
         .requirements-empty-result {
           display: grid;
@@ -732,6 +881,7 @@ export function RequirementsWorkspace() {
       <div className="requirements-layout">
         <div className="requirements-left">
           <Card
+            className="requirements-input-card"
             title="需求文档输入"
             subtitle="粘贴需求或上传 .txt/.md，点击后直接按功能测试用例规范生成草稿。"
           >
@@ -772,9 +922,7 @@ export function RequirementsWorkspace() {
               className="text-input"
               id="linked-requirement"
               value={linkedRequirementId ?? ""}
-              onChange={(event) =>
-                setLinkedRequirementId(event.target.value ? Number(event.target.value) : null)
-              }
+              onChange={(event) => handleLinkedRequirementChange(event.target.value)}
             >
               <option value="">（不关联已有需求）</option>
               {requirements.map((item) => (
@@ -850,7 +998,7 @@ export function RequirementsWorkspace() {
                 />
               </div>
             ) : (
-              <p className="empty-state" style={{ margin: "8px 0 0 0" }}>
+              <p className="empty-state" style={{ margin: "8px 0 18px 0" }}>
                 已折叠。点击右上「展开」显示 4 个子字段。
               </p>
             )}
@@ -877,6 +1025,7 @@ export function RequirementsWorkspace() {
               <textarea
                 className="textarea-mock textarea-real requirement-textarea"
                 id="requirement-document"
+                placeholder={REQUIREMENT_DOCUMENT_PLACEHOLDER}
                 value={document}
                 onChange={(event) => setDocument(event.target.value)}
               />
@@ -912,11 +1061,11 @@ export function RequirementsWorkspace() {
         </div>
 
         <div className="requirements-right">
-          <Card title="生成结果" subtitle="生成后的用例草稿集中在左侧，右侧即时预览 YAML 详情。">
+          <Card className="requirements-result-card" title="生成结果" subtitle="生成后的用例草稿集中在左侧，右侧即时预览 YAML 详情。">
             <div className="requirements-result-toolbar">
               <div className="requirements-result-toolbar__main">
                 <button
-                  className="btn btn--primary"
+                  className="btn btn--primary requirements-import-placeholder"
                   disabled={busy || !requirement || !drafts.length}
                   onClick={handleImportToCaseLibrary}
                   type="button"
@@ -947,21 +1096,21 @@ export function RequirementsWorkspace() {
                       <li>
                         <button
                           className="dropdown__item"
-                          onClick={handleXmindPngExport}
+                          onClick={() => void handleXmindPngExport("type")}
                           type="button"
                           role="menuitem"
                         >
-                          PNG 图片（脑图）
+                          按功能类型导出
                         </button>
                       </li>
                       <li>
                         <button
                           className="dropdown__item"
-                          onClick={handleXmindMarkdownExport}
+                          onClick={() => void handleXmindPngExport("priority")}
                           type="button"
                           role="menuitem"
                         >
-                          Markdown 大纲
+                          按优先级导出
                         </button>
                       </li>
                     </ul>
@@ -1038,7 +1187,7 @@ export function RequirementsWorkspace() {
                         <h4>{selectedDraft.title || `draft #${selectedDraft.id}`}</h4>
                         <p>
                           状态 {selectedDraft.status || "draft"} · 模板{" "}
-                          {selectedDraft.template || "spec"} · 更新 {selectedDraft.updated_at}
+                          {selectedDraft.template || "spec"} · 更新 {formatSecondTime(selectedDraft.updated_at)}
                         </p>
                       </div>
                       <StatusPill

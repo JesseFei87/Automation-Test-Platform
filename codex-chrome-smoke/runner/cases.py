@@ -15,6 +15,8 @@ from runner.asset_recorder import attach_asset_recorder, get_asset_recorder, wri
 from runner.evidence_recorder import attach_evidence_recorder, get_evidence_recorder
 from runner.browser import (
     attach_case_runtime,
+    ensure_logged_in,
+    ensure_logged_out,
     finalize_screenshots,
     is_logged_in,
     load_case,
@@ -23,6 +25,7 @@ from runner.browser import (
     save_storage_state,
     screenshot,
 )
+from runner.case_login import case_requires_authenticated_session, resolve_case_login_credentials
 from runner.flows.icm_case_001 import run as run_case_001
 from runner.flows.icm_case_002 import run as run_case_002
 from runner.flows.icm_case_003 import run as run_case_003
@@ -194,7 +197,13 @@ async def run_case_data(
         attach_asset_recorder(page, run_id, case_id)
         evidence = attach_evidence_recorder(page, run_id, case_id)
         await evidence.start(page)
+        await ensure_logged_out(page, system)
         await open_login_page(page, system)
+        if case_requires_authenticated_session(case):
+            username, password = resolve_case_login_credentials(case, system)
+            if not username or not password:
+                raise RuntimeError(f"{case_id} requires an authenticated session but no login credentials were resolved")
+            await ensure_logged_in(page, system, username=username, password=password)
         await screenshot(page, run_id, case_id, "01-entry.png")
         shot_names: list[str] = ["01-entry.png"]
         failure_point = ""

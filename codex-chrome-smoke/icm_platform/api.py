@@ -1313,31 +1313,365 @@ def _report_screenshots(task_dict: dict, report_text: str) -> list[dict[str, str
     return screenshots
 
 
-def _build_agent_steps(agent_explore: dict | None, logs: list[dict], screenshots: list[dict[str, str]]) -> list[dict]:
+def _batch_summary_report(run_id: str, children: list[dict[str, Any]]) -> str:
+    completed = [child for child in children if child.get("run_id")]
+    passed = sum(1 for child in completed if child.get("status") == "passed")
+    failed = sum(1 for child in completed if child.get("status") == "failed")
+    lines = [
+        f"# {run_id}",
+        "",
+        "- case name: Batch 001-012",
+        "- environment: icm-internal",
+        f"- status: {'failed' if failed else ('passed' if completed else 'running')}",
+        f"- total: {len(completed)}",
+        f"- passed: {passed}",
+        f"- failed: {failed}",
+        "- child reports:",
+    ]
+    for child in children:
+        report_path = child.get("report_path") or "none"
+        lines.append(f"  - {child.get('case_id')}: {child.get('status')} / {report_path}")
+    lines.append("- screenshot paths:")
+    return "\n".join(lines)
+
+
+def _build_batch_steps(children: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    steps: list[dict[str, Any]] = []
+    for child in children:
+        status = str(child.get("status") or "pending")
+        run_id = str(child.get("run_id") or "")
+        step_index = int(child.get("order") or len(steps) + 1)
+        case_id = str(child.get("case_id") or f"TC-ICM-{step_index:03d}")
+        screenshot_count = int(child.get("screenshot_count") or 0)
+        report_path = child.get("report_path")
+        summary = "尚未开始"
+        if status == "passed":
+            summary = f"已通过，截图 {screenshot_count} 张"
+        elif status == "failed":
+            summary = f"执行失败，截图 {screenshot_count} 张"
+        elif status == "running":
+            summary = "正在执行"
+        steps.append(
+            {
+                "step_index": step_index,
+                "step_code": run_id or f"batch-{case_id.lower()}",
+                "title": f"{case_id} - {child.get('case_name') or case_id}",
+                "status": _normalized_status(status),
+                "summary": summary,
+                "ai_analysis": "",
+                "error_message": "子用例失败" if status == "failed" else "",
+                "screenshot_url": "",
+                "screenshot_name": "",
+                "network_logs": [],
+                "command_output": [f"[run_id] {run_id or '--'}", f"[report] {report_path or '--'}"],
+            }
+        )
+    return steps
+
+
+_CASE_STEP_STOPWORDS = {
+    "点击",
+    "单击",
+    "填写",
+    "输入",
+    "选择",
+    "确认",
+    "验证",
+    "打开",
+    "访问",
+    "页面",
+    "页面中",
+    "页面内",
+    "按钮",
+    "下拉",
+    "弹窗",
+    "弹出",
+    "依次",
+    "当前",
+    "指定",
+    "然后",
+    "使用",
+    "系统",
+    "列表",
+    "信息",
+    "成功",
+    "新增",
+    "设备",
+}
+
+
+def _clean_case_step_text(value: str) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"^\s*[-*]?\s*\d+[.、:\-]?\s*", "", text)
+    return text.strip()
+
+
+def _extract_case_step_keywords(step_text: str) -> list[str]:
+    tokens = re.findall(r"[\u4e00-\u9fffA-Za-z0-9#/_-]{2,}", step_text)
+    keywords: list[str] = []
+    seen: set[str] = set()
+    for token in tokens:
+        normalized = token.strip()
+        if not normalized or normalized in seen or normalized in _CASE_STEP_STOPWORDS:
+            continue
+        seen.add(normalized)
+        keywords.append(normalized)
+    return keywords
+
+
+def _agent_target_text(decision: dict, observation: dict) -> str:
+    ref = str(decision.get("ref") or "").strip()
+    interactives = observation.get("interactives") or []
+    for item in interactives:
+        if not isinstance(item, dict) or str(item.get("ref") or "") != ref:
+            continue
+        for key in ("text", "ariaLabel", "placeholder", "selector"):
+            value = str(item.get(key) or "").strip()
+            if value:
+                return value
+    return ""
+
+
+def _agent_step_action_summary(decision: dict, execution: dict, observation: dict) -> str:
+    action = str(decision.get("action") or "").strip().lower()
+    reason = str(decision.get("reason") or "").strip()
+    value = str(decision.get("value") or "").strip()
+    key = str(decision.get("key") or "").strip()
+    target = _agent_target_text(decision, observation)
+    if action == "fill":
+        if target:
+            return f"填写 {target}" + (f"：{value}" if value else "")
+        return f"填写测试数据" + (f"：{value}" if value else "")
+    if action == "click":
+        return f"点击 {target}" if target else "点击页面控件"
+    if action == "wait":
+        lowered = reason.lower()
+        if "redirect" in lowered and "login" in lowered:
+            return "等待登录完成并跳转到目标页面"
+        return "等待页面状态更新"
+    if action == "press":
+        return f"按下 {key}" if key else "按下指定按键"
+    if action == "goto":
+        url = str(decision.get("url") or "").strip()
+        return f"打开 {url}" if url else "打开目标页面"
+    if action == "finish":
+        return reason or "完成探索验证"
+    if action == "fail":
+        lowered = reason.lower()
+        if "instead of the expected" in lowered and "redirect" in lowered:
+            return "登录后跳转地址与 redirect 参数预期不一致"
+        return reason or str(execution.get("error") or "探索失败")
+    return reason or str(execution.get("result") or action or "执行步骤")
+
+
+def _load_agent_case_steps(run_id: str, task_dict: dict, trace: dict) -> list[str]:
+    try:
+        yaml_text, _ = _load_case_source_for_agent_run(run_id, task_dict, trace)
+    except HTTPException:
+        return []
+    try:
+        payload = yaml.safe_load(yaml_text) or {}
+    except yaml.YAMLError:
+        return []
+    steps = payload.get("steps") if isinstance(payload, dict) else []
+    if not isinstance(steps, list):
+        return []
+    return [_clean_case_step_text(step) for step in steps if _clean_case_step_text(step)]
+
+
+def _match_case_step_index(case_steps: list[str], decision: dict, observation: dict, current_index: int) -> int | None:
+    if not case_steps:
+        return None
+    haystack_parts = [
+        str(decision.get("action") or ""),
+        str(decision.get("reason") or ""),
+        str(decision.get("value") or ""),
+        str(decision.get("url") or ""),
+        _agent_target_text(decision, observation),
+        " ".join(str(item) for item in (observation.get("visibleText") or [])),
+        str(observation.get("url") or ""),
+    ]
+    haystack = " ".join(part for part in haystack_parts if part).lower()
+    action = str(decision.get("action") or "").lower()
+    target = _agent_target_text(decision, observation)
+    if action == "fill":
+        if any(word in target for word in ("账号", "用户名", "密码")) or any(word in haystack for word in ("test", "123456", "password", "username", "账号", "密码")):
+            for index, step_text in enumerate(case_steps):
+                if any(word in step_text for word in ("输入", "填写", "账号", "密码")):
+                    return index
+    if action == "click":
+        if any(word in haystack for word in ("登录", "submit login")):
+            for index, step_text in enumerate(case_steps):
+                if "点击" in step_text and "登录" in step_text:
+                    return index
+    if action == "wait" and current_index >= 0:
+        return min(current_index, len(case_steps) - 1)
+
+    best_index = current_index if 0 <= current_index < len(case_steps) else 0
+    best_score = -1.0
+    for index, step_text in enumerate(case_steps):
+        score = 0.0
+        if index == current_index:
+            score += 0.8
+        elif index == current_index + 1:
+            score += 1.2
+        for keyword in _extract_case_step_keywords(step_text):
+            if keyword.lower() in haystack:
+                score += 2.0
+        if action == "fill" and any(word in step_text for word in ("填写", "输入")):
+            score += 3.0
+        if action == "click" and "点击" in step_text:
+            score += 2.5
+        if action == "wait" and "等待" in step_text:
+            score += 2.0
+        if action == "goto" and any(word in step_text for word in ("打开", "访问")):
+            score += 3.0
+        if "登录" in step_text and action == "goto" and any(word in haystack for word in ("login", "#/login")):
+            score += 3.0
+        if "icm" in step_text.lower() and "icm" in haystack:
+            score += 3.0
+        if "设备信息" in step_text and any(word in haystack for word in ("设备信息", "hubble/device")):
+            score += 3.0
+        if score > best_score:
+            best_score = score
+            best_index = index
+    return best_index
+
+
+def _agent_stage_source_map(trace: dict) -> dict[str, list[int]]:
+    plan = trace.get("plan") if isinstance(trace, dict) else {}
+    plan = plan if isinstance(plan, dict) else {}
+    stages = plan.get("stages") if isinstance(plan.get("stages"), list) else []
+    source_map: dict[str, list[int]] = {}
+    for stage in stages:
+        if not isinstance(stage, dict):
+            continue
+        stage_id = str(stage.get("stage_id") or "").strip()
+        if not stage_id:
+            continue
+        indexes: list[int] = []
+        for raw_index in stage.get("source_steps") or []:
+            try:
+                index = int(raw_index) - 1
+            except (TypeError, ValueError):
+                continue
+            if index >= 0:
+                indexes.append(index)
+        if indexes:
+            source_map[stage_id] = indexes
+    return source_map
+
+
+def _match_stage_case_step_index(item: dict, source_map: dict[str, list[int]], case_steps: list[str], current_index: int) -> int | None:
+    if not source_map or not case_steps or not isinstance(item, dict):
+        return None
+    decision = item.get("decision") if isinstance(item.get("decision"), dict) else {}
+    stage_id = str(item.get("stage_id") or decision.get("stage_id") or "").strip()
+    candidates = [index for index in source_map.get(stage_id, []) if 0 <= index < len(case_steps)]
+    if not candidates:
+        return None
+    try:
+        local_step = int(item.get("stage_local_step") or 0)
+    except (TypeError, ValueError):
+        local_step = 0
+    if local_step > 0:
+        return candidates[min(local_step - 1, len(candidates) - 1)]
+    for index in candidates:
+        if index > current_index:
+            return index
+    return candidates[-1]
+
+
+def _agent_step_screenshot(item: dict, screenshots: list[dict[str, str]], index: int) -> dict[str, str] | None:
+    if not screenshots:
+        return None
+    execution = item.get("execution") if isinstance(item.get("execution"), dict) else {}
+    filename = str(item.get("screenshot_name") or execution.get("screenshot_name") or "").strip()
+    if filename:
+        for screenshot in screenshots:
+            if screenshot.get("filename") == filename:
+                return screenshot
+    return screenshots[min(index - 1, len(screenshots) - 1)]
+
+
+def _agent_step_command_output(item: dict, case_step_text: str = "") -> list[str]:
+    if not isinstance(item, dict):
+        return []
+    decision = item.get("decision") if isinstance(item.get("decision"), dict) else {}
+    execution = item.get("execution") if isinstance(item.get("execution"), dict) else {}
+    output: list[str] = []
+    action = str(decision.get("action") or "").strip()
+    reason = str(decision.get("reason") or "").strip()
+    action_text = case_step_text.strip() or reason
+    result = str(execution.get("result") or "").strip()
+    if action:
+        output.append(f"[action] {action_text or action}")
+    if result:
+        output.append(f"[result] {result}")
+    for key in ("value", "url"):
+        value = str(decision.get(key) or "").strip()
+        if value:
+            output.append(f"[{key}] {value}")
+    screenshot_name = str(item.get("screenshot_name") or execution.get("screenshot_name") or "").strip()
+    if screenshot_name:
+        output.append(f"[screenshot] {screenshot_name}")
+    error = str(execution.get("error") or "").strip()
+    if error:
+        output.append(f"[error] {error}")
+    return output
+
+
+def _build_agent_steps(agent_explore: dict | None, logs: list[dict], screenshots: list[dict[str, str]], run_id: str, task_dict: dict) -> list[dict]:
     trace = (agent_explore or {}).get("trace") or {}
     history = trace.get("history") or []
+    case_steps = _load_agent_case_steps(run_id, task_dict, trace)
+    stage_source_map = _agent_stage_source_map(trace)
+    trace_status = str(trace.get("status") or "").strip().lower()
+    trace_failed = bool(trace.get("error")) or trace_status == "failed"
+    trace_completed = bool(trace.get("ok")) or trace_status in {"passed", "completed", "success"}
     steps: list[dict] = []
+    current_case_step_index = -1
     for index, item in enumerate(history, start=1):
         decision = item.get("decision") if isinstance(item, dict) else {}
         execution = item.get("execution") if isinstance(item, dict) else {}
+        observation = item.get("observation") if isinstance(item, dict) else {}
         decision = decision if isinstance(decision, dict) else {}
         execution = execution if isinstance(execution, dict) else {}
-        screenshot = screenshots[min(index - 1, len(screenshots) - 1)] if screenshots else None
+        observation = observation if isinstance(observation, dict) else {}
+        screenshot = _agent_step_screenshot(item if isinstance(item, dict) else {}, screenshots, index)
+        matched_case_step = _match_stage_case_step_index(item, stage_source_map, case_steps, current_case_step_index)
+        if matched_case_step is None:
+            matched_case_step = _match_case_step_index(case_steps, decision, observation, current_case_step_index)
+        if matched_case_step is not None:
+            current_case_step_index = matched_case_step
+        action_summary = _agent_step_action_summary(decision, execution, observation)
+        case_step_title = ""
+        case_step_text = ""
+        if matched_case_step is not None and 0 <= matched_case_step < len(case_steps):
+            case_step_text = case_steps[matched_case_step]
+            case_step_title = f"用例步骤 {matched_case_step + 1} - {case_step_text}"
+        step_status = "completed"
+        if execution.get("error"):
+            step_status = "failed"
+        elif index == len(history) and trace_failed:
+            step_status = "failed"
+        elif not trace_completed and index == len(history):
+            step_status = "running"
         steps.append(
             {
                 "step_index": int(item.get("step", index)) if isinstance(item, dict) else index,
                 "step_code": f"agent_{index:02d}",
-                "title": str(decision.get("action") or f"Step {index}"),
-                "status": "failed" if execution.get("error") else ("completed" if trace.get("ok") else "running"),
+                "title": case_step_title or action_summary or str(decision.get("action") or f"Step {index}"),
+                "status": step_status,
                 "started_at": None,
                 "finished_at": None,
                 "duration_seconds": None,
-                "summary": str(decision.get("reason") or execution.get("result") or ""),
+                "summary": action_summary or str(decision.get("reason") or execution.get("result") or ""),
                 "error_message": str(execution.get("error") or ""),
                 "screenshot_url": screenshot["url"] if screenshot else "",
-                "ai_analysis": str(decision.get("reason") or ""),
+                "ai_analysis": str(decision.get("reason") or action_summary or ""),
                 "final_url": str(trace.get("finalUrl") or trace.get("final_url") or ""),
-                "command_output": [row["line"] for row in logs[-8:]],
+                "command_output": _agent_step_command_output(item if isinstance(item, dict) else {}, case_step_text),
                 "selectors": [],
                 "inputs": [],
                 "console_logs": [],
@@ -1347,6 +1681,20 @@ def _build_agent_steps(agent_explore: dict | None, logs: list[dict], screenshots
             }
         )
     return steps
+
+
+def _case_title_for_run(run_id: str, task_dict: dict, agent_explore: dict | None) -> str:
+    trace = (agent_explore or {}).get("trace") or {}
+    try:
+        yaml_text, _ = _load_case_source_for_agent_run(run_id, task_dict, trace)
+        payload = yaml.safe_load(yaml_text) or {}
+    except (HTTPException, OSError, yaml.YAMLError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    title = str(payload.get("title") or "").strip()
+    case_id = str(payload.get("id") or task_dict.get("case_id") or "").strip()
+    return "" if title == case_id else title
 
 
 def _build_unified_run_detail(run_id: str) -> dict:
@@ -1365,6 +1713,9 @@ def _build_unified_run_detail(run_id: str) -> dict:
             report_text = read_report(run_id)
         except FileNotFoundError:
             report_text = ""
+    batch_children = list_batch_child_reports(run_id) if task_dict.get("mode") == "run-batch" else []
+    if task_dict.get("mode") == "run-batch" and not report_text and batch_children:
+        report_text = _batch_summary_report(run_id, batch_children)
     screenshots = _report_screenshots(task_dict, report_text)
     analysis = ai_service.analyze_run_report(report_text, screenshots, [row["line"] for row in log_dicts] + evidence_log_lines(run_id)) if report_text else None
     agent_explore = load_agent_explore_artifacts(run_id) if task_dict.get("mode") == "agent-explore" else None
@@ -1373,8 +1724,17 @@ def _build_unified_run_detail(run_id: str) -> dict:
         steps = step_detail_payload.get("steps") or []
         final_url = step_detail_payload.get("final_url") or ""
         summary = step_detail_payload.get("summary") or {}
+    elif task_dict.get("mode") == "run-batch":
+        steps = _build_batch_steps(batch_children)
+        final_url = ""
+        summary = {
+            "title": "Batch 001-012",
+            "conclusion": f"Batch 已执行 {sum(1 for child in batch_children if child.get('run_id'))} 条用例。",
+            "failure_reason": task_dict.get("error") or "",
+            "ai_analysis": "",
+        }
     else:
-        steps = _build_agent_steps(agent_explore, log_dicts, screenshots)
+        steps = _build_agent_steps(agent_explore, log_dicts, screenshots, run_id, task_dict)
         trace = (agent_explore or {}).get("trace") or {}
         final_url = str(trace.get("finalUrl") or trace.get("final_url") or "")
         summary = {
@@ -1383,7 +1743,7 @@ def _build_unified_run_detail(run_id: str) -> dict:
             "failure_reason": str(trace.get("error") or task_dict.get("error") or ""),
             "ai_analysis": str(trace.get("summary") or ""),
         }
-    case_name = task_dict.get("case_id") or run_id
+    case_name = _case_title_for_run(run_id, task_dict, agent_explore) or task_dict.get("case_id") or run_id
     if report_text:
         report_meta = parse_report(report_text)
         case_name = report_meta.get("case_name") or case_name
@@ -1421,6 +1781,11 @@ def _build_unified_run_detail(run_id: str) -> dict:
         "agent_explore": agent_explore,
         "analysis": analysis,
         "healing_hint": str(((agent_explore or {}).get("trace") or {}).get("healing_hint") or ""),
+        "agent_plan": ((agent_explore or {}).get("trace") or {}).get("plan") or {},
+        "agent_stage_runs": ((agent_explore or {}).get("trace") or {}).get("stage_runs") or [],
+        "current_stage_id": str((((agent_explore or {}).get("trace") or {}).get("current_stage_id") or "")),
+        "current_stage_name": str((((agent_explore or {}).get("trace") or {}).get("current_stage_name") or "")),
+        "current_strategy": str((((agent_explore or {}).get("trace") or {}).get("current_strategy") or "")),
     }
 
 
@@ -1462,28 +1827,89 @@ def _load_case_source_for_agent_run(run_id: str, task_dict: dict, trace: dict) -
     raise HTTPException(status_code=404, detail="case source not found for self heal")
 
 
-def _self_heal_hint(trace: dict, events: list[dict]) -> str:
+def _classify_self_heal_failure(trace: dict, events: list[dict]) -> dict:
+    """Classify the failure into one of 4 self-heal categories.
+
+    Categories: locator_drift | timing | logic_understanding | unrecoverable | unknown
+    """
     error = str(trace.get("error") or "").strip()
-    if "unknown ref: empty" in error:
-        return "上一轮在成功页后又追加了空 ref 尾动作；若已离开登录页且出现目标用户名，立即 finish，不要再补无意义点击或填充。"
-    if "login" in error.lower():
-        return "优先使用用例 test_data 中的账号密码；一旦进入目标工作台且出现目标用户名，不要继续尝试默认账号。"
-    for item in reversed(events):
-        if str(item.get("kind") or "") == "agent_action_failed":
-            return f"避免重复失败动作：{item.get('message') or 'agent_action_failed'}。"
-    return "结合上一轮失败尾部步骤修复，不要重复无效动作；若成功信号已出现，优先 finish。"
+    if not error:
+        history = trace.get("history") or []
+        for item in reversed(history):
+            if isinstance(item, dict):
+                exec_result = item.get("execution") if isinstance(item.get("execution"), dict) else {}
+                err = exec_result.get("error")
+                if err:
+                    error = str(err)
+                    break
+
+    evidence = error or "(no explicit error captured)"
+
+    normalized = error.lower()
+    if "unknown ref" in error or "no assertion signal matched" in error:
+        return {"category": "locator_drift", "evidence": evidence}
+    if "timeout" in normalized or "timed out" in normalized:
+        return {"category": "timing", "evidence": evidence}
+    if "login" in normalized or "credential" in normalized or "password" in normalized:
+        return {"category": "logic_understanding", "evidence": evidence}
+    if "agent_action_failed" in error or "action failed" in normalized:
+        return {"category": "unrecoverable", "evidence": evidence}
+    return {"category": "unknown", "evidence": evidence}
+
+
+def _self_heal_hint(trace: dict, events: list[dict]) -> str:
+    """Build the V2 self-heal hint text shown in the AI测试 self-heal info panel.
+
+    Returns a structured text block with Failure Diagnosis, Recovery Strategy, and Stop Conditions.
+    """
+    diagnosis = _classify_self_heal_failure(trace, events if isinstance(events, list) else [])
+    category = str(diagnosis.get("category") or "unknown")
+    evidence = str(diagnosis.get("evidence") or "")
+
+    strategy_lines = [
+        "- locator_drift（定位漂移）：重新观察页面，按邻近 label 文本或 placeholder 选新 ref；不要复用之前的 ref。",
+        "- timing（时序问题）：等待 1-3 秒后再 assert 或 click；弹窗/路由切换后不要立即操作，先等 DOM 稳定。",
+        "- logic_understanding（业务理解偏差）：重读用例步骤和预期结果；不要在不理解业务的情况下继续操作。",
+        "- unrecoverable（不可恢复）：不要重试，立刻 finish，reason 写明 'unrecoverable: <具体原因>'。",
+    ]
+
+    lines = [
+        "失败诊断：",
+        f"- Category: {category}",
+        f"- 证据: {evidence}",
+        "",
+        "恢复策略（按 Category 选一条）：",
+    ]
+    lines.extend(strategy_lines)
+    lines.extend(
+        [
+            "",
+            "停止条件（任一命中立刻 finish）：",
+            "- 已是第 3 次重试。",
+            "- 页面 visibleText 已包含任意一条 Expected results。",
+            "- 失败信号与上一轮 Category 相同。",
+            "- 剩余工作无法仅靠浏览器操作完成（需后端/账号/数据准备）。",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def _build_self_heal_context(run_id: str, task_dict: dict, trace: dict) -> dict:
     events = evidence_summary(run_id).get("events", {}).get("latest", [])
     history = trace.get("history") or []
+    events_list = events if isinstance(events, list) else []
+    diagnosis = _classify_self_heal_failure(trace, events_list)
     return {
         "parent_run_id": run_id,
         "trigger": "self_heal",
         "failure_summary": str(trace.get("error") or task_dict.get("error") or trace.get("summary") or "").strip(),
-        "healing_hint": _self_heal_hint(trace, events if isinstance(events, list) else []),
+        "healing_hint": _self_heal_hint(trace, events_list),
+        "diagnosis": diagnosis,
+        "attempt_index": 1,
+        "max_attempts": 3,
         "last_history": history[-5:] if isinstance(history, list) else [],
     }
+
 
 
 @app.get("/api/runs/{run_id}/agent-explore/trace")
@@ -1535,6 +1961,10 @@ def _formal_case_id_for_draft(data: dict) -> str:
     return _next_agent_case_id()
 
 
+def _draft_source_case_id(data: dict) -> str:
+    return str(data.get("id") or "").strip().upper()
+
+
 def _existing_promoted_case_for_draft(draft_path: Path) -> str | None:
     yaml_text = draft_path.read_text(encoding="utf-8")
     with connect() as conn:
@@ -1547,6 +1977,24 @@ def _existing_promoted_case_for_draft(draft_path: Path) -> str | None:
             (yaml_text,),
         ).fetchone()
     return str(row["promoted_case_id"]) if row else None
+
+
+def _existing_promoted_case_for_draft_identity(draft_data: dict) -> tuple[str, Path] | None:
+    source_case_id = _draft_source_case_id(draft_data)
+    if not source_case_id or source_case_id.startswith("TC-ICM-"):
+        return None
+    matches: list[tuple[str, Path]] = []
+    for path in sorted(TEST_CASE_DIR.glob("*.yaml")):
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError):
+            continue
+        if not isinstance(data, dict) or str(data.get("source_draft_case_id") or "").strip().upper() != source_case_id:
+            continue
+        case_id = str(data.get("id") or "").strip()
+        if case_id:
+            matches.append((case_id, path))
+    return matches[0] if matches else None
 
 
 def _existing_promoted_case_for_run(run_id: str) -> tuple[str, Path] | None:
@@ -1629,6 +2077,7 @@ def _normalize_agent_draft_for_regression(draft_data: dict, case_id: str, run_id
     data["status"] = "formal"
     data["source"] = "agent-explore"
     data["source_run_id"] = run_id
+    data["source_draft_case_id"] = _draft_source_case_id(draft_data)
     data["automation"] = "Yes"
     data["automation_asset"] = merge_automation_asset(data.get("automation_asset") if isinstance(data.get("automation_asset"), dict) else {}, _agent_trace_asset(trace, data))
     return data
@@ -1674,22 +2123,11 @@ def promote_agent_explore_regression(run_id: str) -> dict:
             "draft_id": _mark_matching_draft_promoted(draft_path, existing_case_id, existing_case_path),
             "status": "promoted",
         }
-    case_id = _existing_promoted_case_for_draft(draft_path) or _formal_case_id_for_draft(draft_data)
+    existing_by_identity = _existing_promoted_case_for_draft_identity(draft_data)
+    case_id = (existing_by_identity[0] if existing_by_identity else None) or _existing_promoted_case_for_draft(draft_path) or _formal_case_id_for_draft(draft_data)
     case_filename = normalize_case_filename(None, case_id)
     case_target = TEST_CASE_DIR / case_filename
     flow_target = compute_target_path(case_id)
-    if case_target.exists() and flow_target.exists():
-        return {
-            "case_id": case_id,
-            "case_path": str(case_target),
-            "flow_path": str(flow_target),
-            "draft_id": _mark_matching_draft_promoted(draft_path, case_id, case_target),
-            "status": "promoted",
-        }
-    if case_target.exists():
-        raise HTTPException(status_code=409, detail=f"case file already exists: {case_filename}")
-    if flow_target.exists():
-        raise HTTPException(status_code=409, detail=f"flow file already exists: {flow_target.name}")
 
     draft_data = _normalize_agent_draft_for_regression(draft_data, case_id, run_id, trace)
     yaml_text = yaml.safe_dump(draft_data, allow_unicode=True, sort_keys=False)
@@ -1699,13 +2137,21 @@ def promote_agent_explore_regression(run_id: str) -> dict:
 
     TEST_CASE_DIR.mkdir(parents=True, exist_ok=True)
     flow_target.parent.mkdir(parents=True, exist_ok=True)
+    backup_case_path = _backup_yaml_before_write(case_id, case_target) if case_target.exists() else None
+    backup_flow_path = _backup_flow_before_write(flow_target, case_id) if flow_target.exists() else None
     try:
         case_target.write_text(yaml_text, encoding="utf-8")
         flow_target.write_text(candidate_text, encoding="utf-8")
         py_compile.compile(str(flow_target), doraise=True)
     except Exception as exc:
-        case_target.unlink(missing_ok=True)
-        flow_target.unlink(missing_ok=True)
+        if backup_case_path is not None and backup_case_path.exists():
+            case_target.write_text(backup_case_path.read_text(encoding="utf-8"), encoding="utf-8")
+        else:
+            case_target.unlink(missing_ok=True)
+        if backup_flow_path is not None and backup_flow_path.exists():
+            flow_target.write_text(backup_flow_path.read_text(encoding="utf-8"), encoding="utf-8")
+        else:
+            flow_target.unlink(missing_ok=True)
         raise HTTPException(status_code=500, detail=f"failed to promote regression case: {exc}") from exc
 
     draft_id = _mark_matching_draft_promoted(draft_path, case_id, case_target)
@@ -2745,14 +3191,7 @@ def reports() -> list[dict]:
 
 @app.get("/api/reports/{run_id}")
 def report_detail(run_id: str) -> dict:
-    try:
-        report = read_report(run_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="report not found") from exc
-    meta = parse_report(report)
-    screenshots = meta["screenshots"]
-    if not screenshots and meta["case_id"]:
-        screenshots = [screenshot_payload(meta["case_id"], path) for path in latest_screenshots(meta["case_id"])]
+    report, meta, screenshots = load_report_or_run_detail_report(run_id)
     analysis = load_cached_report_analysis(run_id, report) or ai_service.analyze_run_report(report, screenshots, evidence_log_lines(run_id))
     return {
         "run_id": run_id,
@@ -2766,14 +3205,7 @@ def report_detail(run_id: str) -> dict:
 
 @app.post("/api/reports/{run_id}/analyze")
 def analyze_report_with_ai(run_id: str, payload: AnalyzeReportRequest | None = None) -> dict:
-    try:
-        report = read_report(run_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="report not found") from exc
-    meta = parse_report(report)
-    screenshots = meta["screenshots"]
-    if not screenshots and meta["case_id"]:
-        screenshots = [screenshot_payload(meta["case_id"], path) for path in latest_screenshots(meta["case_id"])]
+    report, _meta, screenshots = load_report_or_run_detail_report(run_id)
     settings = get_ai_settings(mask_key=False)
     force = bool(payload.force) if payload else False
     cached = None if force else load_cached_report_analysis(run_id, report, settings)
@@ -2798,11 +3230,63 @@ def analyze_report_with_ai(run_id: str, payload: AnalyzeReportRequest | None = N
 
 @app.get("/api/reports/{run_id}/analyses")
 def report_analysis_versions(run_id: str) -> list[dict]:
+    report, _meta, _screenshots = load_report_or_run_detail_report(run_id)
+    return load_report_analysis_versions(run_id, report)
+
+
+def load_report_or_run_detail_report(run_id: str) -> tuple[str, dict, list[dict]]:
     try:
         report = read_report(run_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="report not found") from exc
-    return load_report_analysis_versions(run_id, report)
+        meta = parse_report(report)
+        screenshots = meta["screenshots"]
+        if not screenshots and meta["case_id"]:
+            screenshots = [screenshot_payload(meta["case_id"], path) for path in latest_screenshots(meta["case_id"])]
+        return report, meta, screenshots
+    except FileNotFoundError:
+        detail = _build_unified_run_detail(run_id)
+        report = build_markdown_from_run_detail(detail)
+        meta = {
+            "case_id": detail.get("case_id") or "",
+            "case_name": detail.get("case_name") or detail.get("case_id") or run_id,
+            "status": detail.get("status") or "unknown",
+            "screenshots": detail.get("screenshots") or [],
+            "observed_asset_path": "",
+        }
+        return report, meta, list(detail.get("screenshots") or [])
+
+
+def build_markdown_from_run_detail(detail: dict) -> str:
+    summary = detail.get("summary") if isinstance(detail.get("summary"), dict) else {}
+    steps = detail.get("steps") if isinstance(detail.get("steps"), list) else []
+    lines = [
+        "# 自动化执行报告",
+        "",
+        f"- run id: {detail.get('run_id') or ''}",
+        f"- case id: {detail.get('case_id') or ''}",
+        f"- case name: {detail.get('case_name') or detail.get('case_id') or ''}",
+        f"- mode: {detail.get('mode') or ''}",
+        f"- status: {detail.get('status') or ''}",
+        f"- started at: {detail.get('started_at') or ''}",
+        f"- finished at: {detail.get('finished_at') or ''}",
+        f"- final url: {detail.get('final_url') or ''}",
+        "",
+        "## 执行结论",
+        str(summary.get("conclusion") or summary.get("ai_analysis") or ""),
+        "",
+        "## 故障描述",
+        str(summary.get("failure_reason") or ""),
+        "",
+        "## 执行步骤",
+    ]
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        index = step.get("step_index") or ""
+        title = step.get("title") or step.get("step_code") or ""
+        status = step.get("status") or ""
+        text = step.get("summary") or step.get("ai_analysis") or step.get("error_message") or ""
+        lines.extend([f"- Step {index}: {title} [{status}]", f"  - {text}"])
+    return "\n".join(lines).strip()
 
 
 @app.get("/api/screenshots/latest/{case_id}/{filename}")
