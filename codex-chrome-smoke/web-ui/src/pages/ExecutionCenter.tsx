@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import { API_ORIGIN, api, type ApiCase, type ApiRunDetailView } from "../data/api";
+import { API_ORIGIN, api, type ApiCase, type ApiRunDetailView, type ApiScreenshot } from "../data/api";
 import { buildExecutionListItems, buildRunDetailViewModel, legacyRunDetailToView, type ExecutionListItem, type RunDetailViewModel } from "../data/runViewModels";
 import { Card } from "../components/Card";
 import { ConsolePanel } from "../components/ConsolePanel";
 import { FlowSteps } from "../components/FlowSteps";
+import { ScreenshotLightbox } from "../components/ScreenshotLightbox";
 import { StatusPill } from "../components/StatusPill";
 
 type ExecutionTab = "worker" | "agent";
@@ -39,9 +40,15 @@ function latestLine(detail: ApiRunDetailView | null) {
   return detail.logs.map((log) => `[${formatLogTimestamp(log.created_at)}] ${log.line}`);
 }
 
+function stepActionText(step: RunDetailViewModel["steps"][number] | null) {
+  if (!step) return "";
+  const normalized = step.title.replace(/^(?:[^-]*?)\s*\d+\s*[-:?]\s*/u, "").trim();
+  return normalized || step.title.trim();
+}
+
 function stepHeading(step: RunDetailViewModel["steps"][number]) {
-  const normalized = step.title.replace(/^(?:用例步骤|步骤)\s*\d+\s*[-－:：]?\s*/u, "").trim();
-  return `步骤 ${step.index} - ${normalized || step.title}`;
+  const actionText = stepActionText(step);
+  return `步骤 ${step.index} - ${actionText || step.title}`;
 }
 
 function findAutoFocusedStepKey(detailModel: RunDetailViewModel) {
@@ -82,6 +89,7 @@ export function ExecutionCenter({
   const [selfHealing, setSelfHealing] = useState(false);
   const [deletingRunId, setDeletingRunId] = useState("");
   const [lastPromotedCaseId, setLastPromotedCaseId] = useState("");
+  const [previewShot, setPreviewShot] = useState<ApiScreenshot | null>(null);
 
   const workerRuns = useMemo(() => runs.filter((item) => item.mode === "worker"), [runs]);
   const agentRuns = useMemo(() => runs.filter((item) => item.mode === "agent"), [runs]);
@@ -102,6 +110,10 @@ export function ExecutionCenter({
   const latestScreenshot = detailModel.screenshots.at(-1) || null;
   const selectedStep = useMemo(() => detailModel.steps.find((step) => step.key === selectedStepKey) || detailModel.steps[0] || null, [detailModel.steps, selectedStepKey]);
   const previewScreenshotUrl = selectedStep?.screenshotUrl || latestScreenshot?.url || "";
+  const previewScreenshot = useMemo(() => {
+    if (!previewScreenshotUrl) return null;
+    return detailModel.screenshots.find((shot) => shot.url === previewScreenshotUrl) || null;
+  }, [detailModel.screenshots, previewScreenshotUrl]);
   const canPromoteRegression = detailModel.mode === "agent" && detailModel.status === "completed" && Boolean(detailModel.artifacts.candidate_flow_url);
   const canSelfHeal = detailModel.mode === "agent" && detailModel.status === "failed" && Boolean(detailModel.artifacts.trace_download_url);
 
@@ -394,7 +406,7 @@ export function ExecutionCenter({
               <div className={`execution-stage-strip ${detailModel.status === "running" ? "execution-stage-strip--running" : ""}`}>
                 {detailModel.stagePlan.map((stage) => (
                   <div
-                    className={`execution-stage-chip execution-stage-chip--${stage.status} ${stage.index === activeStageNumber ? "is-current" : ""} ${stage.index < activeStageNumber ? "is-past" : ""}`}
+                    className={`execution-stage-chip execution-stage-chip--${stage.status} ${detailModel.status === "running" && stage.index === activeStageNumber ? "is-current" : ""} ${detailModel.status !== "running" && stage.index === activeStageNumber ? "is-terminal" : ""} ${stage.index < activeStageNumber ? "is-past" : ""}`}
                     key={stage.stageId}
                   >
                     <div className="execution-stage-chip__node" aria-hidden="true">
@@ -423,7 +435,6 @@ export function ExecutionCenter({
                   >
                     <div className="execution-live-step__head">
                       <StatusPill tone={statusTone(step.status)}>{statusText(step.status)}</StatusPill>
-                      <span className="link-button">详情</span>
                     </div>
                     <strong>{stepHeading(step)}</strong>
                     <span>{step.summary}</span>
@@ -433,12 +444,23 @@ export function ExecutionCenter({
               </div>
 
               <div className="execution-live-preview">
-                <div className="execution-live-canvas">
-                  {previewScreenshotUrl ? (
-                    <img alt={selectedStep?.title || latestScreenshot?.filename || "执行截图"} src={`${API_ORIGIN}${previewScreenshotUrl}`} />
-                  ) : (
-                    <div className="empty-state">等待截图产物</div>
-                  )}
+                <div className="execution-live-workspace">
+                  <div className="execution-live-workspace__head">
+                    <div className="execution-live-workspace__copy">
+                      <strong>{selectedStep ? `步骤 ${selectedStep.index} - ${stepActionText(selectedStep)}` : "当前步骤"}</strong>
+                      <span>{selectedStep?.summary || detailModel.summaryText || "暂无当前步骤说明"}</span>
+                    </div>
+                    <span className="execution-live-workspace__tag">{previewScreenshotUrl ? "当前画面" : "等待画面"}</span>
+                  </div>
+                  <div className="execution-live-canvas">
+                    {previewScreenshotUrl ? (
+                      <button className="execution-live-canvas__button" onClick={() => previewScreenshot && setPreviewShot(previewScreenshot)} type="button">
+                        <img alt={stepActionText(selectedStep) || latestScreenshot?.filename || "执行截图"} src={`${API_ORIGIN}${previewScreenshotUrl}`} />
+                      </button>
+                    ) : (
+                      <div className="empty-state">等待截图产物</div>
+                    )}
+                  </div>
                 </div>
                 <div className="execution-live-side">
                   <div className="execution-live-panel">
@@ -501,7 +523,7 @@ export function ExecutionCenter({
           </Card>
         </div>
       </div>
+      <ScreenshotLightbox onClose={() => setPreviewShot(null)} screenshot={previewShot} />
     </div>
   );
 }
-
