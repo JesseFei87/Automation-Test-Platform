@@ -208,3 +208,29 @@ def test_exc_case_assertion_stage_uses_quoted_substring_in_numbered_expected():
     assert assertion_stage["scene_type"] == "assertion"
     quoted = "please enter correct port number"
     assert quoted in assertion_stage["success_signals"][1]
+
+
+def test_multi_session_user_management_plan_preserves_business_step_order():
+    plan = plan_agent_execution(
+        {
+            "id": "USRMGT_FUN_001",
+            "module": "用户管理/设备配置",
+            "steps": [
+                "1. 打开ICM登录页，输入admin/Hubble_Service!1088登录",
+                "2. 进入系统管理-用户管理页面",
+                "3. 鼠标悬停在更多，点击配置服务器和设备",
+                "4. 在绑定设备信息区域中依次勾选AU5800、AU5800(2)、DxI(1)、DxI(2)",
+                "5. 保存配置",
+                "6. 点击右上角头像，选择退出登录",
+                "7. 使用test/123456登录",
+                "8. 进入屏幕墙页面查看设备列表",
+            ],
+            "expected": ["屏幕墙上可见绑定的4台设备"],
+        }
+    )
+
+    stages = plan["stages"]
+    assert [stage["source_steps"] for stage in stages[:-1]] == [[1], [2], [3, 4, 5], [6, 7], [8]]
+    assert stages[1]["target_route"] == "#/system/user"
+    assert stages[2]["strategy"] == "generic_explore"
+    assert all(stage["strategy"] != "dialog_form_fill" for stage in stages)

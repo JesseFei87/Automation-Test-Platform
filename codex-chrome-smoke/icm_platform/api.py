@@ -44,7 +44,7 @@ from icm_platform.db import (
 from icm_platform.paths import DB_PATH, DRAFT_RUN_DIR, OBSERVED_ASSET_DIR, REPORT_DIR, ROOT, SCREENSHOTS_LATEST_DIR, SCREENSHOTS_RUNS_DIR, SPEC_FILE, TEST_CASE_DIR
 from icm_platform.run_views import summarize_run_task
 from icm_platform.worker import RunnerWorker
-from runner.evidence_recorder import EVIDENCE_ROOT, TRACE_ROOT, evidence_summary
+from runner.evidence_recorder import EVIDENCE_ROOT, TRACE_ROOT, evidence_summary, read_jsonl
 from runner.step_details import load_step_details
 
 app = FastAPI(title="ICM AI Automation Platform", version="0.2.0")
@@ -2256,10 +2256,12 @@ def evidence_log_lines(run_id: str) -> list[str]:
 
 
 def _synthetic_logs_from_evidence(run_id: str) -> list[dict]:
-    summary = evidence_summary(run_id)
+    evidence_root = EVIDENCE_ROOT / run_id
+    events = read_jsonl(evidence_root / "events.jsonl", limit=100000)
+    console = read_jsonl(evidence_root / "console.jsonl", limit=100000)
     rows: list[dict] = []
     index = 1
-    for item in summary.get("events", {}).get("latest", []):
+    for item in events:
         line = f"[{item.get('kind', '')}] {item.get('message', '')}".strip()
         if item.get("value") not in (None, ""):
             line = f"{line} value={item.get('value')}"
@@ -2275,7 +2277,7 @@ def _synthetic_logs_from_evidence(run_id: str) -> list[dict]:
             }
         )
         index += 1
-    for item in summary.get("console", {}).get("latest", []):
+    for item in console:
         rows.append(
             {
                 "id": index,

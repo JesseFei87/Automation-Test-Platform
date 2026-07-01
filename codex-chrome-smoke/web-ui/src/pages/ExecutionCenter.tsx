@@ -90,6 +90,7 @@ export function ExecutionCenter({
   const [deletingRunId, setDeletingRunId] = useState("");
   const [lastPromotedCaseId, setLastPromotedCaseId] = useState("");
   const [previewShot, setPreviewShot] = useState<ApiScreenshot | null>(null);
+  const [overviewExpanded, setOverviewExpanded] = useState(true);
 
   const workerRuns = useMemo(() => runs.filter((item) => item.mode === "worker"), [runs]);
   const agentRuns = useMemo(() => runs.filter((item) => item.mode === "agent"), [runs]);
@@ -116,6 +117,7 @@ export function ExecutionCenter({
   }, [detailModel.screenshots, previewScreenshotUrl]);
   const canPromoteRegression = detailModel.mode === "agent" && detailModel.status === "completed" && Boolean(detailModel.artifacts.candidate_flow_url);
   const canSelfHeal = detailModel.mode === "agent" && detailModel.status === "failed" && Boolean(detailModel.artifacts.trace_download_url);
+  const isProcessInitializing = Boolean(selectedRunId) && !detailModel.steps.length && (runDetail === null || detailModel.status === "queued" || detailModel.status === "running");
 
   async function loadCases() {
     try {
@@ -277,10 +279,21 @@ export function ExecutionCenter({
   }, [selectedRunId, selectedRun?.status]);
 
   return (
-    <div className="page execution-page">
+    <div className={`page execution-page ${overviewExpanded ? "execution-page--overview-expanded" : "execution-page--overview-collapsed"}`}>
       <FlowSteps activeIndex={5} />
-      <div className="execution-grid">
-        <div className="execution-left">
+      <div className="execution-sections">
+        <section className={`execution-cluster execution-cluster--primary ${overviewExpanded ? "is-expanded" : "is-collapsed"}`}>
+          <button
+            aria-expanded={overviewExpanded}
+            className="execution-cluster__toggle"
+            onClick={() => setOverviewExpanded((current) => !current)}
+            type="button"
+          >
+            <span className="execution-cluster__toggle-text">执行入口与执行预览</span>
+            <span className="execution-cluster__toggle-icon">{overviewExpanded ? "收起" : "展开"}</span>
+          </button>
+          <div className="execution-cluster__body">
+            <div className="execution-cluster__grid">
           <Card className="execution-entry-card" title="执行入口" subtitle="常规执行与智能探索共用同一调度台">
             <label className="field-label" htmlFor="case-select">
               选择正式用例
@@ -311,6 +324,41 @@ export function ExecutionCenter({
             </p>
           </Card>
 
+          <Card className="execution-preview-card" title="执行预览" subtitle="左侧选中任务后，这里显示过程和结果">
+            <div className="run-meta">
+              <StatusPill tone={statusTone(detailModel.status)}>{detailModel.statusLabel}</StatusPill>
+              <span>{detailModel.runId || "等待选择任务"}</span>
+              {detailModel.mode === "agent" ? (
+                <StatusPill tone={detailModel.trigger === "self_heal" ? "blue" : "amber"}>{detailModel.trigger === "self_heal" ? "自愈探索" : "普通探索"}</StatusPill>
+              ) : null}
+              {selectedRun?.hasReport ? (
+                <button className="btn btn--outline" onClick={() => onOpenReport(selectedRun.runId)} type="button">
+                  查看报告
+                </button>
+              ) : null}
+            </div>
+            <div className="execution-preview-head">
+              <div className="execution-preview-stat">
+                <span>模式</span>
+                <strong>{detailModel.modeLabel}</strong>
+              </div>
+              <div className="execution-preview-stat">
+                <span>开始时间</span>
+                <strong>{detailModel.startedAtLabel}</strong>
+              </div>
+              <div className="execution-preview-stat">
+                <span>最终地址</span>
+                <strong>{detailModel.finalUrl || "--"}</strong>
+              </div>
+            </div>
+            <ConsolePanel lines={latestLine(runDetail)} running={detailModel.status === "running"} />
+          </Card>
+            </div>
+          </div>
+        </section>
+
+        <section className="execution-cluster execution-cluster--secondary">
+          <div className="execution-cluster__grid">
           <Card className="queue-card" title="任务队列" subtitle="按模式拆分显示执行任务">
             <div className="execution-tabs" role="tablist" aria-label="执行任务类型">
               <button className={activeExecutionTab === "worker" ? "is-active" : ""} onClick={() => setActiveExecutionTab("worker")} role="tab" type="button">
@@ -368,41 +416,17 @@ export function ExecutionCenter({
               {!visibleRuns.length ? <p className="empty-state">当前标签下暂无任务。</p> : null}
             </div>
           </Card>
-        </div>
-
-        <div className="execution-right">
-          <Card title="执行预览" subtitle="左侧选中任务后，这里显示过程和结果">
-            <div className="run-meta">
-              <StatusPill tone={statusTone(detailModel.status)}>{detailModel.statusLabel}</StatusPill>
-              <span>{detailModel.runId || "绛夊緟浠诲姟"}</span>
-              {detailModel.mode === "agent" ? (
-                <StatusPill tone={detailModel.trigger === "self_heal" ? "blue" : "amber"}>{detailModel.trigger === "self_heal" ? "自愈探索" : "普通探索"}</StatusPill>
-              ) : null}
-              {selectedRun?.hasReport ? (
-                <button className="btn btn--outline" onClick={() => onOpenReport(selectedRun.runId)} type="button">
-                  查看报告
-                </button>
-              ) : null}
-            </div>
-            <div className="execution-preview-head">
-              <div className="execution-preview-stat">
-                <span>模式</span>
-                <strong>{detailModel.modeLabel}</strong>
-              </div>
-              <div className="execution-preview-stat">
-                <span>开始时间</span>
-                <strong>{detailModel.startedAtLabel}</strong>
-              </div>
-              <div className="execution-preview-stat">
-                <span>最终地址</span>
-                <strong>{detailModel.finalUrl || "--"}</strong>
-              </div>
-            </div>
-            <ConsolePanel lines={latestLine(runDetail)} running={detailModel.status === "running"} />
-          </Card>
-
           <Card className="execution-live-card" title={detailModel.mode === "agent" ? "智能探索执行过程" : "执行步骤预览"} subtitle={detailModel.summaryText}>
-            {detailModel.mode === "agent" && detailModel.stagePlan.length ? (
+            {isProcessInitializing && selectedRun?.mode === "agent" ? (
+              <div className="execution-stage-strip execution-stage-strip--skeleton" aria-label="正在加载执行阶段">
+                {Array.from({ length: 4 }, (_, index) => (
+                  <div className="execution-stage-skeleton" key={index}>
+                    <span className="execution-skeleton execution-skeleton--node" />
+                    <span className="execution-skeleton execution-skeleton--line" />
+                  </div>
+                ))}
+              </div>
+            ) : detailModel.mode === "agent" && detailModel.stagePlan.length ? (
               <div className={`execution-stage-strip ${detailModel.status === "running" ? "execution-stage-strip--running" : ""}`}>
                 {detailModel.stagePlan.map((stage) => (
                   <div
@@ -424,9 +448,17 @@ export function ExecutionCenter({
                 ))}
               </div>
             ) : null}
-            <div className="execution-live-layout">
+            <div className={`execution-live-layout ${isProcessInitializing ? "is-initializing" : ""}`}>
               <div className="execution-live-steps">
-                {detailModel.steps.map((step) => (
+                {isProcessInitializing
+                  ? Array.from({ length: 5 }, (_, index) => (
+                      <div className="execution-live-step execution-live-step--skeleton" key={index}>
+                        <span className="execution-skeleton execution-skeleton--pill" />
+                        <span className="execution-skeleton execution-skeleton--title" />
+                        <span className="execution-skeleton execution-skeleton--copy" />
+                      </div>
+                    ))
+                  : detailModel.steps.map((step) => (
                   <button
                     className={`execution-live-step execution-live-step--${step.status} ${selectedStep?.key === step.key ? "is-active" : ""}`}
                     key={step.key}
@@ -440,29 +472,50 @@ export function ExecutionCenter({
                     <span>{step.summary}</span>
                   </button>
                 ))}
-                {!detailModel.steps.length ? <p className="empty-state">暂无步骤明细。</p> : null}
+                {!isProcessInitializing && !detailModel.steps.length ? <p className="empty-state">暂无步骤明细。</p> : null}
               </div>
 
               <div className="execution-live-preview">
                 <div className="execution-live-workspace">
                   <div className="execution-live-workspace__head">
                     <div className="execution-live-workspace__copy">
-                      <strong>{selectedStep ? `步骤 ${selectedStep.index} - ${stepActionText(selectedStep)}` : "当前步骤"}</strong>
-                      <span>{selectedStep?.summary || detailModel.summaryText || "暂无当前步骤说明"}</span>
+                      {isProcessInitializing ? (
+                        <>
+                          <span className="execution-skeleton execution-skeleton--heading" />
+                          <span className="execution-skeleton execution-skeleton--copy" />
+                        </>
+                      ) : (
+                        <>
+                          <strong>{selectedStep ? `步骤 ${selectedStep.index} - ${stepActionText(selectedStep)}` : "当前步骤"}</strong>
+                          <span>{selectedStep?.summary || detailModel.summaryText || "暂无当前步骤说明"}</span>
+                        </>
+                      )}
                     </div>
                     <span className="execution-live-workspace__tag">{previewScreenshotUrl ? "当前画面" : "等待画面"}</span>
                   </div>
-                  <div className="execution-live-canvas">
+                  <div className={`execution-live-canvas ${previewScreenshotUrl ? "" : "execution-live-canvas--empty"}`}>
                     {previewScreenshotUrl ? (
                       <button className="execution-live-canvas__button" onClick={() => previewScreenshot && setPreviewShot(previewScreenshot)} type="button">
                         <img alt={stepActionText(selectedStep) || latestScreenshot?.filename || "执行截图"} src={`${API_ORIGIN}${previewScreenshotUrl}`} />
                       </button>
+                    ) : isProcessInitializing ? (
+                      <div className="execution-skeleton execution-skeleton--canvas" aria-label="正在加载执行截图" />
                     ) : (
                       <div className="empty-state">等待截图产物</div>
                     )}
                   </div>
                 </div>
                 <div className="execution-live-side">
+                  {isProcessInitializing ? (
+                    <div className="execution-live-side-skeleton">
+                      {Array.from({ length: 4 }, (_, index) => (
+                        <div className="execution-live-panel execution-live-panel--skeleton" key={index}>
+                          <span className="execution-skeleton execution-skeleton--title" />
+                          <span className="execution-skeleton execution-skeleton--copy" />
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
                   <div className="execution-live-panel">
                     <strong>{detailModel.mode === "agent" ? "智能探索结果" : "AI 执行说明"}</strong>
                     <p>{selectedStep?.summary || detailModel.summaryText || "暂无执行摘要"}</p>
@@ -521,7 +574,8 @@ export function ExecutionCenter({
               </div>
             </div>
           </Card>
-        </div>
+          </div>
+        </section>
       </div>
       <ScreenshotLightbox onClose={() => setPreviewShot(null)} screenshot={previewShot} />
     </div>

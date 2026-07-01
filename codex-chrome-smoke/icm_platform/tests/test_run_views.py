@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +14,33 @@ from runner.main import cases_for_batch
 
 
 class RunViewTests(unittest.TestCase):
+    def test_synthetic_agent_logs_include_complete_evidence_history(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            evidence_root = Path(folder) / "evidence"
+            run_root = evidence_root / "ui-full-log"
+            run_root.mkdir(parents=True)
+            events = [
+                {
+                    "kind": "screenshot",
+                    "message": f"captured screenshot agent-step-{index:02d}.png",
+                    "created_at": f"2026-06-30T09:38:{index:02d}Z",
+                    "url": "https://example.test/page",
+                }
+                for index in range(1, 16)
+            ]
+            (run_root / "events.jsonl").write_text(
+                "\n".join(json.dumps(item) for item in events) + "\n",
+                encoding="utf-8",
+            )
+            (run_root / "console.jsonl").write_text("", encoding="utf-8")
+
+            with patch("icm_platform.api.EVIDENCE_ROOT", evidence_root):
+                logs = api_module._synthetic_logs_from_evidence("ui-full-log")
+
+        self.assertEqual(len(logs), 15)
+        self.assertIn("agent-step-01.png", logs[0]["line"])
+        self.assertIn("agent-step-15.png", logs[-1]["line"])
+
     def test_runner_batch_range_parser(self) -> None:
         self.assertEqual(cases_for_batch("TC-ICM-001..TC-ICM-003"), ["TC-ICM-001", "TC-ICM-002", "TC-ICM-003"])
         self.assertEqual(cases_for_batch("TC-ICM-006"), ["TC-ICM-006"])

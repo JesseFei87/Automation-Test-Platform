@@ -122,11 +122,21 @@ def _contains_any(text: str, keywords: tuple[str, ...]) -> bool:
 
 
 def _target_route(case: dict[str, Any], steps: list[str]) -> str:
-    haystack = " ".join([str(case.get("module") or "")] + steps)
-    for label, route in ROUTE_HINTS.items():
-        if label in haystack:
-            return route
+    sources = [str(case.get("module") or ""), *steps]
+    for source in sources:
+        for label, route in ROUTE_HINTS.items():
+            if label in source:
+                return route
     return ""
+
+
+def _route_for_step(case: dict[str, Any], step: str) -> str:
+    return _target_route({"module": ""}, [step]) or _target_route(case, [])
+
+
+def _is_multi_session_workflow(steps: list[str]) -> bool:
+    login_steps = [step for step in steps if _contains_any(step, ("登录", "login"))]
+    return len(login_steps) > 1 and any(_contains_any(step, ("退出登录", "登出", "logout")) for step in steps)
 
 
 def _success_signals(case: dict[str, Any], scene_type: str, route: str) -> list[str]:
@@ -163,6 +173,55 @@ def plan_agent_execution(case: dict[str, Any]) -> dict[str, Any]:
                 "objective": objective or name,
             }
         )
+
+    if _is_multi_session_workflow(steps):
+        login_steps = [index for index, step in enumerate(steps, start=1) if _contains_any(step, ("登录", "login"))]
+        logout_step = next(index for index, step in enumerate(steps, start=1) if _contains_any(step, ("退出登录", "登出", "logout")))
+        first_login = login_steps[0]
+        second_login = next(index for index in login_steps if index > logout_step)
+        navigation_steps = [index for index, step in enumerate(steps, start=1) if index > first_login and _contains_any(step, ("进入", "页面", "导航"))]
+        first_navigation = navigation_steps[0]
+        final_steps = list(range(second_login + 1, len(steps) + 1))
+
+        add_stage("login", "登录系统", [first_login], strategy="login_guard", objective="按用例第一个登录步骤完成登录")
+        add_stage(
+            "navigation",
+            "进入目标业务页",
+            [first_navigation],
+            strategy="route_open",
+            target_route=_route_for_step(case, steps[first_navigation - 1]),
+            objective=steps[first_navigation - 1],
+        )
+        add_stage(
+            "generic",
+            "完成当前账号业务操作",
+            list(range(first_navigation + 1, logout_step)),
+            strategy="generic_explore",
+            objective="严格依次完成当前账号下的业务步骤",
+        )
+        add_stage(
+            "generic",
+            "切换登录账号",
+            list(range(logout_step, second_login + 1)),
+            strategy="generic_explore",
+            objective="按用例步骤退出当前账号并使用指定账号重新登录",
+        )
+        add_stage(
+            "generic",
+            "完成切换账号后的业务操作",
+            final_steps,
+            strategy="generic_explore",
+            objective="严格依次完成切换账号后的剩余步骤",
+        )
+        add_stage(
+            "assertion",
+            "结果校验",
+            [len(steps)],
+            strategy="detail_assert",
+            target_route="",
+            objective="校验最终结果与断言",
+        )
+        return {"planner_version": "v1", "case_id": str(case.get("id") or ""), "stages": plan_steps}
 
     login_steps = [index for index, step in enumerate(steps, start=1) if _contains_any(step, ("登录", "账号", "密码", "login"))]
     if login_steps or case_requires_authenticated_session(case):

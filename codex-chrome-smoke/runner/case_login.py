@@ -10,7 +10,7 @@ _AUTH_PRECONDITION_RE = re.compile(
 )
 _LOGIN_PAGE_ONLY_RE = re.compile(r"(登录页|打开登录页|位于登录页)", re.IGNORECASE)
 _USERNAME_PASSWORD_RE = re.compile(r"username\s*=\s*([^,;，；\s]+).*?password\s*=\s*([^,;，；\s]+)", re.IGNORECASE)
-_SLASH_LOGIN_RE = re.compile(r"(?:已使用|使用|以)\s*([^\s/]+)/([^\s,;，；]+)\s*登录", re.IGNORECASE)
+_SLASH_LOGIN_RE = re.compile(r"(?:已使用|使用|以|输入)\s*([^\s/]+)/([^\s,;，；]+)\s*登录", re.IGNORECASE)
 
 
 def case_requires_authenticated_session(case: dict[str, Any]) -> bool:
@@ -34,6 +34,11 @@ def resolve_case_login_credentials(case: dict[str, Any], system: dict[str, Any])
 
 
 def _extract_credentials_from_case(case: dict[str, Any]) -> tuple[str, str]:
+    for step in case.get("steps") or []:
+        credentials = _extract_credentials_from_text(str(step))
+        if all(credentials):
+            return credentials
+
     test_data = case.get("test_data")
     if isinstance(test_data, dict):
         username = str(test_data.get("username") or "").strip()
@@ -41,17 +46,16 @@ def _extract_credentials_from_case(case: dict[str, Any]) -> tuple[str, str]:
         if username and password:
             return username, password
 
-    haystack = "\n".join(
-        [
-            str(case.get("precondition") or ""),
-            str(test_data or ""),
-            " ".join(str(item) for item in case.get("steps") or []),
-        ]
+    return _extract_credentials_from_text(
+        "\n".join([str(case.get("precondition") or ""), str(test_data or "")])
     )
-    match = _USERNAME_PASSWORD_RE.search(haystack)
+
+
+def _extract_credentials_from_text(text: str) -> tuple[str, str]:
+    match = _USERNAME_PASSWORD_RE.search(text)
     if match:
         return match.group(1).strip(), match.group(2).strip()
-    match = _SLASH_LOGIN_RE.search(haystack)
+    match = _SLASH_LOGIN_RE.search(text)
     if match:
         return match.group(1).strip(), match.group(2).strip()
     return "", ""
