@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { RefObject } from "react";
 import type { PageId, PlatformNavKey } from "./types";
 import { api, type AISettings } from "./data/api";
 import { platformNavItems } from "./data/navigation";
@@ -11,7 +12,140 @@ import { CaseToolbox } from "./pages/CaseToolbox";
 import { ExecutionCenter } from "./pages/ExecutionCenter";
 import { ReportDetail } from "./pages/ReportDetail";
 import { SystemSettings } from "./pages/SystemSettings";
+import { Login } from "./pages/Login";
+import { AuthProvider, useAuth } from "./data/authStore";
+import { ToastProvider, useToast } from "./components/Toast";
+import { Avatar } from "./components/Avatar";
+import { ChangePasswordModal } from "./components/ChangePasswordModal";
+import { AvatarEditModal } from "./components/AvatarEditModal";
+import { ConfirmDialog } from "./components/ConfirmDialog";
 
+// ============================================================
+//  用户菜单：3 项 + 分隔线
+// ============================================================
+type UserMenuAction = "edit-avatar" | "change-password" | "logout";
+
+function UserMenuTrigger({
+  onAction,
+  triggerButtonRef,
+}: {
+  onAction: (action: UserMenuAction, triggerEl: HTMLElement | null) => void;
+  triggerButtonRef?: RefObject<HTMLButtonElement | null>;
+}) {
+  const { state } = useAuth();
+  const [open, setOpen] = useState(false);
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const localTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const triggerRef = triggerButtonRef || localTriggerRef;
+  const user = state.user;
+  const displayName = user?.displayName || user?.username || "?";
+
+  useEffect(() => {
+    if (!open) return;
+    function handleClickOutside(event: MouseEvent) {
+      if (wrapperRef.current && !wrapperRef.current.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    }
+    function handleKey(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("keydown", handleKey);
+    };
+  }, [open, triggerRef]);
+
+  function triggerAction(action: UserMenuAction) {
+    setOpen(false);
+    // 把触发菜单的 button 元素也回传给上层（弹窗关闭时焦点回退）
+    onAction(action, triggerRef.current);
+  }
+
+  return (
+    <div ref={wrapperRef} className="user-menu-wrapper">
+      <button
+        ref={triggerRef}
+        type="button"
+        className="user-menu-trigger"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label="账号菜单"
+        onClick={() => setOpen((prev) => !prev)}
+      >
+        <Avatar
+          username={user?.username}
+          displayName={user?.displayName}
+          src={user?.avatarUrl}
+          size="sm"
+        />
+        <span className="user-menu-trigger__name">{user?.username || "账号"}</span>
+        <svg
+          className={`user-menu-trigger__caret ${open ? "is-open" : ""}`}
+          width="12"
+          height="12"
+          viewBox="0 0 12 12"
+          fill="none"
+          aria-hidden="true"
+        >
+          <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </button>
+      {open ? (
+        <div className="user-menu" role="menu" aria-label="账号操作">
+          <div className="user-menu__header">
+            <Avatar
+              username={user?.username}
+              displayName={user?.displayName}
+              src={user?.avatarUrl}
+              size="md"
+            />
+            <div className="user-menu__id">
+              <strong>{displayName}</strong>
+            </div>
+          </div>
+          <button
+            type="button"
+            role="menuitem"
+            className="user-menu__item"
+            onClick={() => triggerAction("edit-avatar")}
+          >
+            <UserCircleIcon />
+            <span>修改头像</span>
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="user-menu__item"
+            onClick={() => triggerAction("change-password")}
+          >
+            <LockIcon />
+            <span>修改密码</span>
+          </button>
+          <div className="user-menu__divider" role="separator" />
+          <button
+            type="button"
+            role="menuitem"
+            className="user-menu__item user-menu__item--danger"
+            onClick={() => triggerAction("logout")}
+          >
+            <LogOutIcon />
+            <span>退出登录</span>
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+// ============================================================
+//  路由状态机 + 弹窗状态
+// ============================================================
 const LAST_PAGE_STORAGE_KEY = "icm.currentPage";
 const PAGE_IDS: PageId[] = ["dashboard", "projects", "requirements", "ai-generate", "points", "cases", "execution", "reports", "settings"];
 
@@ -32,7 +166,11 @@ function rememberPage(pageId: PageId) {
   }
 }
 
-export default function App() {
+type ModalKind = "edit-avatar" | "change-password" | "logout" | null;
+
+function ShellApp() {
+  const { state, logout } = useAuth();
+  const toast = useToast();
   const [page, setPage] = useState<PageId>(() => readInitialPage());
   const [activeNavKey, setActiveNavKey] = useState<PlatformNavKey>(() => navKeyForPage(readInitialPage()));
   const [reportRunId, setReportRunId] = useState("");
@@ -41,6 +179,10 @@ export default function App() {
   const [hasOpenedAIGenerate, setHasOpenedAIGenerate] = useState(() => readInitialPage() === "ai-generate");
   const [modelSwitching, setModelSwitching] = useState(false);
   const modelLabel = aiSettings?.model || "AI 未配置";
+
+  const [modal, setModal] = useState<ModalKind>(null);
+  const [modalTrigger, setModalTrigger] = useState<HTMLElement | null>(null);
+  const userMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   async function refreshAISettings() {
     try {
@@ -51,8 +193,10 @@ export default function App() {
   }
 
   useEffect(() => {
-    void refreshAISettings();
-  }, []);
+    if (state.status === "authenticated") {
+      void refreshAISettings();
+    }
+  }, [state.status]);
 
   useEffect(() => {
     setModelSwitching(true);
@@ -71,7 +215,6 @@ export default function App() {
   }
 
   function openCaseDraft(draftId: number) {
-    // 跳转到用例工作台；draftId 通过 hash 透传（CaseToolbox 可后续按需解析）
     if (typeof window !== "undefined") {
       window.location.hash = `case-toolbox?draft=${draftId}`;
     }
@@ -85,6 +228,46 @@ export default function App() {
     setActiveNavKey(navKeyForPage(pageId, navKey));
     setPage(pageId);
     rememberPage(pageId);
+  }
+
+  function handleUserMenuAction(action: UserMenuAction, triggerEl: HTMLElement | null) {
+    setModalTrigger(triggerEl || userMenuTriggerRef.current);
+    if (action === "edit-avatar") {
+      setModal("edit-avatar");
+    } else if (action === "change-password") {
+      setModal("change-password");
+    } else if (action === "logout") {
+      setModal("logout");
+    }
+  }
+
+  function closeModal() {
+    setModal(null);
+    setModalTrigger(null);
+  }
+
+  // 把 HTMLElement 包装为 ref-like，兼容 Modal 组件的 triggerRef 形参
+  const modalTriggerRef = useMemo<RefObject<HTMLElement | null>>(
+    () => ({ current: modalTrigger }),
+    [modalTrigger],
+  );
+
+  // 加载中（bootstrap）
+  if (state.status === "loading") {
+    return (
+      <div className="app app--loading">
+        <div className="app-loading" role="status" aria-live="polite">加载中…</div>
+      </div>
+    );
+  }
+
+  // 未登录 → 渲染登录页
+  if (state.status !== "authenticated" || !state.user) {
+    return (
+      <div className="app app--login">
+        <Login />
+      </div>
+    );
   }
 
   return (
@@ -110,7 +293,10 @@ export default function App() {
         </nav>
         <div className="platform-user">
           <span className={modelSwitching ? "is-switching" : undefined}>{modelLabel}</span>
-          <strong>admin (System Admin)</strong>
+          <UserMenuTrigger
+            onAction={handleUserMenuAction}
+            triggerButtonRef={userMenuTriggerRef}
+          />
         </div>
       </header>
       <main className="main platform-main">
@@ -128,6 +314,76 @@ export default function App() {
         {page === "reports" ? <ReportDetail initialRunId={reportRunId} /> : null}
         {page === "settings" ? <SystemSettings onAISettingsChange={refreshAISettings} /> : null}
       </main>
+
+      {/* 三个弹窗（按需挂载） */}
+      <ChangePasswordModal
+        open={modal === "change-password"}
+        onClose={closeModal}
+        triggerRef={modalTriggerRef}
+      />
+      <AvatarEditModal
+        open={modal === "edit-avatar"}
+        onClose={closeModal}
+        triggerRef={modalTriggerRef}
+      />
+      <ConfirmDialog
+        open={modal === "logout"}
+        title="退出登录"
+        description="是否退出当前登录？退出后需要重新输入账号密码。"
+        danger
+        confirmText="确认退出"
+        cancelText="取消"
+        triggerRef={modalTriggerRef}
+        onClose={closeModal}
+        onConfirm={async () => {
+          try {
+            await logout();
+            toast.show({ kind: "info", message: "已退出登录" });
+            closeModal();
+          } catch (e) {
+            toast.show({ kind: "error", message: (e as Error).message || "退出失败" });
+          }
+        }}
+      />
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <ToastProvider>
+      <AuthProvider>
+        <ShellApp />
+      </AuthProvider>
+    </ToastProvider>
+  );
+}
+
+// ============================================================
+//  菜单图标
+// ============================================================
+function UserCircleIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="8" r="4" />
+      <path d="M4 21c0-4 4-7 8-7s8 3 8 7" />
+    </svg>
+  );
+}
+function LockIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="4" y="11" width="16" height="9" rx="2" />
+      <path d="M8 11V8a4 4 0 1 1 8 0v3" />
+    </svg>
+  );
+}
+function LogOutIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3" />
+      <path d="M10 17l-5-5 5-5" />
+      <path d="M5 12h12" />
+    </svg>
   );
 }
