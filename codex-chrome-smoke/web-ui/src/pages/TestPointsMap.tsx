@@ -61,9 +61,9 @@ const EMPTY_DRAFT: PointDraft = {
 };
 
 const PRIORITY_STYLE: Record<string, Record<string, string>> = {
-  P0: { color: "#0f5132", background: "#dcfbea", border: "1px solid #12b981" },
-  P1: { color: "#7a4a00", background: "#fff0c8", border: "1px solid #f39a20" },
-  P2: { color: "#173b74", background: "#e6efff", border: "1px solid #2164f3" },
+  P0: { color: "var(--green)", background: "var(--green-soft)", border: "1px solid var(--green)" },
+  P1: { color: "var(--amber)", background: "var(--amber-soft)", border: "1px solid var(--amber)" },
+  P2: { color: "var(--blue)", background: "var(--blue-soft)", border: "1px solid var(--blue)" },
 };
 
 function groupPoints(points: TestPoint[], mode: ViewMode): Group[] {

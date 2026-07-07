@@ -6,12 +6,28 @@
  * - 错误密码 0.5s 内出现行内红字（带三角警示图标）
  * - 登录成功跳主页
  * - 3 种状态：default / submitting / error
+ * - 背景层：aifx 动态星空效果（第三方 CDN 动态注入）
+ *   - aria-hidden + pointer-events-none：不打扰表单交互与屏幕阅读器
+ *   - prefers-reduced-motion: reduce 时不注入脚本（减少动效用户无感）
+ *   - 组件卸载时移除脚本（避免污染 SPA 其它路由）
  */
 
 import { useEffect, useRef, useState } from "react";
 import * as authApi from "../data/authApi";
 import { useAuth } from "../data/authStore";
 import { useToast } from "../components/Toast";
+
+// aifx 第三方 CDN（动态星空效果运行时）
+// 注意：第三方 CDN，未写进 package.json；风险见文件底部注释
+const AIFX_RUNTIME_SRC = "https://cdn.aidesigner.ai/effects/runtime/v1.js";
+const AIFX_RUNTIME_ID = "aifx-starfield-runtime";
+
+function prefersReducedMotion(): boolean {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    return false;
+  }
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
 
 type HintMap = {
   account?: { kind: "error" | ""; message: string };
@@ -43,6 +59,31 @@ export function Login() {
   useEffect(() => {
     const t = window.setTimeout(() => passwordRef.current?.focus(), 50);
     return () => window.clearTimeout(t);
+  }, []);
+
+  // 动态星空背景：组件挂载时注入 aifx 运行时脚本，卸载时移除
+  // - 尊重 prefers-reduced-motion（系统级"减少动效"时不加载，避免不必要的网络/CPU）
+  // - 防止重复注入：组件重渲染或多次挂载时只注入一次
+  // - 卸载时同步移除脚本节点
+  useEffect(() => {
+    if (prefersReducedMotion()) {
+      return;
+    }
+    // 已被注入过（HMR/StrictMode 双调用）直接跳过
+    if (document.getElementById(AIFX_RUNTIME_ID)) {
+      return;
+    }
+    const script = document.createElement("script");
+    script.id = AIFX_RUNTIME_ID;
+    script.src = AIFX_RUNTIME_SRC;
+    script.defer = true;
+    script.async = false;
+    // 第三方脚本：拒绝 referrer 泄露当前页面 URL
+    script.setAttribute("referrerpolicy", "no-referrer");
+    document.body.appendChild(script);
+    return () => {
+      script.remove();
+    };
   }, []);
 
   function clearHints() {
@@ -95,7 +136,22 @@ export function Login() {
   }
 
   return (
-    <div className="login-page">
+    <div className="login-page relative isolate">
+      {/*
+        动态星空背景层（aifx 第三方效果）
+        - data-aifx / data-aifx-bg-alpha / data-aifx-speed 是 aifx runtime 的识别契约
+        - class="absolute inset-0 -z-10 pointer-events-none" 来自 aidesigner.ai 文档
+          （项目未装 Tailwind，对应样式由 styles.css 中 .login-page > .absolute 等兜底）
+        - aria-hidden="true" 防止屏幕阅读器朗读装饰性画布
+        - -z-10 配合外层 .isolate 形成独立堆叠上下文，确保落在 login-card 之下
+      */}
+      <div
+        data-aifx="starfield"
+        data-aifx-bg-alpha="0.8"
+        data-aifx-speed="0.5"
+        className="absolute inset-0 -z-10 pointer-events-none"
+        aria-hidden="true"
+      />
       <div className="login-card">
         <div className="login-brand">
           <span className="login-brand__logo" aria-hidden="true">QA</span>

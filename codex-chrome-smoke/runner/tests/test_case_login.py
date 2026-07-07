@@ -1,4 +1,4 @@
-from runner.case_login import resolve_case_login_credentials
+﻿from runner.case_login import resolve_case_login_credentials, resolve_case_login_credentials_at
 
 
 def test_login_credentials_follow_first_explicit_login_step() -> None:
@@ -21,3 +21,16 @@ def test_login_credentials_fall_back_to_structured_test_data() -> None:
     system = {"credentials": {"username": "platform-admin", "password": "platform-password"}}
 
     assert resolve_case_login_credentials(case, system) == ("case-user", "case-password")
+
+
+def test_login_credentials_can_resolve_second_explicit_login_step() -> None:
+    case = {
+        "steps": [
+            "1. 打开 ICM 登录页，输入 admin/Hubble_Service!1088 登录",
+            "6. 退出登录",
+            "7. 使用 test/123456 登录",
+        ],
+    }
+    system = {"credentials": {"username": "platform-admin", "password": "platform-password"}}
+
+    assert resolve_case_login_credentials_at(case, system, occurrence=2) == ("test", "123456")

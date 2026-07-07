@@ -288,6 +288,70 @@ class AIService:
             "log_count": len(logs),
         }
 
+    def parse_assertions_with_ai(
+        self,
+        expected_text: str,
+        settings: dict[str, Any],
+        page_context: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """把自然语言 expected_text 解析成结构化断言列表。
+
+        失败（settings 非法 / 网络错误 / JSON 解析失败 / 空结果）抛
+        AIConfigurationError 或 AIProviderError，由上层 _build_assertion_checks
+        catch 后降级为 text_contains。
+
+        page_context 非空时，AI 可看到页面真实 visibleText，产出更精确的 expected。
+        """
+        self._validate_settings(settings)
+        provider = settings.get("provider", self.provider)
+        payload = self._assertion_parsing_payload(settings["model"], expected_text, provider, page_context=page_context)
+        self._last_prompt = json.dumps(payload, ensure_ascii=False)
+        raw = self._post_json(
+            self.chat_completions_url(settings["base_url"]),
+            self.api_key_for_provider(settings),
+            payload,
+            timeout=self.request_timeout(provider),
+        )
+        try:
+            content = raw["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise AIProviderError("model response missing choices[0].message.content") from exc
+        data = parse_json_content(str(content))
+        raw_assertions = data.get("assertions")
+        if not isinstance(raw_assertions, list) or not raw_assertions:
+            raise AIProviderError("模型未返回有效的 assertions 列表")
+        return [self._normalize_ai_assertion(item, expected_text) for item in raw_assertions if isinstance(item, dict)]
+
+    @staticmethod
+    def _normalize_ai_assertion(item: dict[str, Any], fallback_expected: str) -> dict[str, Any]:
+        check_type = str(item.get("type") or "").strip()
+        expected = str(item.get("expected") or "").strip() or fallback_expected
+        match_mode = str(item.get("match_mode") or "contains").strip().lower()
+        if match_mode not in {"contains", "equals", "not_contains", "regex"}:
+            match_mode = "contains"
+        if not check_type:
+            check_type = "text_contains"
+        assertion: dict[str, Any] = {
+            "type": check_type,
+            "expected": expected,
+            "label": str(item.get("label") or check_type).strip() or check_type,
+            "status": "queued",
+            "actual": "",
+            "evidence_source": "",
+            "reason": "",
+            "match_mode": match_mode,
+            "source": "ai",
+        }
+        field = str(item.get("field") or "").strip()
+        if field:
+            assertion["field"] = field
+        terms = item.get("terms")
+        if isinstance(terms, list):
+            cleaned = [str(t).strip() for t in terms if str(t).strip()]
+            if cleaned:
+                assertion["terms"] = cleaned
+        return assertion
+
     @staticmethod
     def parse_chat_completion(raw: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -585,6 +649,54 @@ class AIService:
         else:
             payload["max_tokens"] = 4096
         return payload
+
+    def _assertion_parsing_payload(self, model: str, expected_text: str, provider: str = "minimax-m3", page_context: dict[str, Any] | None = None) -> dict[str, Any]:
+        system_content = (
+            "你是 ICM 自动化测试平台的断言解析助手。"
+            "把用户给出的『预期结果』自然语言文本，解析成一个或多个结构化断言，严格返回 JSON。"
+            "JSON schema：{\"assertions\": [{...}]}，不要 Markdown，不要多余解释。"
+            "每条断言字段："
+            "type（断言类型，字符串）、expected（用于求值的核心期望文本，从原文提取，不要改写语义）、"
+            "label（中文短标签）、match_mode（求值匹配模式：contains|equals|not_contains|regex，默认 contains）、"
+            "field（可选，当断言针对某字段/标签时填，如『设备名称』『状态』）、"
+            "terms（可选，列表，当需要多关键字同时命中时填，如表格记录的关键字段）。"
+            "type 优先从已知类型选取：url_contains|dialog_visible|dialog_hidden|table_row_exists|"
+            "field_value|status_tag|text_contains；"
+            "若原文语义无法映射到已知类型，允许自定义 type（如 page_title_contains、breadcrumb_contains、"
+            "section_visible、error_message_visible），但必须同时给出 match_mode 以便求值器兜底。"
+            "expected 必须严格从原文或页面真实可见文本中逐字提取子串，禁止概括、补全或改写"
+            "（如原文/页面是『基本信息』不得写成『用户基本信息』）。"
+            "对『登录成功/创建成功』等描述性预期，页面通常不出现该字面词，优先用 url_contains，"
+            "expected 取 URL 路由片段（如 #/index）；无法确定路由时再降级 text_contains 并选页面真实出现的词。"
+            "section_visible/dropdown_visible 的 expected 必须是页面真实区块标题的逐字子串。"
+            "若一条预期含多个检查点，拆成多条断言。"
+            "若无法解析，返回 {\"assertions\": []}。"
+        )
+        user_data: dict[str, Any] = {"expected_text": expected_text}
+        if page_context:
+            user_data["page_evidence"] = {
+                "url": page_context.get("url", ""),
+                "visible_texts": page_context.get("visible_texts", [])[:30],
+                "interactive_texts": page_context.get("interactive_texts", [])[:15],
+            }
+            user_data["rule"] = "expected 必须从 page_evidence 中逐字选取子串；描述性预期优先映射 url_contains。"
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_content},
+                {"role": "user", "content": json.dumps(user_data, ensure_ascii=False)},
+            ],
+            "temperature": 0.1,
+            "stream": False,
+        }
+        if provider == "minimax-m3" or model == "MiniMax-M3":
+            payload["thinking"] = {"type": "adaptive"}
+            payload["max_completion_tokens"] = 2048
+        else:
+            payload["max_tokens"] = 2048
+        if provider == "ollama-local":
+            payload["reasoning_effort"] = "none"
+        return {key: value for key, value in payload.items() if value is not None}
 
     @staticmethod
     def chat_completions_url(base_url: str) -> str:

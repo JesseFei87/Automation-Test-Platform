@@ -35,7 +35,7 @@ def test_main_calls_agent_explore_branch_with_lazy_import(monkeypatch):
     monkeypatch.setattr(runner_main, "launch_browser", launch_browser)
     monkeypatch.setattr(runner_main, "close_browser", close_browser)
     monkeypatch.setattr(runner_main, "load_case", lambda case_id: {"id": case_id, "system": "icm-internal"})
-    monkeypatch.setattr(runner_main, "load_system", lambda system_id: {"id": system_id})
+    monkeypatch.setattr(runner_main, "load_system", lambda system_id, case=None: {"id": system_id})
     monkeypatch.setattr(runner_main.sys, "argv", ["main.py", "agent-explore", "TC-ICM-001", "run-1"])
 
     assert asyncio.run(runner_main.main()) == 0
@@ -73,7 +73,7 @@ def test_main_calls_run_case_without_reusing_storage_state(monkeypatch):
     monkeypatch.setattr(runner_main, "run_case", run_case)
     monkeypatch.setattr(runner_main, "write_report", lambda *args, **kwargs: None)
     monkeypatch.setattr(runner_main, "load_case", lambda case_id: {"id": case_id, "system": "icm-internal"})
-    monkeypatch.setattr(runner_main, "load_system", lambda system_id: {"id": system_id})
+    monkeypatch.setattr(runner_main, "load_system", lambda system_id, case=None: {"id": system_id})
     monkeypatch.setattr(runner_main.sys, "argv", ["main.py", "run-case", "TC-ICM-001", "run-1"])
 
     assert asyncio.run(runner_main.main()) == 0

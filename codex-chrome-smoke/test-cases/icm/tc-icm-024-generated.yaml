@@ -29,7 +29,7 @@ preconditions:
 - 已登录并进入添加设备信息弹窗，其他字段均为合法值
 status: formal
 source: agent-explore
-source_run_id: ui-3a55fa7606a1
+source_run_id: ui-0cb7f576de20
 source_draft_case_id: ICMDEV_BND_004
 automation_asset:
   status: verified

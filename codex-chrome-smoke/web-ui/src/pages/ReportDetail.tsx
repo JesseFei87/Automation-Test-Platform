@@ -422,7 +422,6 @@ export function ReportDetail({ initialRunId = "" }: { initialRunId?: string }) {
                                 {stepNetworkSummary.topEndpoints.map((item) => (
                                   <div className="severity-endpoint-row" key={`${step.key}-${item.label}`}>
                                     <span>{item.label}</span>
-                                    <small>{item.count}</small>
                                   </div>
                                 ))}
                               </div>

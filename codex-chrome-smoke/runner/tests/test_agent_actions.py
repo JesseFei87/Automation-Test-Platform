@@ -25,3 +25,11 @@ def test_goto_rejects_host_outside_whitelist():
     decision = AgentDecision(action="goto", url="https://example.com", reason="external")
     errors = validate_decision(decision, observed_refs=set(), allowed_hosts={"127.0.0.1"})
     assert "host not allowed" in errors[0]
+
+
+def test_hover_is_supported_and_requires_observed_ref():
+    decision = normalize_decision({"action": "hover", "ref": "e7", "reason": "reveal menu"})
+
+    assert decision.action == "hover"
+    assert validate_decision(decision, observed_refs={"e7"}, allowed_hosts=set()) == []
+    assert "unknown ref" in validate_decision(decision, observed_refs={"e1"}, allowed_hosts=set())[0]

@@ -24,6 +24,20 @@ function statusText(status: string) {
   return status || "未知";
 }
 
+function assertionTone(status: string): "green" | "red" | "amber" | "blue" {
+  if (status === "completed" || status === "passed" || status === "success") return "green";
+  if (status === "failed") return "red";
+  if (status === "running") return "blue";
+  return "amber";
+}
+
+function assertionText(status: string) {
+  if (status === "completed" || status === "passed" || status === "success") return "已通过";
+  if (status === "failed") return "未通过";
+  if (status === "running") return "待校验";
+  return "待校验";
+}
+
 function isLiveStatus(status: string) {
   return status === "running" || status === "queued" || status === "pending";
 }
@@ -442,7 +456,7 @@ export function ExecutionCenter({
                         <StatusPill tone={statusTone(stage.status)}>{statusText(stage.status)}</StatusPill>
                       </div>
                       <span>{stage.sceneLabel} / {stage.strategyLabel}</span>
-                      {stage.fallbackUsed ? <em>宸插洖閫€</em> : null}
+                      {stage.fallbackUsed ? <em>{"\u5df2\u56de\u9000"}</em> : null}
                     </div>
                   </div>
                 ))}
@@ -518,7 +532,35 @@ export function ExecutionCenter({
                   ) : null}
                   <div className="execution-live-panel">
                     <strong>{detailModel.mode === "agent" ? "智能探索结果" : "AI 执行说明"}</strong>
-                    <p>{selectedStep?.summary || detailModel.summaryText || "暂无执行摘要"}</p>
+                    {detailModel.mode === "agent" && selectedStep?.assertionChecks?.length ? (
+                      <div className="execution-live-assertion">
+                        {selectedStep.assertionChecks.map((check, index) => (
+                          <div className="execution-live-assertion__item" key={`${selectedStep.key}-assert-${index}`}>
+                            <div className="execution-live-assertion__head">
+                              <strong>{check.label || `断言 ${index + 1}`}</strong>
+                              <StatusPill tone={assertionTone(check.status)}>{assertionText(check.status)}</StatusPill>
+                            </div>
+                            <p><span>预期：</span>{check.expected}</p>
+                            <p><span>实际：</span>{check.actual || "暂无实际结果"}</p>
+                            <p><span>证据：</span>{check.evidenceSource || "待补充"}</p>
+                            <p><span>结论：</span>{check.reason || "待校验"}</p>
+                          </div>
+                        ))}
+                      </div>
+                    ) : detailModel.mode === "agent" && selectedStep?.expectedResult ? (
+                      <div className="execution-live-assertion">
+                        <div className="execution-live-assertion__item">
+                          <div className="execution-live-assertion__head">
+                            <strong>断言结果</strong>
+                            <StatusPill tone={assertionTone(selectedStep.expectedResultStatus)}>{assertionText(selectedStep.expectedResultStatus)}</StatusPill>
+                          </div>
+                          <p><span>预期：</span>{selectedStep.expectedResult}</p>
+                          <p><span>实际：</span>{selectedStep.actualResult || "暂无实际结果"}</p>
+                        </div>
+                      </div>
+                    ) : (
+                      <p>{selectedStep?.summary || detailModel.summaryText || "暂无执行摘要"}</p>
+                    )}
                   </div>
                   {detailModel.mode === "agent" && detailModel.stagePlan.length ? (
                     <div className="execution-live-panel">

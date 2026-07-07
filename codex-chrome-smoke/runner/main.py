@@ -63,15 +63,15 @@ def _preload_system_for_launch(command: str, arg: str) -> dict[str, Any] | None:
             case_id = BATCH_ORDER[0]
         elif command == "run-draft":
             case_data = load_case_file(arg)
-            return load_system(case_data["system"])
+            return load_system(case_data["system"], case_data)
         elif command == "agent-explore":
             arg_path = Path(arg)
             case_data = load_case_file(arg_path) if arg_path.exists() else load_case(arg)
-            return load_system(case_data["system"])
+            return load_system(case_data["system"], case_data)
         else:
             return None
         case_data = load_case(case_id)
-        return load_system(case_data["system"])
+        return load_system(case_data["system"], case_data)
     except Exception as exc:
         print(f"[runner] preload system failed, fallback to fresh context: {exc}")
         return None

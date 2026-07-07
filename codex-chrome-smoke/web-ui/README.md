@@ -8,7 +8,7 @@ Start the backend from the repository root:
 
 ```bash
 python -m pip install -e .
-python -m uvicorn icm_platform.api:app --host 127.0.0.1 --port 8000
+python -m uvicorn icm_platform.api:app --host 0.0.0.0 --port 8000
 ```
 
 Start the frontend from this folder:
@@ -21,7 +21,7 @@ npm run dev
 Default frontend URL:
 
 ```text
-http://127.0.0.1:5175
+http://<当前机器IP>:5175
 ```
 
 ## Notes

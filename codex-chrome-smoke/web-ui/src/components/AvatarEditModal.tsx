@@ -24,6 +24,7 @@ type Rect = { left: number; top: number; size: number }; // 单位：相对 stag
 type StageMetrics = { width: number; height: number };
 
 const MIN_SIZE = 60; // px
+const PREVIEW_SIZE = 96; // px — 右侧预览圆形头像尺寸，须与 JSX inline width/height 一致
 
 export function AvatarEditModal({ open, onClose, triggerRef }: AvatarEditModalProps) {
   const { state, setAvatar } = useAuth();
@@ -278,6 +279,11 @@ export function AvatarEditModal({ open, onClose, triggerRef }: AvatarEditModalPr
   // 这里是纯函数计算，不写 state，渲染期间多次调用安全。
   const disp = imgSrc && naturalSize ? getImageRect() : null;
 
+  // 预览缩放因子：把 stage 内 rect.size 的选区映射到 PREVIEW_SIZE 的预览圆。
+  // 关键：backgroundSize / backgroundPosition 必须乘以同一缩放因子 k，
+  // 否则预览只是 stage 像素的 1:1 窗口，仅显示选区左上角一小块，与左侧选区内容不一致。
+  const previewScale = disp && rect.size > 0 ? PREVIEW_SIZE / rect.size : 1;
+
   return (
     <Modal
       open={open}
@@ -382,14 +388,14 @@ export function AvatarEditModal({ open, onClose, triggerRef }: AvatarEditModalPr
               <div
                 className="avatar-cropper__preview-circle"
                 style={{
-                  width: 96,
-                  height: 96,
+                  width: PREVIEW_SIZE,
+                  height: PREVIEW_SIZE,
                   borderRadius: "50%",
                   backgroundImage: imgSrc ? `url(${imgSrc})` : undefined,
                   ...(disp
                     ? {
-                        backgroundSize: `${disp.dispW}px ${disp.dispH}px`,
-                        backgroundPosition: `${-(rect.left - disp.dispX)}px ${-(rect.top - disp.dispY)}px`,
+                        backgroundSize: `${disp.dispW * previewScale}px ${disp.dispH * previewScale}px`,
+                        backgroundPosition: `${-(rect.left - disp.dispX) * previewScale}px ${-(rect.top - disp.dispY) * previewScale}px`,
                       }
                     : null),
                 }}

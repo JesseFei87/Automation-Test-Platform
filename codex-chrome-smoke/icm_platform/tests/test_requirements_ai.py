@@ -7,7 +7,14 @@ from pathlib import Path
 from unittest.mock import patch
 
 from icm_platform import db
-from icm_platform.api import app, load_cached_report_analysis, load_report_analysis_versions, save_report_analysis
+from icm_platform.api import (
+    app,
+    load_cached_assertion_analysis,
+    load_cached_report_analysis,
+    load_report_analysis_versions,
+    save_assertion_analysis,
+    save_report_analysis,
+)
 from icm_platform.ai_service import AIConfigurationError, AIProviderError, AIService
 
 
@@ -535,6 +542,149 @@ class RequirementAITests(unittest.TestCase):
         self.assertEqual(response.json()["conclusion"], "结构化报告已分析")
         self.assertEqual(versions.status_code, 200)
         self.assertEqual(versions.json()[0]["analysis"]["conclusion"], "结构化报告已分析")
+
+
+    # ===== E.1 AI 断言解析单元测试 =====
+
+    def test_parse_assertions_with_ai_returns_structured_list(self) -> None:
+        service = AIService()
+        raw = {"choices": [{"message": {"content": json.dumps({"assertions": [
+            {"type": "page_title_contains", "expected": "configure", "match_mode": "contains", "label": "页面标题"},
+        ]})}}]}
+        with patch.object(service, "_post_json", return_value=raw):
+            result = service.parse_assertions_with_ai("页面标题包含 configure", {
+                "provider": "minimax-m3", "base_url": "https://api.minimaxi.com/v1",
+                "model": "MiniMax-M3", "api_key": "sk-test",
+            })
+        self.assertEqual(len(result), 1)
+        item = result[0]
+        self.assertEqual(item["type"], "page_title_contains")
+        self.assertEqual(item["expected"], "configure")
+        self.assertEqual(item["match_mode"], "contains")
+        self.assertEqual(item["status"], "queued")
+        self.assertEqual(item["source"], "ai")
+
+    def test_parse_assertions_with_ai_normalizes_missing_match_mode(self) -> None:
+        service = AIService()
+        raw = {"choices": [{"message": {"content": json.dumps({"assertions": [
+            {"type": "text_contains", "expected": "hello"},
+        ]})}}]}
+        with patch.object(service, "_post_json", return_value=raw):
+            result = service.parse_assertions_with_ai("hello", {
+                "provider": "minimax-m3", "base_url": "https://api.minimaxi.com/v1",
+                "model": "MiniMax-M3", "api_key": "sk-test",
+            })
+        self.assertEqual(result[0]["match_mode"], "contains")
+
+    def test_parse_assertions_with_ai_normalizes_unknown_type_to_text_contains(self) -> None:
+        service = AIService()
+        raw = {"choices": [{"message": {"content": json.dumps({"assertions": [
+            {"type": "", "expected": "something"},
+        ]})}}]}
+        with patch.object(service, "_post_json", return_value=raw):
+            result = service.parse_assertions_with_ai("something", {
+                "provider": "minimax-m3", "base_url": "https://api.minimaxi.com/v1",
+                "model": "MiniMax-M3", "api_key": "sk-test",
+            })
+        self.assertEqual(result[0]["type"], "text_contains")
+
+    def test_parse_assertions_with_ai_raises_on_empty_assertions(self) -> None:
+        service = AIService()
+        raw = {"choices": [{"message": {"content": json.dumps({"assertions": []})}}]}
+        with patch.object(service, "_post_json", return_value=raw):
+            with self.assertRaises(AIProviderError):
+                service.parse_assertions_with_ai("test", {
+                    "provider": "minimax-m3", "base_url": "https://api.minimaxi.com/v1",
+                    "model": "MiniMax-M3", "api_key": "sk-test",
+                })
+
+    def test_parse_assertions_with_ai_raises_on_invalid_json(self) -> None:
+        service = AIService()
+        raw = {"choices": [{"message": {"content": "not json at all"}}]}
+        with patch.object(service, "_post_json", return_value=raw):
+            with self.assertRaises(AIProviderError):
+                service.parse_assertions_with_ai("test", {
+                    "provider": "minimax-m3", "base_url": "https://api.minimaxi.com/v1",
+                    "model": "MiniMax-M3", "api_key": "sk-test",
+                })
+
+    def test_parse_assertions_with_ai_raises_on_missing_content(self) -> None:
+        service = AIService()
+        raw = {}
+        with patch.object(service, "_post_json", return_value=raw):
+            with self.assertRaises(AIProviderError):
+                service.parse_assertions_with_ai("test", {
+                    "provider": "minimax-m3", "base_url": "https://api.minimaxi.com/v1",
+                    "model": "MiniMax-M3", "api_key": "sk-test",
+                })
+
+    def test_parse_assertions_with_ai_validates_settings_first(self) -> None:
+        service = AIService()
+        with patch.object(service, "_post_json") as mocked:
+            with self.assertRaises(AIConfigurationError):
+                service.parse_assertions_with_ai("test", {
+                    "provider": "minimax-m3", "base_url": "https://api.minimaxi.com/v1",
+                    "model": "MiniMax-M3", "api_key": "",
+                })
+        mocked.assert_not_called()
+
+    def test_assertion_parsing_payload_disables_ollama_thinking(self) -> None:
+        service = AIService()
+        payload = service._assertion_parsing_payload("qwen3.6:35b", "test", "ollama-local")
+        self.assertEqual(payload.get("reasoning_effort"), "none")
+        self.assertNotIn("thinking", payload)
+
+    # ===== E.2 缓存命中/未命中测试 =====
+
+    def test_assertion_analysis_cache_roundtrip(self) -> None:
+        settings = {"provider": "minimax-m3", "model": "MiniMax-M3", "base_url": "", "api_key": ""}
+        assertions = [{"type": "text_contains", "expected": "hello", "label": "文本", "status": "completed", "actual": "hello", "match_mode": "contains", "source": "ai"}]
+        with tempfile.TemporaryDirectory() as folder:
+            db_path = Path(folder) / "test.sqlite3"
+            with patch("icm_platform.db.DB_PATH", db_path), patch("icm_platform.db.DATA_DIR", db_path.parent):
+                db.init_db()
+                save_assertion_analysis("hello", settings, assertions)
+                cached = load_cached_assertion_analysis("hello", settings)
+        self.assertIsNotNone(cached)
+        self.assertEqual(len(cached), 1)
+        self.assertEqual(cached[0]["status"], "queued")
+        self.assertEqual(cached[0]["actual"], "")
+        self.assertTrue(cached[0]["cached"])
+
+    def test_assertion_analysis_cache_miss_on_different_text(self) -> None:
+        settings = {"provider": "minimax-m3", "model": "MiniMax-M3", "base_url": "", "api_key": ""}
+        with tempfile.TemporaryDirectory() as folder:
+            db_path = Path(folder) / "test.sqlite3"
+            with patch("icm_platform.db.DB_PATH", db_path), patch("icm_platform.db.DATA_DIR", db_path.parent):
+                db.init_db()
+                save_assertion_analysis("text A", settings, [{"type": "text_contains", "expected": "A"}])
+                missed = load_cached_assertion_analysis("text B", settings)
+        self.assertIsNone(missed)
+
+    def test_assertion_analysis_cache_miss_on_different_model(self) -> None:
+        settings_a = {"provider": "minimax-m3", "model": "MiniMax-M3", "base_url": "", "api_key": ""}
+        settings_b = {"provider": "minimax-m3", "model": "MiniMax-M2", "base_url": "", "api_key": ""}
+        with tempfile.TemporaryDirectory() as folder:
+            db_path = Path(folder) / "test.sqlite3"
+            with patch("icm_platform.db.DB_PATH", db_path), patch("icm_platform.db.DATA_DIR", db_path.parent):
+                db.init_db()
+                save_assertion_analysis("same text", settings_a, [{"type": "text_contains", "expected": "x"}])
+                missed = load_cached_assertion_analysis("same text", settings_b)
+        self.assertIsNone(missed)
+
+    def test_assertion_analysis_cache_corrupt_json_returns_none(self) -> None:
+        settings = {"provider": "minimax-m3", "model": "MiniMax-M3", "base_url": "", "api_key": ""}
+        with tempfile.TemporaryDirectory() as folder:
+            db_path = Path(folder) / "test.sqlite3"
+            with patch("icm_platform.db.DB_PATH", db_path), patch("icm_platform.db.DATA_DIR", db_path.parent):
+                db.init_db()
+                with db.connect() as conn:
+                    conn.execute(
+                        "insert into assertion_analyses(expected_hash, provider, model, assertions_json, created_at, updated_at) values (?, ?, ?, ?, ?, ?)",
+                        ("deadbeef", "minimax-m3", "MiniMax-M3", "NOT JSON", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"),
+                    )
+                result = load_cached_assertion_analysis("whatever", settings)
+        self.assertIsNone(result)
 
 
 if __name__ == "__main__":

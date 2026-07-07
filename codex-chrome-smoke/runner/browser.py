@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -13,7 +15,7 @@ from runner.asset_recorder import get_asset_recorder
 from runner.evidence_recorder import get_evidence_recorder
 
 ROOT = Path(__file__).resolve().parents[1]
-SYSTEM_PATH = ROOT / "systems" / "icm-internal.yaml"
+SYSTEMS_DIR = ROOT / "systems"
 SCREENSHOT_ROOT = ROOT / "screenshots"
 SCREENSHOT_LATEST_ROOT = SCREENSHOT_ROOT / "latest"
 SCREENSHOT_RUNS_ROOT = SCREENSHOT_ROOT / "runs"
@@ -99,30 +101,40 @@ async def relaunch_context(
     session.page = new_page
 
 
-def load_system(system_id: str = "icm-internal") -> dict[str, Any]:
-    data = yaml.safe_load(SYSTEM_PATH.read_text(encoding="utf-8"))
+def load_system(system_id: str = "icm-internal", case: dict[str, Any] | None = None) -> dict[str, Any]:
+    system_path = SYSTEMS_DIR / f"{system_id}.yaml"
+    if not system_path.exists():
+        raise FileNotFoundError(f"System file not found: {system_path}")
+    data = yaml.safe_load(system_path.read_text(encoding="utf-8"))
     if data["id"] != system_id:
         raise ValueError(f"Unsupported system: {system_id}")
-    return apply_platform_runtime_settings(data)
+    return apply_platform_runtime_settings(data, case=case)
 
 
-def apply_platform_runtime_settings(system: dict[str, Any]) -> dict[str, Any]:
+def apply_platform_runtime_settings(system: dict[str, Any], case: dict[str, Any] | None = None) -> dict[str, Any]:
     settings = load_platform_runtime_settings()
     environment = settings.get("environment") or {}
     accounts = settings.get("accounts") or {}
-    admin = accounts.get("admin") or {}
-    icm_base_url = environment.get("icm_base_url")
-    icm_login_url = environment.get("icm_login_url")
-    if icm_base_url:
-        system["base_url"] = icm_base_url
-    if icm_login_url:
-        system["entry_url"] = icm_login_url
-        system["login_url"] = icm_login_url
-    if admin.get("username") or admin.get("password"):
-        system["credentials"] = {
-            "username": admin.get("username") or system["credentials"]["username"],
-            "password": admin.get("password") or system["credentials"]["password"],
-        }
+    if system.get("id") == "icm-internal":
+        admin = accounts.get("admin") or {}
+        icm_base_url = environment.get("icm_base_url")
+        icm_login_url = environment.get("icm_login_url")
+        if icm_base_url:
+            system["base_url"] = icm_base_url
+        if icm_login_url:
+            system["entry_url"] = icm_login_url
+            system["login_url"] = icm_login_url
+        if admin.get("username") or admin.get("password"):
+            system["credentials"] = {
+                "username": admin.get("username") or system["credentials"]["username"],
+                "password": admin.get("password") or system["credentials"]["password"],
+            }
+    else:
+        runtime_url = str((((case or {}).get("context_info") or {}).get("env_url")) or "").strip()
+        if runtime_url:
+            system["base_url"] = runtime_url
+            system["entry_url"] = runtime_url
+            system["login_url"] = runtime_url
     system["_runtime_environment"] = environment
     system["_runtime_accounts"] = accounts
     return system
@@ -594,11 +606,85 @@ def _login_labels(system: dict[str, Any]) -> tuple[list[str], list[str], list[st
     return usernames, passwords, submits
 
 
+def _known_runtime_usernames(system: dict[str, Any]) -> list[str]:
+    usernames: list[str] = []
+    seen: set[str] = set()
+    for account in (system.get("_runtime_accounts") or {}).values():
+        username = str((account or {}).get("username") or "").strip()
+        if username and username not in seen:
+            seen.add(username)
+            usernames.append(username)
+    default_username = str((system.get("credentials") or {}).get("username") or "").strip()
+    if default_username and default_username not in seen:
+        usernames.append(default_username)
+    return usernames
+
+
+def _decode_token_subject(token: str) -> str | None:
+    parts = str(token or "").split(".")
+    if len(parts) < 2:
+        return None
+    try:
+        payload = parts[1] + "=" * (-len(parts[1]) % 4)
+        data = json.loads(base64.urlsafe_b64decode(payload).decode("utf-8"))
+    except Exception:
+        return None
+    subject = str(data.get("sub") or "").strip()
+    return subject or None
+
+
+async def _cookie_subject_username(page: Page) -> str | None:
+    try:
+        cookies = await page.context.cookies()
+    except Exception:
+        return None
+    for cookie in cookies:
+        name = str(cookie.get("name") or "")
+        if "token" not in name.lower():
+            continue
+        subject = _decode_token_subject(str(cookie.get("value") or ""))
+        if subject:
+            return subject
+    return None
+
+
+async def _match_visible_header_username(page: Page, username: str) -> bool:
+    locator = page.get_by_text(username, exact=True)
+    count = min(await locator.count(), 12)
+    viewport_width = (page.viewport_size or {}).get("width") or 1600
+    for index in range(count):
+        candidate = locator.nth(index)
+        try:
+            if not await candidate.is_visible():
+                continue
+            box = await candidate.bounding_box()
+        except Exception:
+            continue
+        if box is None:
+            continue
+        if box["y"] <= 220 and box["x"] >= viewport_width * 0.5:
+            return True
+    return False
+
+
+async def current_logged_in_username(page: Page, system: dict[str, Any]) -> str | None:
+    if "#/login" in page.url.lower():
+        return None
+    cookie_subject = await _cookie_subject_username(page)
+    if cookie_subject:
+        return cookie_subject
+    for username in _known_runtime_usernames(system):
+        if await _match_visible_header_username(page, username):
+            return username
+    return None
+
+
 async def is_logged_in(page: Page, system: dict[str, Any]) -> bool:
     url = page.url.lower()
     if "#/login" in url:
         return False
-    for signal in system["login_state_check"]["logged_in_signals"]:
+    login_state_check = system.get("login_state_check") or {}
+    for signal in login_state_check.get("logged_in_signals") or []:
         if signal and signal.lower() in url:
             return True
     avatar = page.locator("img.user-avatar")
@@ -617,26 +703,95 @@ async def wait_for_login_page(page: Page, system: dict[str, Any]) -> None:
         await page.wait_for_timeout(500)
 
 
+async def _clear_login_state(page: Page) -> None:
+    await page.context.clear_cookies()
+    await page.evaluate(
+        """async () => {
+            try { localStorage.clear(); } catch (error) {}
+            try { sessionStorage.clear(); } catch (error) {}
+            if (window.indexedDB && window.indexedDB.databases) {
+                try {
+                    const databases = await window.indexedDB.databases();
+                    await Promise.all((databases || []).map((database) => (
+                        database && database.name ? new Promise((resolve) => {
+                            const request = window.indexedDB.deleteDatabase(database.name);
+                            request.onsuccess = request.onerror = request.onblocked = () => resolve(null);
+                        }) : Promise.resolve(null)
+                    )));
+                } catch (error) {}
+            }
+        }"""
+    )
+
+
+async def _open_logout_menu(page: Page, system: dict[str, Any]) -> bool:
+    current_username = await current_logged_in_username(page, system)
+    if not current_username:
+        return False
+    locator = page.get_by_text(current_username, exact=True)
+    count = min(await locator.count(), 12)
+    viewport_width = (page.viewport_size or {}).get("width") or 1600
+    for index in range(count):
+        candidate = locator.nth(index)
+        try:
+            if not await candidate.is_visible():
+                continue
+            box = await candidate.bounding_box()
+            if box is None or box["y"] > 220 or box["x"] < viewport_width * 0.5:
+                continue
+            await candidate.click(force=True)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+async def _wait_for_expected_username(page: Page, system: dict[str, Any], expected_username: str, timeout_ms: int = 20000) -> None:
+    deadline = time.monotonic() + timeout_ms / 1000
+    mismatch_username: str | None = None
+    while time.monotonic() < deadline:
+        current_username = await current_logged_in_username(page, system)
+        if current_username == expected_username:
+            return
+        if current_username and current_username != expected_username:
+            mismatch_username = current_username
+        await page.wait_for_timeout(250)
+    if mismatch_username:
+        raise RuntimeError(f"Login landed on unexpected account: expected {expected_username}, got {mismatch_username}")
+    raise RuntimeError(f"Login did not reach expected account: {expected_username}")
+
+
 async def perform_login(page: Page, system: dict[str, Any], username: str | None = None, password: str | None = None) -> None:
+    expected_username = username or system["credentials"]["username"]
+    expected_password = password or system["credentials"]["password"]
     await open_login_page(page, system)
-    if await is_logged_in(page, system):
+    current_username = await current_logged_in_username(page, system)
+    if current_username == expected_username:
         evidence = get_evidence_recorder(page)
         if evidence:
-            evidence.event(page, "login_probe", "already logged in after opening login page")
+            evidence.event(page, "login_probe", "already logged in with expected account", value=expected_username)
         return
+    if current_username and current_username != expected_username:
+        await ensure_logged_out(page, system)
+        await open_login_page(page, system)
     usernames, passwords, submits = _login_labels(system)
-    await fill_first(page, usernames, username or system["credentials"]["username"])
-    await fill_first(page, passwords, password or system["credentials"]["password"])
+    await fill_first(page, usernames, expected_username)
+    await fill_first(page, passwords, expected_password)
     await click_first(page, submits)
     try:
         await page.wait_for_url("**/#/index**", timeout=20000)
     except Exception:
         await page.wait_for_timeout(1000)
+    await _wait_for_expected_username(page, system, expected_username)
 
 
 async def ensure_logged_in(page: Page, system: dict[str, Any], username: str | None = None, password: str | None = None) -> None:
-    if await is_logged_in(page, system):
+    expected_username = username or system["credentials"]["username"]
+    current_username = await current_logged_in_username(page, system)
+    if current_username == expected_username:
         return
+    if current_username and current_username != expected_username:
+        await ensure_logged_out(page, system)
     await perform_login(page, system, username=username, password=password)
 
 
@@ -644,8 +799,13 @@ async def ensure_logged_out(page: Page, system: dict[str, Any]) -> None:
     if not await is_logged_in(page, system):
         await wait_for_login_page(page, system)
         return
-    await page.context.clear_cookies()
-    await page.evaluate("() => { localStorage.clear(); sessionStorage.clear(); }")
+    try:
+        if await _open_logout_menu(page, system):
+            await click_first(page, ["text=退出登录", "text=登出", "text=Logout", "li:has-text(退出登录)", "li:has-text(登出)"])
+            await page.wait_for_timeout(500)
+    except Exception:
+        pass
+    await _clear_login_state(page)
     await open_login_page(page, system)
     await wait_for_login_page(page, system)
 

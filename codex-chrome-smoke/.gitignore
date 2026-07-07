@@ -3,6 +3,7 @@
 .codex-tmp/
 reports/observed-assets/
 reports/runs/
+reports/agent-knowledge/
 platform-data/*.sqlite3
 platform-data/runner-logs/
 screenshots/
@@ -40,3 +41,10 @@ build/
 Thumbs.db
 *.swp
 *.swo
+
+# Process docs
+doc/task_plan.md
+doc/progress.md
+doc/findings.md
+doc/task_issue.md
+doc/lessons.md

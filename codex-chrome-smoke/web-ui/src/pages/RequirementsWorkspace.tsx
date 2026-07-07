@@ -223,16 +223,16 @@ function buildExportMindData(drafts: CaseDraft[], requirementTitle: string, mode
         tags: [groupLabel],
         style:
           mode === "priority"
-            ? { color: "#7a4a00", background: "#fff0c8", border: "1px solid #f39a20" }
-            : { color: "#173b74", background: "#e6efff", border: "1px solid #2164f3" },
+            ? { color: "var(--amber)", background: "var(--amber-soft)", border: "1px solid var(--amber)" }
+            : { color: "var(--blue)", background: "var(--blue-soft)", border: "1px solid var(--blue)" },
         children: groupDrafts.map((draft, index) => ({
           id: `draft-${draft.id}`,
           topic: `${index + 1}. ${draft.title || `draft #${draft.id}`}`,
           tags: [String(draft.status || "draft")],
           style:
             String(draft.status || "").toLowerCase() === "draft"
-              ? { color: "#7a4a00", background: "#fff0c8", border: "1px solid #f39a20" }
-              : { color: "#0f5132", background: "#dcfbea", border: "1px solid #12b981" },
+              ? { color: "var(--amber)", background: "var(--amber-soft)", border: "1px solid var(--amber)" }
+              : { color: "var(--green)", background: "var(--green-soft)", border: "1px solid var(--green)" },
         })),
       })),
     },
@@ -654,16 +654,16 @@ export function RequirementsWorkspace() {
         }
 
         .dropzone {
-          border: 1.5px dashed #D0D7DE;
+          border: 1.5px dashed var(--line);
           border-radius: 8px;
           padding: 8px;
           margin-bottom: 14px;
-          background: #FAFBFC;
+          background: var(--soft);
           transition: border-color 0.2s, background 0.2s;
         }
         .dropzone.is-dragover {
-          border-color: #1F6FEB;
-          background: #EAF3FF;
+          border-color: var(--blue);
+          background: var(--blue-soft);
         }
 
         .dropdown {
@@ -674,10 +674,10 @@ export function RequirementsWorkspace() {
           position: absolute;
           top: calc(100% + 4px);
           right: 0;
-          background: #FFFFFF;
-          border: 1px solid #E5E7EB;
+          background: var(--card);
+          border: 1px solid var(--line);
           border-radius: 6px;
-          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+          box-shadow: var(--shadow);
           min-width: 200px;
           z-index: 10;
           padding: 4px 0;
@@ -693,13 +693,13 @@ export function RequirementsWorkspace() {
           padding: 8px 12px;
           font-size: 13px;
           cursor: pointer;
-          color: #1F2329;
+          color: var(--text);
         }
         .dropdown__item:hover {
-          background: #F4F5F7;
+          background: var(--surface-hover, var(--soft));
         }
         .dropdown__item[disabled] {
-          color: #C0C4CC;
+          color: var(--muted);
           cursor: not-allowed;
         }
 
@@ -733,10 +733,10 @@ export function RequirementsWorkspace() {
           min-height: 36px;
           margin-bottom: 12px;
           padding: 0 12px;
-          color: #5e718d;
-          border: 1px solid #e8eef6;
+          color: var(--muted);
+          border: 1px solid var(--line);
           border-radius: 8px;
-          background: #f8fbff;
+          background: var(--soft);
           font-size: 12px;
           font-weight: 700;
         }
@@ -751,9 +751,9 @@ export function RequirementsWorkspace() {
         .requirements-draft-list,
         .requirements-draft-preview {
           min-width: 0;
-          border: 1px solid #e3ebf5;
+          border: 1px solid var(--line);
           border-radius: 8px;
-          background: #fff;
+          background: var(--card);
           overflow: hidden;
         }
         .requirements-draft-list {
@@ -765,9 +765,9 @@ export function RequirementsWorkspace() {
           grid-template-columns: minmax(0, 1fr) 92px;
           gap: 10px;
           padding: 12px 14px;
-          color: #63758d;
-          border-bottom: 1px solid #e8eef6;
-          background: #f7faff;
+          color: var(--muted);
+          border-bottom: 1px solid var(--line);
+          background: var(--soft);
           font-size: 12px;
           font-weight: 800;
         }
@@ -786,17 +786,17 @@ export function RequirementsWorkspace() {
           padding: 10px 14px;
           color: var(--text);
           border: 0;
-          border-bottom: 1px solid #eef3f8;
-          background: #fff;
+          border-bottom: 1px solid var(--line);
+          background: var(--card);
           text-align: left;
           cursor: pointer;
         }
         .requirements-draft-row:hover {
-          background: #f7fbff;
+          background: var(--soft);
         }
         .requirements-draft-row.is-active {
-          background: #eaf3ff;
-          box-shadow: inset 3px 0 0 #2563eb;
+          background: var(--blue-soft);
+          box-shadow: inset 3px 0 0 var(--blue);
         }
         .requirements-draft-row__title {
           overflow: hidden;
@@ -809,7 +809,7 @@ export function RequirementsWorkspace() {
         .requirements-draft-preview {
           display: grid;
           grid-template-rows: auto 1fr;
-          background: #fbfdff;
+          background: var(--soft);
         }
         .requirements-draft-preview__header {
           display: flex;
@@ -817,18 +817,18 @@ export function RequirementsWorkspace() {
           justify-content: space-between;
           gap: 16px;
           padding: 18px 18px 14px;
-          border-bottom: 1px solid #e8eef6;
-          background: #fff;
+          border-bottom: 1px solid var(--line);
+          background: var(--card);
         }
         .requirements-draft-preview__header h4 {
           margin: 0 0 8px;
-          color: #162033;
+          color: var(--text);
           font-size: 18px;
           line-height: 1.35;
         }
         .requirements-draft-preview__header p {
           margin: 0;
-          color: #6b7b91;
+          color: var(--muted);
           font-size: 12px;
           line-height: 1.5;
         }
@@ -875,6 +875,72 @@ export function RequirementsWorkspace() {
           .requirements-result-grid {
             grid-template-columns: 1fr;
           }
+        }
+
+        /* ============================================================
+           深色模式补强：RequirementsWorkspace 自定义块的暗色适配
+           （跟随 <html data-theme="dark">）
+           ============================================================ */
+        :root[data-theme="dark"] .dropzone {
+          border-color: var(--border-strong, #31415c);
+          background: var(--surface-2, #1d2940);
+        }
+        :root[data-theme="dark"] .dropzone.is-dragover {
+          border-color: var(--blue);
+          background: var(--blue-soft);
+        }
+        :root[data-theme="dark"] .dropdown__menu {
+          background: var(--card);
+          border-color: var(--border-strong, #31415c);
+        }
+        :root[data-theme="dark"] .dropdown__item {
+          color: var(--text);
+        }
+        :root[data-theme="dark"] .dropdown__item:hover {
+          background: var(--surface-hover, #253451);
+        }
+        :root[data-theme="dark"] .requirements-result-meta {
+          background: var(--surface-2, #1d2940);
+          border-color: var(--border-strong, #31415c);
+          color: var(--muted);
+        }
+        :root[data-theme="dark"] .requirements-draft-list,
+        :root[data-theme="dark"] .requirements-draft-preview {
+          background: var(--card);
+          border-color: var(--border-strong, #31415c);
+        }
+        :root[data-theme="dark"] .requirements-draft-list__head {
+          background: var(--surface-2, #1d2940);
+          border-bottom-color: var(--border-strong, #31415c);
+          color: var(--muted);
+        }
+        :root[data-theme="dark"] .requirements-draft-row {
+          background: var(--card);
+          border-bottom-color: var(--border-soft, #273349);
+          color: var(--text);
+        }
+        :root[data-theme="dark"] .requirements-draft-row:hover {
+          background: var(--surface-hover, #253451);
+        }
+        :root[data-theme="dark"] .requirements-draft-row.is-active {
+          background: var(--blue-soft);
+          box-shadow: inset 3px 0 0 var(--blue);
+        }
+        :root[data-theme="dark"] .requirements-draft-preview {
+          background: var(--soft);
+        }
+        :root[data-theme="dark"] .requirements-draft-preview__header {
+          background: var(--card);
+          border-bottom-color: var(--border-strong, #31415c);
+        }
+        :root[data-theme="dark"] .requirements-draft-preview__header h4 {
+          color: var(--text);
+        }
+        :root[data-theme="dark"] .requirements-draft-preview__header p {
+          color: var(--muted);
+        }
+        :root[data-theme="dark"] .page-header p {
+          color: var(--muted);
         }
       `}</style>
 

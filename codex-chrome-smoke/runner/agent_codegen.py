@@ -30,6 +30,11 @@ def _click(decision: dict, execution: dict) -> str | None:
     return f"    await click_first(page, [{_quote(selector)}])" if selector else None
 
 
+def _hover(decision: dict, execution: dict) -> str | None:
+    selector = execution.get("selector")
+    return f"    await page.locator({_quote(selector)}).first.hover()" if selector else None
+
+
 def _press(decision: dict, execution: dict) -> str | None:
     selector = execution.get("selector")
     key = decision.get("key") or execution.get("key") or "Enter"
@@ -54,6 +59,7 @@ _EMITTERS: dict[str, Callable[[dict, dict], str | None]] = {
     "goto": _goto,
     "fill": _fill,
     "click": _click,
+    "hover": _hover,
     "press": _press,
     "wait": _wait,
     "scroll": _scroll,

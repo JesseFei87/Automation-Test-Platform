@@ -1,6 +1,7 @@
 import type { PageId } from "../types";
 
-export const API_ORIGIN = "http://127.0.0.1:8000";
+const browserHost = typeof window === "undefined" ? "127.0.0.1" : window.location.hostname || "127.0.0.1";
+export const API_ORIGIN = `http://${browserHost}:8000`;
 const API_BASE = `${API_ORIGIN}/api`;
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -324,6 +325,20 @@ export type ApiStructuredStep = {
   network_logs?: Array<Record<string, unknown>>;
   dom_snapshot_url?: string;
   events?: Array<Record<string, unknown>>;
+  expected_result?: string;
+  expected_result_status?: string;
+  actual_result?: string;
+  assertion_checks?: Array<{
+    type: string;
+    label?: string;
+    expected: string;
+    actual?: string;
+    status: string;
+    evidence_source?: string;
+    reason?: string;
+    field?: string;
+    terms?: string[];
+  }>;
 };
 
 export type ApiRunDetailView = {

@@ -23,7 +23,12 @@ def case_requires_authenticated_session(case: dict[str, Any]) -> bool:
 
 
 def resolve_case_login_credentials(case: dict[str, Any], system: dict[str, Any]) -> tuple[str, str]:
-    username, password = _extract_credentials_from_case(case)
+    username, password = resolve_case_login_credentials_at(case, system, occurrence=1)
+    return username, password
+
+
+def resolve_case_login_credentials_at(case: dict[str, Any], system: dict[str, Any], occurrence: int = 1) -> tuple[str, str]:
+    username, password = _extract_credentials_from_case(case, occurrence=occurrence)
     if username and password:
         return username, password
     credentials = system.get("credentials") or {}
@@ -33,11 +38,16 @@ def resolve_case_login_credentials(case: dict[str, Any], system: dict[str, Any])
     )
 
 
-def _extract_credentials_from_case(case: dict[str, Any]) -> tuple[str, str]:
+def _extract_credentials_from_case(case: dict[str, Any], occurrence: int = 1) -> tuple[str, str]:
+    matches: list[tuple[str, str]] = []
     for step in case.get("steps") or []:
         credentials = _extract_credentials_from_text(str(step))
         if all(credentials):
-            return credentials
+            matches.append(credentials)
+    if 0 < occurrence <= len(matches):
+        return matches[occurrence - 1]
+    if matches:
+        return matches[0]
 
     test_data = case.get("test_data")
     if isinstance(test_data, dict):

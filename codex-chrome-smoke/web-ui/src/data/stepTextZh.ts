@@ -54,6 +54,7 @@ export function translateStepText(value: string, fallback: string) {
   const normalized = trimmed.replace(/[.。]+$/, "").replace(/\s+/g, " ").toLowerCase();
   const exact = exactStepTranslations.get(normalized);
   if (exact) return exact;
+  if (/\p{Script=Han}/u.test(trimmed)) return trimmed;
   if (!/[a-z]/i.test(trimmed)) return trimmed;
   const matchedRule = stepTranslationRules.find((rule) => rule.pattern.test(trimmed));
   const match = matchedRule ? trimmed.match(matchedRule.pattern) : null;

@@ -1,6 +1,7 @@
 import asyncio
 
-from runner.agent_explore import _agent_decision_payload, extract_json_object, run_agent_loop
+from runner.agent_actions import normalize_decision
+from runner.agent_explore import OBSERVE_PAGE_SCRIPT, _agent_decision_payload, build_agent_prompt, execute_agent_decision, extract_json_object, run_agent_loop
 
 
 def test_agent_loop_stops_on_finish():
@@ -172,6 +173,137 @@ def test_agent_decision_payload_uses_minimax_completion_tokens():
     assert "max_tokens" not in payload
 
 
+def test_agent_prompt_advertises_hover_action():
+    prompt = build_agent_prompt("hover more", {"interactives": []}, [], 0, 3)
+
+    assert "hover" in prompt.split("Allowed actions:", 1)[1].splitlines()[0]
+
+
+def test_execute_agent_decision_uses_playwright_hover(monkeypatch):
+    class Locator:
+        def __init__(self):
+            self.hovered = False
+
+        async def hover(self, timeout):
+            self.hovered = timeout == 8000
+
+    locator = Locator()
+
+    async def fake_first_visible(page, candidates):
+        assert candidates == ["#more", "text=更多"]
+        return locator
+
+    monkeypatch.setattr("runner.agent_explore.first_visible", fake_first_visible)
+    decision = normalize_decision({"action": "hover", "ref": "e1", "reason": "reveal menu"})
+    observation = {"interactives": [{"ref": "e1", "selector": "#more", "text": "更多"}]}
+
+    result = asyncio.run(execute_agent_decision(object(), decision, observation))
+
+    assert result["result"] == "hovered"
+    assert locator.hovered is True
+
+
+def test_execute_agent_decision_retries_hover_after_dismissing_stale_dropdown(monkeypatch):
+    class Locator:
+        def __init__(self):
+            self.calls = 0
+
+        async def hover(self, timeout):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("subtree intercepts pointer events")
+            assert timeout == 8000
+
+    class Mouse:
+        def __init__(self):
+            self.moves = []
+
+        async def move(self, x, y):
+            self.moves.append((x, y))
+
+    class Keyboard:
+        def __init__(self):
+            self.presses = []
+
+        async def press(self, key):
+            self.presses.append(key)
+
+    class Page:
+        def __init__(self):
+            self.mouse = Mouse()
+            self.keyboard = Keyboard()
+            self.waits = []
+
+        async def wait_for_timeout(self, ms):
+            self.waits.append(ms)
+
+    locator = Locator()
+    page = Page()
+
+    async def fake_first_visible(page, candidates):
+        return locator
+
+    monkeypatch.setattr("runner.agent_explore.first_visible", fake_first_visible)
+    decision = normalize_decision({"action": "hover", "ref": "e1", "reason": "reveal menu"})
+    observation = {"interactives": [{"ref": "e1", "selector": "#more", "text": "更多"}]}
+
+    result = asyncio.run(execute_agent_decision(page, decision, observation))
+
+    assert result["result"] == "hovered"
+    assert locator.calls == 2
+    assert page.keyboard.presses == ["Escape"]
+    assert page.mouse.moves == [(1, 1)]
+    assert page.waits == [120]
+
+
+def test_observe_page_script_collects_dropdown_menu_items():
+    assert ".el-dropdown-menu__item" in OBSERVE_PAGE_SCRIPT
+
+
+def test_execute_agent_decision_treats_visible_dropdown_intercept_as_open_menu(monkeypatch):
+    class Locator:
+        async def click(self, timeout):
+            raise RuntimeError("subtree intercepts pointer events")
+
+    class CountLocator:
+        async def count(self):
+            return 1
+
+    class DropdownLocator:
+        def locator(self, selector):
+            assert selector == ":visible"
+            return CountLocator()
+
+    class Page:
+        def locator(self, selector):
+            assert selector == ".el-dropdown-menu__item"
+            return DropdownLocator()
+
+    locator = Locator()
+    page = Page()
+
+    async def fake_first_visible(page, candidates):
+        assert candidates == ["tr:nth-of-type(3) > td:nth-of-type(9) > div > div > button", "text=更多"]
+        return locator
+
+    monkeypatch.setattr("runner.agent_explore.first_visible", fake_first_visible)
+    decision = normalize_decision({"action": "click", "ref": "e1", "reason": "open more menu"})
+    observation = {
+        "interactives": [
+            {
+                "ref": "e1",
+                "selector": "tr:nth-of-type(3) > td:nth-of-type(9) > div > div > button",
+                "text": "更多",
+                "ariaLabel": "",
+            }
+        ]
+    }
+
+    result = asyncio.run(execute_agent_decision(page, decision, observation))
+
+    assert result["result"] == "dropdown_opened"
+
+
 def test_agent_loop_preserves_history_when_decision_raises():
     async def scenario():
         calls = {"count": 0}
@@ -280,5 +412,85 @@ def test_agent_loop_ignores_finish_when_only_login_is_satisfied():
         assert result["ok"] is True
         assert result["history"][0]["execution"]["result"] == "login_precondition_satisfied"
         assert result["history"][1]["decision"]["reason"] == "business steps complete"
+
+    asyncio.run(scenario())
+
+
+def test_agent_loop_retries_decide_on_network_provider_error():
+    """B 方案：step_index>0 时，AI provider 网络错误重试一次，成功则继续。"""
+    async def scenario():
+        calls = {"count": 0}
+
+        class _FakeAIProviderError(Exception):
+            pass
+
+        async def observe():
+            return {"url": "http://127.0.0.1", "title": "", "visibleText": ["Ready"], "interactives": []}
+
+        async def decide(goal, observation, history, step_index, max_steps):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                return {"action": "wait", "reason": "settle"}
+            if calls["count"] == 2:
+                # 模拟网络错误（类名为 AIProviderError）
+                raise _FakeAIProviderError("模型网络连接失败：[Errno 2] No such file or directory")
+            return {"action": "finish", "reason": "done after retry"}
+
+        async def execute(decision, observation):
+            return {"result": "waited"}
+
+        # monkeypatch _is_network_provider_error 让 _FakeAIProviderError 被识别
+        import runner.agent_explore as ae
+        original = ae._is_network_provider_error
+        ae._is_network_provider_error = lambda exc: type(exc).__name__ in ("AIProviderError", "_FakeAIProviderError")
+        try:
+            result = await run_agent_loop(
+                goal="settle then finish",
+                observe=observe,
+                decide=decide,
+                execute=execute,
+                allowed_hosts={"127.0.0.1"},
+                max_steps=3,
+            )
+        finally:
+            ae._is_network_provider_error = original
+
+        assert result["ok"] is True
+        assert calls["count"] == 3
+        assert result["history"][0]["decision"]["action"] == "wait"
+        assert result["history"][1]["decision"]["action"] == "finish"
+
+    asyncio.run(scenario())
+
+
+def test_agent_loop_does_not_retry_on_value_error():
+    """B 方案：ValueError（JSON 解析错误）不重试，直接失败。保护现有行为。"""
+    async def scenario():
+        calls = {"count": 0}
+
+        async def observe():
+            return {"url": "http://127.0.0.1", "title": "", "visibleText": ["Ready"], "interactives": []}
+
+        async def decide(goal, observation, history, step_index, max_steps):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                return {"action": "wait", "reason": "settle"}
+            raise ValueError("JSON parse failed")
+
+        async def execute(decision, observation):
+            return {"result": "waited"}
+
+        result = await run_agent_loop(
+            goal="settle then fail",
+            observe=observe,
+            decide=decide,
+            execute=execute,
+            allowed_hosts={"127.0.0.1"},
+            max_steps=3,
+        )
+        assert result["ok"] is False
+        assert calls["count"] == 2
+        assert len(result["history"]) == 2
+        assert result["history"][1]["decision"]["action"] == "fail"
 
     asyncio.run(scenario())

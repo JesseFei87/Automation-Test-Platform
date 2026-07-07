@@ -75,6 +75,45 @@ expected_results:
             self.assertIn("runner.main agent-explore", row["command"])
             self.assertIn(str(db_path.parent / "draft_runs" / task["id"] / "case.yaml"), row["command"])
 
+    def test_enqueue_agent_explore_infers_external_system_and_project_url_for_non_icm_draft(self) -> None:
+        with isolated_db() as db_path:
+            with db.connect() as conn:
+                conn.execute(
+                    """
+                    insert into project_profiles(id, name, base_url, description, created_at, updated_at)
+                    values ('proj-search', 'MyProject', 'https://bing.com', '', '2026-06-15T00:00:00Z', '2026-06-15T00:00:00Z')
+                    """
+                )
+                conn.execute(
+                    """
+                    insert into requirements(title, document, status, project_id, created_at, updated_at)
+                    values ('req', 'doc', 'draft', 'proj-search', '2026-06-15T00:00:00Z', '2026-06-15T00:00:00Z')
+                    """
+                )
+                requirement_id = conn.execute("select id from requirements").fetchone()["id"]
+                conn.execute(
+                    """
+                    insert into case_drafts(requirement_id, title, yaml, status, created_at, updated_at)
+                    values (?, 'draft case', 'id: SEARCH_FUN_001
+title: Search
+steps:
+  - Open bing
+expected_results:
+  - Search results visible
+', 'draft', '2026-06-15T00:00:00Z', '2026-06-15T00:00:00Z')
+                    """,
+                    (requirement_id,),
+                )
+                draft_id = conn.execute("select id from case_drafts").fetchone()["id"]
+
+            task = RunnerWorker().enqueue("agent-explore", draft_id=draft_id)
+            draft_path = db_path.parent / "draft_runs" / task["id"] / "case.yaml"
+
+            payload = draft_path.read_text(encoding="utf-8")
+
+        self.assertIn("system: external-template", payload)
+        self.assertIn("env_url: https://bing.com", payload)
+
     def test_enqueue_agent_self_heal_writes_child_draft_and_metadata(self) -> None:
         with isolated_db() as db_path:
             worker = RunnerWorker()

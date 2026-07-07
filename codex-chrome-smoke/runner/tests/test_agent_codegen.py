@@ -58,6 +58,22 @@ def test_generate_candidate_flow_keeps_press_wait_and_scroll_steps():
     ast.parse(code)
 
 
+def test_generate_candidate_flow_keeps_hover_step():
+    trace = {
+        "history": [
+            {
+                "decision": {"action": "hover", "ref": "e4"},
+                "execution": {"selector": ".more-button"},
+            }
+        ]
+    }
+
+    code = generate_candidate_flow(trace)
+
+    assert "await page.locator('.more-button').first.hover()" in code
+    ast.parse(code)
+
+
 def test_generate_candidate_flow_uses_full_device_create_template_when_case_matches():
     trace = {
         "history": [{"decision": {"action": "goto", "url": "#/hubble/device"}}],

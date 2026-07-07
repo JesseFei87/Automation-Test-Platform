@@ -62,7 +62,7 @@ The runner starts a fresh browser context each time, checks whether the site is 
 
 The MVP platform adds a Web UI plus a local FastAPI backend around the existing runner.
 
-- Backend API: `python -m uvicorn icm_platform.api:app --host 127.0.0.1 --port 8000`
+- Backend API: `python -m uvicorn icm_platform.api:app --host 0.0.0.0 --port 8000`
 - Frontend UI: `cd web-ui && npm run dev`
 - API data store: `platform-data/icm-platform.sqlite3`
 

@@ -10,6 +10,8 @@ import uuid
 import json
 from pathlib import Path
 
+from urllib.parse import urlparse
+
 import yaml
 
 from icm_platform.assets import list_batch_child_reports, report_path_for_run
@@ -69,7 +71,7 @@ class RunnerWorker:
         if not data.get("id"):
             data["id"] = resolved_case_id
         if not data.get("system"):
-            data["system"] = "icm-internal"
+            self._hydrate_case_runtime_target(data, requirement_id=None)
         yaml_text = yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
         draft_dir = DRAFT_RUN_DIR / task_id
         draft_dir.mkdir(parents=True, exist_ok=True)
@@ -103,7 +105,16 @@ class RunnerWorker:
         if not draft_id:
             raise ValueError("draft_id is required for run-draft")
         with connect() as conn:
-            row = conn.execute("select id, title, yaml from case_drafts where id = ?", (draft_id,)).fetchone()
+            row = conn.execute(
+                """
+                select cd.id, cd.title, cd.yaml, cd.requirement_id, r.project_id, p.base_url as project_base_url
+                from case_drafts cd
+                left join requirements r on r.id = cd.requirement_id
+                left join project_profiles p on p.id = r.project_id
+                where cd.id = ?
+                """,
+                (draft_id,),
+            ).fetchone()
         if not row:
             raise ValueError(f"case draft not found: {draft_id}")
         draft_yaml = str(row["yaml"] or "")
@@ -114,15 +125,49 @@ class RunnerWorker:
         case_id = str(data.get("id") or f"DRAFT-{draft_id}")
         if not data.get("id"):
             data["id"] = case_id
-            draft_yaml = yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
-        if not data.get("system"):
-            data["system"] = "icm-internal"
-            draft_yaml = yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
+        self._hydrate_case_runtime_target(
+            data,
+            requirement_id=int(row["requirement_id"]) if row["requirement_id"] is not None else None,
+            project_base_url=str(row["project_base_url"] or "").strip() or None,
+        )
+        draft_yaml = yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
         draft_dir = DRAFT_RUN_DIR / task_id
         draft_dir.mkdir(parents=True, exist_ok=True)
         draft_path = draft_dir / "case.yaml"
         draft_path.write_text(draft_yaml, encoding="utf-8")
         return draft_path, case_id
+
+    def _hydrate_case_runtime_target(
+        self,
+        data: dict,
+        *,
+        requirement_id: int | None,
+        project_base_url: str | None = None,
+    ) -> None:
+        context_info = data.setdefault("context_info", {})
+        if not isinstance(context_info, dict):
+            context_info = {}
+            data["context_info"] = context_info
+        runtime_url = str(context_info.get("env_url") or "").strip()
+        if not runtime_url:
+            runtime_url = str(project_base_url or "").strip()
+        if runtime_url and not context_info.get("env_url"):
+            context_info["env_url"] = runtime_url
+        if data.get("system"):
+            return
+        data["system"] = self._infer_system_id(runtime_url)
+
+    def _infer_system_id(self, runtime_url: str | None) -> str:
+        url = str(runtime_url or "").strip()
+        if not url:
+            return "icm-internal"
+        host = (urlparse(url).hostname or "").lower()
+        settings = get_platform_settings()
+        environment = settings.get("environment") or {}
+        icm_host = (urlparse(str(environment.get("icm_login_url") or environment.get("icm_base_url") or "")).hostname or "").lower()
+        if host and icm_host and host == icm_host:
+            return "icm-internal"
+        return "external-template"
 
     def _insert_task(
         self,

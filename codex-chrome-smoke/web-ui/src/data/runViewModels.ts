@@ -48,6 +48,18 @@ export type StepDetailViewModel = {
   networkLogs: Array<Record<string, unknown>>;
   domSnapshotUrl: string;
   events: Array<Record<string, unknown>>;
+  expectedResult: string;
+  expectedResultStatus: string;
+  actualResult: string;
+  assertionChecks: Array<{
+    type: string;
+    label: string;
+    expected: string;
+    actual: string;
+    status: string;
+    evidenceSource: string;
+    reason: string;
+  }>;
 };
 
 export type RunDetailViewModel = {
@@ -252,10 +264,28 @@ function strategyLabel(strategy: string) {
   return "通用探索";
 }
 
+function isGenericStepText(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return true;
+  return /^(?:执行步骤|步骤|step)\s*\d*$/iu.test(trimmed);
+}
+
+function resolveDisplayStepTitle(step: ApiStructuredStep) {
+  const fallback = `执行步骤 ${step.step_index}`;
+  const translatedTitle = translateStepText(step.title || "", fallback).trim();
+  if (!isGenericStepText(translatedTitle)) return translatedTitle;
+
+  const descriptiveCandidate = [step.ai_analysis, step.summary]
+    .map((item) => translateStepText(item || "", "").trim())
+    .find((item) => item && !isGenericStepText(item));
+
+  return descriptiveCandidate || translatedTitle || fallback;
+}
+
 function mapStep(step: ApiStructuredStep, screenshots: ApiScreenshot[]): StepDetailViewModel {
   const shot = screenshotFromUrl(step.screenshot_url || "", screenshots);
   const sourceTitle = step.title || `步骤 ${step.step_index}`;
-  const title = translateStepText(sourceTitle, `执行步骤 ${step.step_index}`);
+  const title = resolveDisplayStepTitle(step);
   const summary = translateStepText(step.summary || sourceTitle, title);
   return {
     key: step.step_code || `step-${step.step_index}`,
@@ -274,6 +304,18 @@ function mapStep(step: ApiStructuredStep, screenshots: ApiScreenshot[]): StepDet
     networkLogs: step.network_logs || [],
     domSnapshotUrl: step.dom_snapshot_url || "",
     events: step.events || [],
+    expectedResult: step.expected_result || "",
+    expectedResultStatus: step.expected_result_status || "queued",
+    actualResult: step.actual_result || "",
+    assertionChecks: (step.assertion_checks || []).map((check) => ({
+      type: check.type || "text_contains",
+      label: check.label || check.type || "断言",
+      expected: check.expected || "",
+      actual: check.actual || "",
+      status: check.status || "queued",
+      evidenceSource: check.evidence_source || "",
+      reason: check.reason || "",
+    })),
   };
 }
 

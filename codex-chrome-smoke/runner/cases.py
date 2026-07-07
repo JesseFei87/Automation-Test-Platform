@@ -143,7 +143,7 @@ async def run_case_data(
     max_retries: int = 0,
 ) -> dict[str, Any]:
     case_id = str(case.get("id") or "")
-    system = load_system(case["system"])
+    system = load_system(case["system"], case)
     apply_runtime_case_inputs(case, system)
     run_started_at = _utc_now_iso()
     initialize_step_details(run_id, case, mode="worker")

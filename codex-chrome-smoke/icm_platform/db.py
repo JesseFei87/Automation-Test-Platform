@@ -118,6 +118,18 @@ def init_db() -> None:
               created_at text not null
             );
 
+            create table if not exists assertion_analyses (
+              id integer primary key autoincrement,
+              expected_hash text not null,
+              provider text not null,
+              model text not null,
+              assertions_json text not null,
+              created_at text not null,
+              updated_at text not null,
+              unique(expected_hash, provider, model)
+            );
+            create index if not exists idx_assertion_analyses_hash on assertion_analyses(expected_hash);
+
             create table if not exists platform_settings (
               id integer primary key check (id = 1),
               runner_json text not null,

@@ -51,6 +51,7 @@ app = FastAPI(title="ICM AI Automation Platform", version="0.2.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://127.0.0.1:5175", "http://127.0.0.1:5176", "http://localhost:5175"],
+    allow_origin_regex=r"^https?://[^/]+:(5175|5176)$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1464,19 +1465,34 @@ def _agent_step_action_summary(decision: dict, execution: dict, observation: dic
     return reason or str(execution.get("result") or action or "执行步骤")
 
 
-def _load_agent_case_steps(run_id: str, task_dict: dict, trace: dict) -> list[str]:
+def _load_agent_case_payload(run_id: str, task_dict: dict, trace: dict) -> dict:
     try:
         yaml_text, _ = _load_case_source_for_agent_run(run_id, task_dict, trace)
     except HTTPException:
-        return []
+        return {}
     try:
         payload = yaml.safe_load(yaml_text) or {}
     except yaml.YAMLError:
-        return []
-    steps = payload.get("steps") if isinstance(payload, dict) else []
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _load_agent_case_steps(run_id: str, task_dict: dict, trace: dict) -> list[str]:
+    payload = _load_agent_case_payload(run_id, task_dict, trace)
+    steps = payload.get("steps")
     if not isinstance(steps, list):
         return []
     return [_clean_case_step_text(step) for step in steps if _clean_case_step_text(step)]
+
+
+def _load_agent_expected_results(run_id: str, task_dict: dict, trace: dict) -> list[str]:
+    payload = _load_agent_case_payload(run_id, task_dict, trace)
+    expected = payload.get("expected_results")
+    if expected is None:
+        expected = payload.get("expected")
+    if not isinstance(expected, list):
+        return []
+    return [str(item).strip() for item in expected if _clean_case_step_text(item)]
 
 
 def _match_case_step_index(case_steps: list[str], decision: dict, observation: dict, current_index: int) -> int | None:
@@ -1562,6 +1578,82 @@ def _agent_stage_source_map(trace: dict) -> dict[str, list[int]]:
     return source_map
 
 
+def _agent_stage_meta_map(trace: dict) -> dict[str, dict]:
+    plan = trace.get("plan") if isinstance(trace, dict) else {}
+    plan = plan if isinstance(plan, dict) else {}
+    stages = plan.get("stages") if isinstance(plan.get("stages"), list) else []
+    meta_map: dict[str, dict] = {}
+    for stage in stages:
+        if not isinstance(stage, dict):
+            continue
+        stage_id = str(stage.get("stage_id") or "").strip()
+        if stage_id:
+            meta_map[stage_id] = stage
+    return meta_map
+
+
+def _aggregate_agent_stage_status(step_statuses: list[str]) -> str:
+    normalized = [str(status or "").strip().lower() for status in step_statuses if str(status or "").strip()]
+    if not normalized:
+        return "queued"
+    if any(status == "failed" for status in normalized):
+        return "failed"
+    if any(status == "running" for status in normalized):
+        return "running"
+    if any(status == "queued" for status in normalized):
+        return "queued"
+    if all(status == "completed" for status in normalized):
+        return "completed"
+    return normalized[-1]
+
+
+def _reconcile_agent_stage_runs(trace: dict, steps: list[dict], stage_runs: list[dict]) -> list[dict]:
+    source_map = _agent_stage_source_map(trace)
+    if not source_map or not stage_runs:
+        return stage_runs
+    reconciled: list[dict] = []
+    for raw_stage_run in stage_runs:
+        stage_run = dict(raw_stage_run or {})
+        stage_id = str(stage_run.get("stage_id") or "").strip()
+        source_indexes = source_map.get(stage_id) or []
+        if source_indexes:
+            step_statuses = [
+                str((steps[index] or {}).get("status") or "queued")
+                for index in source_indexes
+                if 0 <= index < len(steps)
+            ]
+            if step_statuses:
+                stage_run["status"] = _aggregate_agent_stage_status(step_statuses)
+        reconciled.append(stage_run)
+    return reconciled
+
+
+def _resolve_agent_assertion_title(
+    item: dict,
+    case_step_title: str,
+    expected_results: list[str],
+    stage_meta_map: dict[str, dict],
+) -> tuple[str, str]:
+    if not isinstance(item, dict):
+        return case_step_title, ""
+    decision = item.get("decision") if isinstance(item.get("decision"), dict) else {}
+    action = str(decision.get("action") or "").strip().lower()
+    stage_id = str(item.get("stage_id") or decision.get("stage_id") or "").strip()
+    strategy = str((stage_meta_map.get(stage_id) or {}).get("strategy") or "").strip().lower()
+    if action not in {"assert_text", "finish"} and strategy != "detail_assert":
+        return case_step_title, ""
+    try:
+        local_step = int(item.get("stage_local_step") or 0)
+    except (TypeError, ValueError):
+        local_step = 0
+    if local_step <= 0 or local_step > len(expected_results):
+        return case_step_title, ""
+    expected_text = expected_results[local_step - 1].strip()
+    if not expected_text:
+        return case_step_title, ""
+    return f"预期结果 {local_step} - {expected_text}", expected_text
+
+
 def _match_stage_case_step_index(item: dict, source_map: dict[str, list[int]], case_steps: list[str], current_index: int) -> int | None:
     if not source_map or not case_steps or not isinstance(item, dict):
         return None
@@ -1621,66 +1713,864 @@ def _agent_step_command_output(item: dict, case_step_text: str = "") -> list[str
     return output
 
 
-def _build_agent_steps(agent_explore: dict | None, logs: list[dict], screenshots: list[dict[str, str]], run_id: str, task_dict: dict) -> list[dict]:
+
+def _parse_expected_result_bindings(expected_results: list[str], step_count: int) -> list[dict]:
+    bindings: list[dict] = []
+    for ordinal, raw_text in enumerate(expected_results, start=1):
+        raw_line = str(raw_text or "").strip()
+        normalized = _clean_case_step_text(raw_line)
+        start_step = ordinal
+        end_step = ordinal
+        display_text = normalized
+        match = re.match(r"^\s*(\d+)(?:\s*-\s*(\d+))?\.\s*(.+?)\s*$", raw_line)
+        if match:
+            start_step = int(match.group(1))
+            end_step = int(match.group(2) or match.group(1))
+            display_text = _clean_case_step_text(match.group(3))
+        if step_count > 0:
+            start_step = min(max(start_step, 1), step_count)
+            end_step = min(max(end_step, start_step), step_count)
+        bindings.append(
+            {
+                "ordinal": ordinal,
+                "start_step": start_step,
+                "end_step": end_step,
+                "text": display_text or normalized,
+            }
+        )
+    return bindings
+
+
+def _agent_assertion_binding(item: dict, expected_bindings: list[dict], stage_meta_map: dict[str, dict]) -> dict | None:
+    if not isinstance(item, dict) or not expected_bindings:
+        return None
+    decision = item.get("decision") if isinstance(item.get("decision"), dict) else {}
+    action = str(decision.get("action") or "").strip().lower()
+    stage_id = str(item.get("stage_id") or decision.get("stage_id") or "").strip()
+    strategy = str((stage_meta_map.get(stage_id) or {}).get("strategy") or "").strip().lower()
+    if action not in {"assert_text", "finish"} and strategy != "detail_assert":
+        return None
+    try:
+        local_step = int(item.get("stage_local_step") or 0)
+    except (TypeError, ValueError):
+        return None
+    if local_step <= 0 or local_step > len(expected_bindings):
+        return None
+    return expected_bindings[local_step - 1]
+
+
+def _agent_actual_result_text(item: dict, trace: dict) -> str:
+    if not isinstance(item, dict):
+        return ""
+    execution = item.get("execution") if isinstance(item.get("execution"), dict) else {}
+    observation = item.get("observation") if isinstance(item.get("observation"), dict) else {}
+    error_text = str(execution.get("error") or "").strip()
+    if error_text:
+        return error_text
+    visible_texts: list[str] = []
+    for raw_text in observation.get("visibleText") or []:
+        text = _clean_case_step_text(raw_text)
+        if text and text not in visible_texts:
+            visible_texts.append(text)
+        if len(visible_texts) >= 3:
+            break
+    if visible_texts:
+        return "；".join(visible_texts)
+    interactive_texts: list[str] = []
+    for raw_item in observation.get("interactives") or []:
+        if not isinstance(raw_item, dict):
+            continue
+        text = _clean_case_step_text(str(raw_item.get("text") or ""))
+        if text and text not in interactive_texts:
+            interactive_texts.append(text)
+        if len(interactive_texts) >= 2:
+            break
+    if interactive_texts:
+        return "；".join(interactive_texts)
+    result_text = str(execution.get("result") or "").strip()
+    if result_text:
+        return result_text
+    final_url = str(observation.get("url") or trace.get("finalUrl") or trace.get("final_url") or "").strip()
+    if final_url:
+        return final_url
+    return ""
+
+
+def _assertion_status_rank(status: str) -> int:
+    if status == "failed":
+        return 3
+    if status == "completed":
+        return 2
+    if status == "running":
+        return 1
+    return 0
+
+
+def _extract_expected_value_pairs(text: str) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    for match in re.finditer(
+        r"(设备名称|IP|状态|用户名|账号|端口|连接类型|设备类型|服务器名称|标题|名称)(?:为|是|显示为|默认为)([^，。；,;]+)",
+        text,
+    ):
+        label = _clean_case_step_text(match.group(1))
+        value = _clean_case_step_text(match.group(2))
+        if label and value:
+            pairs.append((label, value))
+    return pairs
+
+
+def _expected_text_fragments(text: str) -> list[str]:
+    fragments: list[str] = []
+    for match in re.finditer(r"[\"'“‘【](.+?)[\"'”’】]", text):
+        fragment = _clean_case_step_text(match.group(1))
+        if fragment and fragment not in fragments:
+            fragments.append(fragment)
+    if fragments:
+        return fragments
+    normalized = _clean_case_step_text(text)
+    for piece in re.split(r"[，。；,;]|并且|并|且", normalized):
+        fragment = piece.strip()
+        if len(fragment) >= 2 and fragment not in fragments:
+            fragments.append(fragment)
+    return fragments[:4]
+
+
+def _cjk_bigrams(text: str) -> list[str]:
+    result: list[str] = []
+    cleaned = re.sub(r"[^\u4e00-\u9fff]", "", text)
+    for i in range(len(cleaned) - 1):
+        result.append(cleaned[i:i + 2])
+    return result
+
+
+def _loose_text_match(expected: str, facts: dict) -> tuple[bool, str]:
+    exp = expected.lower().strip()
+    haystack = facts["haystack"]
+    if not exp:
+        return False, ""
+    if exp in haystack:
+        return True, "strict"
+    for vt in facts["visible_texts"] + facts["interactive_texts"]:
+        v = vt.lower().strip()
+        if v and len(v) >= 2 and v in exp:
+            return True, "loose_substring"
+    tokens = _cjk_bigrams(expected)
+    if tokens:
+        hit = sum(1 for t in tokens if t in haystack)
+        if hit >= 2 and hit >= len(tokens) * 0.5:
+            return True, "loose_overlap"
+    return False, ""
+
+
+def _should_try_ai_fallback(checks: list[dict]) -> bool:
+    if not checks:
+        return True
+    return all(str(c.get("type") or "") == "text_contains" for c in checks)
+
+
+def _build_page_context(item: dict) -> dict | None:
+    facts = _agent_observation_facts(item, {})
+    if len(facts["visible_texts"]) < 3 and not facts["url"]:
+        return None
+    return {
+        "url": facts["url"],
+        "visible_texts": facts["visible_texts"][:30],
+        "interactive_texts": facts["interactive_texts"][:15],
+    }
+
+
+def _context_signature(page_context: dict | None) -> str:
+    if not page_context:
+        return ""
+    return sha256(json.dumps(
+        {"url": page_context.get("url", ""),
+         "vt": page_context.get("visible_texts", [])[:30]},
+        ensure_ascii=False, sort_keys=True
+    ).encode("utf-8")).hexdigest()
+
+
+def _should_try_context_refinement(checks: list[dict]) -> bool:
+    if not checks:
+        return False
+    return all(
+        str(c.get("source") or "") == "ai" or str(c.get("type") or "") == "text_contains"
+        for c in checks
+    )
+
+
+def _ai_assertion_fallback(expected_text: str, page_context: dict | None = None) -> list[dict]:
+    """AI 断言兜底。任何失败都返回 []，由调用方降级为规则解析结果。"""
+    try:
+        settings = get_ai_settings(mask_key=False)
+    except Exception:
+        return []
+    ctx_sig = _context_signature(page_context)
+    try:
+        cached = load_cached_assertion_analysis(expected_text, settings, context_sig=ctx_sig)
+        if cached is not None:
+            return cached
+    except Exception:
+        cached = None
+    try:
+        ai_checks = ai_service.parse_assertions_with_ai(expected_text, settings, page_context=page_context)
+    except Exception:
+        return []
+    if not ai_checks:
+        return []
+    try:
+        save_assertion_analysis(expected_text, settings, ai_checks, context_sig=ctx_sig)
+    except Exception:
+        pass
+    return ai_checks
+
+
+def _build_assertion_checks(expected_text: str, ai_fallback: bool = False, page_context: dict | None = None) -> list[dict]:
+    text = _clean_case_step_text(expected_text)
+    if not text:
+        return []
+    checks: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+
+    def push(check_type: str, expected: str, label: str = "", extra: dict | None = None) -> None:
+        normalized_expected = _clean_case_step_text(expected)
+        if not normalized_expected:
+            return
+        key = (check_type, normalized_expected)
+        if key in seen:
+            return
+        seen.add(key)
+        payload = {
+            "type": check_type,
+            "expected": normalized_expected,
+            "label": label or check_type,
+            "status": "queued",
+            "actual": "",
+            "evidence_source": "",
+            "reason": "",
+        }
+        if extra:
+            payload.update(extra)
+        checks.append(payload)
+
+    for url_match in re.finditer(r"https?://[^\s,;，。；]+|#/[^\s,;，。；]+", text):
+        push("url_contains", url_match.group(0), "URL")
+
+    if ((any(word in text for word in ("复选框", "勾选框")) and any(word in text for word in ("选中", "已选中", "勾选"))) or "选中状态" in text):
+        push("checkbox_checked", text, "复选框选中")
+    if re.search(r"(回到|返回|跳转到).*(登录页|登录页面)|退出登录", text):
+        push("url_contains", "#/login", "登录页")
+    if "登录成功" in text:
+        if "首页" in text:
+            push("url_contains", "#/index", "首页")
+        push("login_success", text, "登录成功")
+
+    if re.search(r"弹窗.*(打开|显示|出现)|对话框.*(打开|显示|出现)", text):
+        target = ""
+        for fragment in _expected_text_fragments(text):
+            if any(word in fragment for word in ("弹窗", "对话框", "页面", "提示")):
+                target = fragment
+                break
+        push("dialog_visible", target or text, "弹窗打开")
+    if re.search(r"弹窗.*(关闭|消失|收起)|对话框.*(关闭|消失|收起)", text):
+        push("dialog_hidden", text, "弹窗关闭")
+    if re.search(r"列表.*(新增|出现|显示).*(记录|一行)|表格.*(新增|出现|显示).*(记录|一行)", text):
+        terms = [value for _label, value in _extract_expected_value_pairs(text)]
+        push("table_row_exists", text, "列表记录", {"terms": terms})
+
+    value_pairs = _extract_expected_value_pairs(text)
+    for label, value in value_pairs:
+        check_type = "status_tag" if label == "状态" else "field_value"
+        push(check_type, value, label, {"field": label})
+
+    fragments = _expected_text_fragments(text)
+    for fragment in fragments:
+        if re.search(r"https?://|#/", fragment):
+            continue
+        if "列表" in fragment and any(word in fragment for word in ("新增", "记录", "一行")):
+            continue
+        if any(word in fragment for word in ("弹窗关闭", "弹窗打开", "对话框关闭", "对话框打开")):
+            continue
+        if "登录成功" in fragment:
+            continue
+        if ((any(word in fragment for word in ("复选框", "勾选框")) and any(word in fragment for word in ("选中", "已选中", "勾选"))) or "选中状态" in fragment):
+            continue
+        if re.search(r"(回到|返回|跳转到).*(登录页|登录页面)|退出登录", fragment):
+            continue
+        push("text_contains", fragment, "页面文本")
+
+    if ai_fallback and _should_try_ai_fallback(checks):
+        ai_checks = _ai_assertion_fallback(text, page_context=page_context)
+        if ai_checks:
+            return ai_checks
+
+    if not checks:
+        push("text_contains", text, "页面文本")
+    return checks
+
+
+def _agent_observation_facts(item: dict, trace: dict) -> dict:
+    decision = item.get("decision") if isinstance(item.get("decision"), dict) else {}
+    execution = item.get("execution") if isinstance(item.get("execution"), dict) else {}
+    observation = item.get("observation") if isinstance(item.get("observation"), dict) else {}
+    visible_texts: list[str] = []
+    for raw_text in observation.get("visibleText") or []:
+        text = _clean_case_step_text(raw_text)
+        if text and text not in visible_texts:
+            visible_texts.append(text)
+    interactive_texts: list[str] = []
+    for raw_item in observation.get("interactives") or []:
+        if not isinstance(raw_item, dict):
+            continue
+        text = _clean_case_step_text(str(raw_item.get("text") or ""))
+        if text and text not in interactive_texts:
+            interactive_texts.append(text)
+    url = str(observation.get("url") or trace.get("finalUrl") or trace.get("final_url") or "").strip()
+    result = str(execution.get("result") or "").strip()
+    error = str(execution.get("error") or "").strip()
+    decision_value = _clean_case_step_text(str(decision.get("value") or ""))
+    haystack_parts = visible_texts + interactive_texts + [url, result, str(decision.get("reason") or ""), decision_value]
+    haystack = " ".join(part for part in haystack_parts if part).lower()
+    return {
+        "visible_texts": visible_texts,
+        "interactive_texts": interactive_texts,
+        "url": url,
+        "result": result,
+        "error": error,
+        "decision_value": decision_value,
+        "haystack": haystack,
+    }
+
+
+def _evaluate_assertion_check(check: dict, item: dict, trace: dict) -> dict:
+    evaluated = dict(check)
+    facts = _agent_observation_facts(item, trace)
+    expected = str(check.get("expected") or "").strip()
+    check_type = str(check.get("type") or "").strip()
+    visible_text = "；".join(facts["visible_texts"][:3])
+    if facts["error"] and facts["result"] not in {"duplicate_action_blocked"}:
+        evaluated.update(
+            {
+                "status": "failed",
+                "actual": facts["error"],
+                "evidence_source": "execution.error",
+                "reason": "执行阶段已返回错误",
+            }
+        )
+        return evaluated
+
+    if check_type == "url_contains":
+        url = facts["url"]
+        if not url:
+            evaluated.update({"status": "queued", "reason": "缺少 URL 证据"})
+        elif expected.lower() in url.lower():
+            evaluated.update({"status": "completed", "actual": url, "evidence_source": "observation.url", "reason": "当前 URL 命中预期"})
+        elif expected == "#/login" and facts["result"] == "account_switch_passed":
+            evaluated.update({"status": "completed", "actual": facts["url"] or facts["result"], "evidence_source": "execution.result", "reason": "账号切换已通过，URL 校验通过"})
+        else:
+            evaluated.update({"status": "failed", "actual": url, "evidence_source": "observation.url", "reason": "当前 URL 未命中预期"})
+        return evaluated
+
+    if check_type == "dialog_visible":
+        dialog_signal = expected.lower()
+        result = facts["result"].lower()
+        haystack = facts["haystack"]
+        if "dialog_opened" in result or "drawer_opened" in result:
+            evaluated.update({"status": "completed", "actual": facts["result"], "evidence_source": "execution.result", "reason": "执行结果显示弹窗已打开"})
+        elif dialog_signal and dialog_signal in haystack:
+            evaluated.update({"status": "completed", "actual": visible_text or facts["url"], "evidence_source": "observation.visibleText", "reason": "页面可见文本命中弹窗内容"})
+        elif facts["visible_texts"]:
+            evaluated.update({"status": "failed", "actual": visible_text, "evidence_source": "observation.visibleText", "reason": "未观察到预期弹窗内容"})
+        else:
+            evaluated.update({"status": "queued", "reason": "缺少足够的弹窗证据"})
+        return evaluated
+
+    if check_type == "dialog_hidden":
+        dialog_signal = expected.lower()
+        result = facts["result"].lower()
+        haystack = facts["haystack"]
+        if dialog_signal and dialog_signal in haystack:
+            evaluated.update({"status": "failed", "actual": visible_text, "evidence_source": "observation.visibleText", "reason": "弹窗相关文本仍然可见"})
+        elif result in {"detail_assert_passed", "dialog_form_fill_passed", "finished"}:
+            evaluated.update({"status": "completed", "actual": facts["result"], "evidence_source": "execution.result", "reason": "执行结果表明弹窗关闭校验已通过"})
+        elif facts["visible_texts"] or facts["url"]:
+            evaluated.update({"status": "queued", "actual": visible_text or facts["url"], "evidence_source": "observation.visibleText", "reason": "未再看到弹窗文本，但证据不足以直接判定关闭"})
+        else:
+            evaluated.update({"status": "queued", "reason": "缺少弹窗关闭证据"})
+        return evaluated
+
+    if check_type == "table_row_exists":
+        terms = [str(item).strip() for item in (check.get("terms") or []) if str(item).strip()]
+        if not facts["visible_texts"]:
+            evaluated.update({"status": "queued", "reason": "缺少列表文本证据"})
+        elif terms and all(term.lower() in facts["haystack"] for term in terms):
+            evaluated.update({"status": "completed", "actual": visible_text, "evidence_source": "observation.visibleText", "reason": "列表中已匹配到目标记录关键字段"})
+        elif not terms and expected.lower() in facts["haystack"]:
+            evaluated.update({"status": "completed", "actual": visible_text, "evidence_source": "observation.visibleText", "reason": "列表文本命中预期描述"})
+        else:
+            evaluated.update({"status": "failed", "actual": visible_text, "evidence_source": "observation.visibleText", "reason": "列表中未找到目标记录"})
+        return evaluated
+
+    if check_type in {"field_value", "status_tag", "text_contains"}:
+        if not facts["visible_texts"] and not facts["interactive_texts"]:
+            if facts["result"] == "detail_assert_passed" and facts["decision_value"] and (
+                facts["decision_value"].lower() in expected.lower() or expected.lower() in facts["decision_value"].lower()
+            ):
+                evaluated.update({"status": "completed", "actual": facts["decision_value"], "evidence_source": "decision.value", "reason": "断言动作已通过且匹配到目标文本", "match_strength": "strict"})
+            else:
+                evaluated.update({"status": "queued", "reason": "缺少页面文本证据"})
+        else:
+            matched, strength = _loose_text_match(expected, facts)
+            if matched:
+                source = "observation.visibleText" if expected.lower() in " ".join(facts["visible_texts"]).lower() else "observation.interactives"
+                evaluated.update({"status": "completed", "actual": visible_text or "；".join(facts["interactive_texts"][:2]), "evidence_source": source, "reason": f"页面文本命中预期（{strength}）", "match_strength": strength})
+            else:
+                evaluated.update({"status": "failed", "actual": visible_text or "；".join(facts["interactive_texts"][:2]), "evidence_source": "observation.visibleText", "reason": "页面文本未命中预期"})
+        return evaluated
+
+    if check_type == "checkbox_checked":
+        if facts["result"] == "user_device_bound":
+            evaluated.update({
+                "status": "completed",
+                "actual": facts["decision_value"] or facts["result"],
+                "evidence_source": "execution.result",
+                "reason": "账号绑定动作已生效，复选框已勾选",
+                "match_strength": "strict",
+            })
+        elif "is-checked" in facts["haystack"] or "已勾选" in facts["haystack"]:
+            evaluated.update({
+                "status": "completed",
+                "actual": visible_text or "?".join(facts["interactive_texts"][:2]),
+                "evidence_source": "observation.visibleText",
+                "reason": "页面观察到复选框已勾选",
+                "match_strength": "loose",
+            })
+        elif facts["visible_texts"] or facts["interactive_texts"]:
+            evaluated.update({
+                "status": "failed",
+                "actual": visible_text or "?".join(facts["interactive_texts"][:2]),
+                "evidence_source": "observation.visibleText",
+                "reason": "页面未观察到复选框已勾选",
+            })
+        else:
+            evaluated.update({"status": "queued", "reason": "缺少足够的复选框证据"})
+        return evaluated
+
+    if check_type == "login_success":
+        url = facts["url"].lower()
+        result = facts["result"]
+        if result in {"login_guard_passed", "account_switch_passed"}:
+            evaluated.update({
+                "status": "completed",
+                "actual": facts["url"] or result,
+                "evidence_source": "execution.result",
+                "reason": "登录阶段执行结果已通过",
+                "match_strength": "strict",
+            })
+        elif url and "#/login" not in url:
+            evaluated.update({
+                "status": "completed",
+                "actual": facts["url"],
+                "evidence_source": "observation.url",
+                "reason": "当前 URL 已离开登录页",
+                "match_strength": "strict",
+            })
+        elif url:
+            evaluated.update({
+                "status": "failed",
+                "actual": facts["url"],
+                "evidence_source": "observation.url",
+                "reason": "当前仍停留在登录页",
+            })
+        else:
+            evaluated.update({"status": "queued", "reason": "缺少登录结果证据"})
+        return evaluated
+
+    match_mode = str(check.get("match_mode") or "contains").strip().lower()
+    if match_mode not in {"contains", "equals", "not_contains", "regex"}:
+        match_mode = "contains"
+    if not expected:
+        evaluated.update({"status": "queued", "reason": "断言缺少 expected 文本"})
+        return evaluated
+    if not facts["visible_texts"] and not facts["interactive_texts"]:
+        if facts["result"] == "detail_assert_passed" and facts["decision_value"] and (
+            facts["decision_value"].lower() in expected.lower() or expected.lower() in facts["decision_value"].lower()
+        ):
+            evaluated.update({"status": "completed", "actual": facts["decision_value"], "evidence_source": "decision.value", "reason": "断言动作已通过且匹配到目标文本", "match_strength": "strict"})
+        else:
+            evaluated.update({"status": "queued", "reason": "缺少页面文本证据"})
+        return evaluated
+    haystack = facts["haystack"]
+    try:
+        if match_mode == "contains":
+            matched, strength = _loose_text_match(expected, facts)
+        elif match_mode == "equals":
+            matched = expected.lower() in [t.lower() for t in facts["visible_texts"] + facts["interactive_texts"]]
+            strength = "strict" if matched else ""
+        elif match_mode == "not_contains":
+            matched = expected.lower() not in haystack
+            strength = "strict"
+        elif match_mode == "regex":
+            matched = re.search(expected, haystack, re.IGNORECASE) is not None
+            strength = "strict" if matched else ""
+        else:
+            matched, strength = _loose_text_match(expected, facts)
+    except re.error:
+        evaluated.update({"status": "queued", "reason": "断言 regex 模式非法"})
+        return evaluated
+    if matched:
+        evaluated.update({"status": "completed", "actual": visible_text or "；".join(facts["interactive_texts"][:2]), "evidence_source": "observation.visibleText", "reason": f"页面文本命中预期（{match_mode}）", "match_strength": strength})
+    else:
+        evaluated.update({"status": "failed", "actual": visible_text or "；".join(facts["interactive_texts"][:2]), "evidence_source": "observation.visibleText", "reason": f"页面文本未命中预期（{match_mode}）", "match_strength": strength})
+    return evaluated
+
+
+def _aggregate_assertion_status(checks: list[dict]) -> str:
+    final_status = "queued"
+    for check in checks:
+        status = str(check.get("status") or "queued")
+        if _assertion_status_rank(status) > _assertion_status_rank(final_status):
+            final_status = status
+    return final_status
+
+
+def _assertion_resolution_rank(status: str) -> int:
+    if status == "completed":
+        return 2
+    if status == "failed":
+        return 1
+    return 0
+
+
+def _history_event_index(history: list[dict], target: dict) -> int:
+    for index, item in enumerate(history):
+        if item is target:
+            return index
+    for index, item in enumerate(history):
+        if item == target:
+            return index
+    return -1
+
+
+def _assertion_evidence_candidates(step_entry: dict, history: list[dict], page_segments: list[dict]) -> list[dict]:
+    candidates: list[dict] = []
+    seen_ids: set[int] = set()
+
+    def push(item: dict | None) -> None:
+        if not isinstance(item, dict):
+            return
+        marker = id(item)
+        if marker in seen_ids:
+            return
+        seen_ids.add(marker)
+        candidates.append(item)
+
+    step_events = [event for event in (step_entry.get("events") or []) if isinstance(event, dict)]
+    for event in step_events:
+        push(event)
+    if step_events:
+        last_index = _history_event_index(history, step_events[-1])
+        if last_index >= 0:
+            for offset in (1, 2):
+                next_index = last_index + offset
+                if next_index < len(history):
+                    push(history[next_index])
+    elif page_segments:
+        try:
+            step_index = max(int(step_entry.get("step_index") or 1), 1)
+        except (TypeError, ValueError):
+            step_index = 1
+        segment_index = min(step_index - 1, len(page_segments) - 1)
+        push(page_segments[segment_index]["item"])
+    return candidates
+
+
+def _assertion_actual_summary(checks: list[dict]) -> str:
+    parts: list[str] = []
+    for check in checks:
+        actual = str(check.get("actual") or "").strip()
+        if actual and actual not in parts:
+            parts.append(actual)
+    return "；".join(parts[:3])
+
+def _build_agent_steps(agent_explore: dict | None, logs: list[dict], screenshots: list[dict[str, str]], run_id: str, task_dict: dict, ai_fallback: bool = False) -> list[dict]:
     trace = (agent_explore or {}).get("trace") or {}
     history = trace.get("history") or []
     case_steps = _load_agent_case_steps(run_id, task_dict, trace)
+    expected_results = _load_agent_expected_results(run_id, task_dict, trace)
+    expected_bindings = _parse_expected_result_bindings(expected_results, len(case_steps))
     stage_source_map = _agent_stage_source_map(trace)
+    stage_meta_map = _agent_stage_meta_map(trace)
     trace_status = str(trace.get("status") or "").strip().lower()
     trace_failed = bool(trace.get("error")) or trace_status == "failed"
     trace_completed = bool(trace.get("ok")) or trace_status in {"passed", "completed", "success"}
-    steps: list[dict] = []
+    if not case_steps:
+        steps: list[dict] = []
+        current_case_step_index = -1
+        for index, item in enumerate(history, start=1):
+            decision = item.get("decision") if isinstance(item, dict) else {}
+            execution = item.get("execution") if isinstance(item, dict) else {}
+            observation = item.get("observation") if isinstance(item, dict) else {}
+            decision = decision if isinstance(decision, dict) else {}
+            execution = execution if isinstance(execution, dict) else {}
+            observation = observation if isinstance(observation, dict) else {}
+            item_dict = item if isinstance(item, dict) else {}
+            screenshot = _agent_step_screenshot(item_dict, screenshots, index)
+            matched_case_step = _match_stage_case_step_index(item_dict, stage_source_map, case_steps, current_case_step_index)
+            if matched_case_step is None:
+                matched_case_step = _match_case_step_index(case_steps, decision, observation, current_case_step_index)
+            if matched_case_step is not None:
+                current_case_step_index = matched_case_step
+            action_summary = _agent_step_action_summary(decision, execution, observation)
+            case_step_title = ""
+            case_step_text = ""
+            if matched_case_step is not None and 0 <= matched_case_step < len(case_steps):
+                case_step_text = case_steps[matched_case_step]
+                case_step_title = f"用例步骤 {matched_case_step + 1} - {case_step_text}"
+            assertion_title, assertion_text = _resolve_agent_assertion_title(
+                item_dict,
+                case_step_title,
+                expected_results,
+                stage_meta_map,
+            )
+            action_name = str(decision.get("action") or "").strip().lower()
+            display_title = assertion_title or case_step_title
+            display_action_text = assertion_text or case_step_text
+            summary_text = (
+                assertion_text
+                or (case_step_text if action_name in {"fill", "click", "goto"} else "")
+                or (action_summary if action_name == "wait" else "")
+                or str(decision.get("reason") or "").strip()
+                or action_summary
+                or str(execution.get("result") or "")
+            )
+            step_status = "completed"
+            if execution.get("error"):
+                step_status = "failed"
+            elif index == len(history) and trace_failed:
+                step_status = "failed"
+            elif not trace_completed and index == len(history):
+                step_status = "running"
+            steps.append(
+                {
+                    "step_index": int(item.get("step", index)) if isinstance(item, dict) else index,
+                    "step_code": f"agent_{index:02d}",
+                    "title": (
+                        display_title
+                        or str(decision.get("reason") or "").strip()
+                        or action_summary
+                        or str(decision.get("action") or f"Step {index}")
+                    ),
+                    "status": step_status,
+                    "started_at": None,
+                    "finished_at": None,
+                    "duration_seconds": None,
+                    "summary": summary_text,
+                    "error_message": str(execution.get("error") or ""),
+                    "screenshot_url": screenshot["url"] if screenshot else "",
+                    "ai_analysis": str(decision.get("reason") or action_summary or ""),
+                    "final_url": str(trace.get("finalUrl") or trace.get("final_url") or ""),
+                    "command_output": _agent_step_command_output(item_dict, display_action_text),
+                    "selectors": [],
+                    "inputs": [],
+                    "console_logs": [],
+                    "network_logs": [],
+                    "dom_snapshot_url": "",
+                    "events": [item] if isinstance(item, dict) else [],
+                    "expected_result": "",
+                    "expected_result_status": "queued",
+                    "actual_result": "",
+                    "assertion_checks": [],
+                }
+            )
+        return steps
+    steps: list[dict] = [
+        {
+            "step_index": step_index,
+            "step_code": f"agent_step_{step_index:02d}",
+            "title": f"用例步骤 {step_index} - {case_step_text}",
+            "status": "queued",
+            "started_at": None,
+            "finished_at": None,
+            "duration_seconds": None,
+            "summary": case_step_text,
+            "error_message": "",
+            "screenshot_url": "",
+            "ai_analysis": "",
+            "final_url": str(trace.get("finalUrl") or trace.get("final_url") or ""),
+            "command_output": [],
+            "selectors": [],
+            "inputs": [],
+            "console_logs": [],
+            "network_logs": [],
+            "dom_snapshot_url": "",
+            "events": [],
+            "expected_result": "",
+            "expected_result_status": "queued",
+            "actual_result": "",
+            "assertion_checks": [],
+        }
+        for step_index, case_step_text in enumerate(case_steps, start=1)
+    ]
+    for binding in expected_bindings:
+        checks = _build_assertion_checks(binding["text"], ai_fallback=ai_fallback)
+        for step_index in range(binding["start_step"], binding["end_step"] + 1):
+            step_entry = steps[step_index - 1]
+            if step_entry["expected_result"]:
+                continue
+            step_entry["expected_result"] = binding["text"]
+            step_entry["expected_result_status"] = "queued"
+            step_entry["assertion_checks"] = [dict(check) for check in checks]
+            if step_index < binding["end_step"]:
+                step_entry["actual_result"] = f"该预期结果将在步骤 {binding['end_step']} 完成后校验"
     current_case_step_index = -1
-    for index, item in enumerate(history, start=1):
+    for history_index, item in enumerate(history, start=1):
         decision = item.get("decision") if isinstance(item, dict) else {}
         execution = item.get("execution") if isinstance(item, dict) else {}
         observation = item.get("observation") if isinstance(item, dict) else {}
         decision = decision if isinstance(decision, dict) else {}
         execution = execution if isinstance(execution, dict) else {}
         observation = observation if isinstance(observation, dict) else {}
-        screenshot = _agent_step_screenshot(item if isinstance(item, dict) else {}, screenshots, index)
-        matched_case_step = _match_stage_case_step_index(item, stage_source_map, case_steps, current_case_step_index)
+        item_dict = item if isinstance(item, dict) else {}
+        screenshot = _agent_step_screenshot(item_dict, screenshots, history_index)
+        matched_case_step = _match_stage_case_step_index(item_dict, stage_source_map, case_steps, current_case_step_index)
         if matched_case_step is None:
             matched_case_step = _match_case_step_index(case_steps, decision, observation, current_case_step_index)
         if matched_case_step is not None:
             current_case_step_index = matched_case_step
+        if matched_case_step is None or not (0 <= matched_case_step < len(case_steps)):
+            continue
+        step_entry = steps[matched_case_step]
+        case_step_text = case_steps[matched_case_step]
         action_summary = _agent_step_action_summary(decision, execution, observation)
-        case_step_title = ""
-        case_step_text = ""
-        if matched_case_step is not None and 0 <= matched_case_step < len(case_steps):
-            case_step_text = case_steps[matched_case_step]
-            case_step_title = f"用例步骤 {matched_case_step + 1} - {case_step_text}"
-        step_status = "completed"
-        if execution.get("error"):
-            step_status = "failed"
-        elif index == len(history) and trace_failed:
-            step_status = "failed"
-        elif not trace_completed and index == len(history):
-            step_status = "running"
-        steps.append(
-            {
-                "step_index": int(item.get("step", index)) if isinstance(item, dict) else index,
-                "step_code": f"agent_{index:02d}",
-                "title": case_step_title or action_summary or str(decision.get("action") or f"Step {index}"),
-                "status": step_status,
-                "started_at": None,
-                "finished_at": None,
-                "duration_seconds": None,
-                "summary": action_summary or str(decision.get("reason") or execution.get("result") or ""),
-                "error_message": str(execution.get("error") or ""),
-                "screenshot_url": screenshot["url"] if screenshot else "",
-                "ai_analysis": str(decision.get("reason") or action_summary or ""),
-                "final_url": str(trace.get("finalUrl") or trace.get("final_url") or ""),
-                "command_output": _agent_step_command_output(item if isinstance(item, dict) else {}, case_step_text),
-                "selectors": [],
-                "inputs": [],
-                "console_logs": [],
-                "network_logs": [],
-                "dom_snapshot_url": "",
-                "events": [item] if isinstance(item, dict) else [],
-            }
+        action_name = str(decision.get("action") or "").strip().lower()
+        summary_text = (
+            (case_step_text if action_name in {"fill", "click", "goto"} else "")
+            or (action_summary if action_name == "wait" else "")
+            or str(decision.get("reason") or "").strip()
+            or action_summary
+            or str(execution.get("result") or "")
         )
+        if summary_text:
+            step_entry["summary"] = summary_text
+        step_entry["ai_analysis"] = str(decision.get("reason") or action_summary or step_entry["ai_analysis"])
+        if screenshot:
+            step_entry["screenshot_url"] = screenshot["url"]
+        step_entry["events"].append(item)
+        step_entry["command_output"].extend(_agent_step_command_output(item_dict, case_step_text))
+        if execution.get("error"):
+            step_entry["status"] = "failed"
+            step_entry["error_message"] = str(execution.get("error") or "")
+        elif step_entry["status"] != "failed":
+            step_entry["status"] = "completed"
+        assertion_binding = _agent_assertion_binding(item_dict, expected_bindings, stage_meta_map)
+        if assertion_binding:
+            bound_step = steps[assertion_binding["end_step"] - 1]
+            bound_step["expected_result"] = assertion_binding["text"]
+            current_checks = bound_step["assertion_checks"] or _build_assertion_checks(assertion_binding["text"], ai_fallback=ai_fallback)
+            evaluated_checks = [_evaluate_assertion_check(check, item_dict, trace) for check in current_checks]
+            bound_step["assertion_checks"] = evaluated_checks
+            bound_step["actual_result"] = _assertion_actual_summary(evaluated_checks) or _agent_actual_result_text(item_dict, trace) or summary_text or case_step_text
+            if execution.get("error"):
+                bound_step["expected_result_status"] = "failed"
+                bound_step["status"] = "failed"
+                bound_step["error_message"] = str(execution.get("error") or "")
+            else:
+                bound_step["expected_result_status"] = _aggregate_assertion_status(evaluated_checks)
+                if bound_step["expected_result_status"] == "failed":
+                    bound_step["status"] = "failed"
+                elif bound_step["expected_result_status"] == "completed" and bound_step["status"] != "failed":
+                    bound_step["status"] = "completed"
+    if trace_failed:
+        for step_entry in reversed(steps):
+            if step_entry["status"] == "completed" and step_entry["expected_result_status"] == "queued":
+                step_entry["status"] = "failed"
+                step_entry["actual_result"] = str(trace.get("error") or step_entry["actual_result"] or step_entry["summary"])
+                step_entry["error_message"] = str(trace.get("error") or step_entry["error_message"])
+                break
+    elif not trace_completed:
+        for step_entry in reversed(steps):
+            if step_entry["status"] == "completed":
+                step_entry["status"] = "running"
+                break
+    elif trace_completed:
+        _finalize_queued_assertions_with_last_observation(steps, history, ai_fallback=ai_fallback)
+    for step_entry in steps:
+        if step_entry.get("expected_result_status") == "completed" and step_entry.get("status") == "failed":
+            step_entry["status"] = "completed"
+            step_entry["error_message"] = ""
     return steps
+
+
+def _finalize_queued_assertions_with_last_observation(steps: list[dict], history: list[dict], ai_fallback: bool = False) -> None:
+    """trace 成功时，对"未明确通过"的断言用"该步骤匹配的 history observation"兜底求值。
+
+    解决三类问题：
+    1. stage_local_step 与 expected_binding 错位：agent 在某 stage 内自主做了
+       多次 assert_text，绑定会错位，导致用错误的 observation 求值。
+    2. duplicate_action_blocked 被当执行错误：这些步骤的 observation 其实是正常的。
+    3. 用最终页面 observation 求值早期步骤：早期步骤的预期应基于早期页面状态。
+
+    策略：按 URL 变化点把 history 分段，每段代表"一个页面状态"。
+    按步骤序号选对应的 page_segment，用那个 observation 重新求值。
+    只重求 status 为 queued 或 failed 的步骤；completed 的保持不变。
+    ai_fallback=True 时，对仍 failed 的步骤用 page_context 调 AI 再解析。
+    """
+    if not history or not steps:
+        return
+    page_segments: list[dict] = []
+    for item in history:
+        if not isinstance(item, dict):
+            continue
+        obs = item.get("observation") or {}
+        url = str(obs.get("url") or "").strip()
+        if not url or not (obs.get("visibleText")):
+            continue
+        if not page_segments or page_segments[-1]["url"] != url:
+            page_segments.append({"url": url, "item": item})
+    if not page_segments:
+        return
+    trace_ref: dict = {}
+    for step_index, step_entry in enumerate(steps):
+        current_status = step_entry.get("expected_result_status")
+        if current_status not in {"queued", "failed"}:
+            continue
+        checks = step_entry.get("assertion_checks") or []
+        if not checks:
+            continue
+        candidate_items = _assertion_evidence_candidates(step_entry, history, page_segments)
+        if not candidate_items:
+            continue
+        if ai_fallback and _should_try_context_refinement(checks):
+            page_context = _build_page_context(candidate_items[-1])
+            if page_context:
+                refined = _ai_assertion_fallback(step_entry.get("expected_result", ""), page_context=page_context)
+                if refined:
+                    checks = refined
+                    step_entry["assertion_checks"] = checks
+        best_item = candidate_items[0]
+        evaluated_checks = [_evaluate_assertion_check(check, best_item, trace_ref) for check in checks]
+        best_status = _aggregate_assertion_status(evaluated_checks)
+        for candidate in candidate_items[1:]:
+            candidate_checks = [_evaluate_assertion_check(check, candidate, trace_ref) for check in checks]
+            candidate_status = _aggregate_assertion_status(candidate_checks)
+            if _assertion_resolution_rank(candidate_status) > _assertion_resolution_rank(best_status):
+                best_item = candidate
+                evaluated_checks = candidate_checks
+                best_status = candidate_status
+        step_entry["assertion_checks"] = evaluated_checks
+        aggregated = best_status
+        step_entry["expected_result_status"] = aggregated
+        failed_count = sum(1 for c in evaluated_checks if c.get("status") == "failed")
+        completed_count = sum(1 for c in evaluated_checks if c.get("status") == "completed")
+        step_entry["partial_pass"] = completed_count > 0 and failed_count > 0
+        step_entry["failed_checks_count"] = failed_count
+        step_entry["completed_checks_count"] = completed_count
+        if not step_entry.get("actual_result") or current_status == "failed":
+            step_entry["actual_result"] = _assertion_actual_summary(evaluated_checks) or _agent_actual_result_text(best_item, trace_ref)
+        if aggregated == "completed":
+            step_entry["status"] = "completed"
+        elif aggregated == "failed":
+            step_entry["status"] = "failed"
 
 
 def _case_title_for_run(run_id: str, task_dict: dict, agent_explore: dict | None) -> str:
@@ -1734,7 +2624,7 @@ def _build_unified_run_detail(run_id: str) -> dict:
             "ai_analysis": "",
         }
     else:
-        steps = _build_agent_steps(agent_explore, log_dicts, screenshots, run_id, task_dict)
+        steps = _build_agent_steps(agent_explore, log_dicts, screenshots, run_id, task_dict, ai_fallback=True)
         trace = (agent_explore or {}).get("trace") or {}
         final_url = str(trace.get("finalUrl") or trace.get("final_url") or "")
         summary = {
@@ -1747,6 +2637,8 @@ def _build_unified_run_detail(run_id: str) -> dict:
     if report_text:
         report_meta = parse_report(report_text)
         case_name = report_meta.get("case_name") or case_name
+    trace = (agent_explore or {}).get("trace") or {}
+    agent_stage_runs = _reconcile_agent_stage_runs(trace, steps, (trace.get("stage_runs") or []))
     return {
         "run_id": run_id,
         "case_id": task_dict.get("case_id"),
@@ -1780,12 +2672,12 @@ def _build_unified_run_detail(run_id: str) -> dict:
         "evidence": evidence_summary(run_id),
         "agent_explore": agent_explore,
         "analysis": analysis,
-        "healing_hint": str(((agent_explore or {}).get("trace") or {}).get("healing_hint") or ""),
-        "agent_plan": ((agent_explore or {}).get("trace") or {}).get("plan") or {},
-        "agent_stage_runs": ((agent_explore or {}).get("trace") or {}).get("stage_runs") or [],
-        "current_stage_id": str((((agent_explore or {}).get("trace") or {}).get("current_stage_id") or "")),
-        "current_stage_name": str((((agent_explore or {}).get("trace") or {}).get("current_stage_name") or "")),
-        "current_strategy": str((((agent_explore or {}).get("trace") or {}).get("current_strategy") or "")),
+        "healing_hint": str((trace.get("healing_hint") or "")),
+        "agent_plan": trace.get("plan") or {},
+        "agent_stage_runs": agent_stage_runs,
+        "current_stage_id": str((trace.get("current_stage_id") or "")),
+        "current_stage_name": str((trace.get("current_stage_name") or "")),
+        "current_strategy": str((trace.get("current_strategy") or "")),
     }
 
 
@@ -3446,6 +4338,68 @@ def load_report_analysis_versions(run_id: str, report: str) -> list[dict]:
             }
         )
     return versions
+
+
+def expected_text_hash(expected_text: str, context_sig: str = "") -> str:
+    if not context_sig:
+        return sha256(expected_text.encode("utf-8")).hexdigest()
+    return sha256(f"{expected_text}\n{context_sig}".encode("utf-8")).hexdigest()
+
+
+def load_cached_assertion_analysis(expected_text: str, settings: dict[str, Any], context_sig: str = "") -> list[dict] | None:
+    digest = expected_text_hash(expected_text, context_sig)
+    provider = str(settings.get("provider", ""))
+    model = str(settings.get("model", ""))
+    with connect() as conn:
+        row = conn.execute(
+            """
+            select assertions_json, updated_at from assertion_analyses
+            where expected_hash = ? and provider = ? and model = ?
+            order by updated_at desc
+            limit 1
+            """,
+            (digest, provider, model),
+        ).fetchone()
+    if not row:
+        return None
+    try:
+        assertions = json.loads(row["assertions_json"])
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(assertions, list):
+        return None
+    for item in assertions:
+        if isinstance(item, dict):
+            item["status"] = "queued"
+            item["actual"] = ""
+            item["evidence_source"] = ""
+            item["reason"] = ""
+            item["cached"] = True
+    return assertions
+
+
+def save_assertion_analysis(expected_text: str, settings: dict[str, Any], assertions: list[dict], context_sig: str = "") -> None:
+    now = utc_now()
+    provider = str(settings.get("provider", ""))
+    model = str(settings.get("model", ""))
+    digest = expected_text_hash(expected_text, context_sig)
+    snapshot = [
+        {k: v for k, v in item.items() if k not in {"status", "actual", "evidence_source", "reason", "cached"}}
+        for item in assertions
+        if isinstance(item, dict)
+    ]
+    payload = json.dumps(snapshot, ensure_ascii=False)
+    with connect() as conn:
+        conn.execute(
+            """
+            insert into assertion_analyses(expected_hash, provider, model, assertions_json, created_at, updated_at)
+            values (?, ?, ?, ?, ?, ?)
+            on conflict(expected_hash, provider, model) do update set
+              assertions_json = excluded.assertions_json,
+              updated_at = excluded.updated_at
+            """,
+            (digest, provider, model, payload, now, now),
+        )
 
 
 def is_confirmed_status(status: str) -> bool:

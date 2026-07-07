@@ -19,6 +19,7 @@ import { Avatar } from "./components/Avatar";
 import { ChangePasswordModal } from "./components/ChangePasswordModal";
 import { AvatarEditModal } from "./components/AvatarEditModal";
 import { ConfirmDialog } from "./components/ConfirmDialog";
+import { ThemeToggle, useThemeMode } from "./components/ThemeToggle";
 
 // ============================================================
 //  用户菜单：3 项 + 分隔线
@@ -84,7 +85,6 @@ function UserMenuTrigger({
           src={user?.avatarUrl}
           size="sm"
         />
-        <span className="user-menu-trigger__name">{user?.username || "账号"}</span>
         <svg
           className={`user-menu-trigger__caret ${open ? "is-open" : ""}`}
           width="12"
@@ -171,6 +171,7 @@ type ModalKind = "edit-avatar" | "change-password" | "logout" | null;
 function ShellApp() {
   const { state, logout } = useAuth();
   const toast = useToast();
+  const { mode: themeMode, toggle: toggleTheme } = useThemeMode();
   const [page, setPage] = useState<PageId>(() => readInitialPage());
   const [activeNavKey, setActiveNavKey] = useState<PlatformNavKey>(() => navKeyForPage(readInitialPage()));
   const [reportRunId, setReportRunId] = useState("");
@@ -293,6 +294,7 @@ function ShellApp() {
         </nav>
         <div className="platform-user">
           <span className={modelSwitching ? "is-switching" : undefined}>{modelLabel}</span>
+          <ThemeToggle mode={themeMode} onToggle={toggleTheme} />
           <UserMenuTrigger
             onAction={handleUserMenuAction}
             triggerButtonRef={userMenuTriggerRef}
@@ -353,10 +355,21 @@ export default function App() {
   return (
     <ToastProvider>
       <AuthProvider>
-        <ShellApp />
+        <ThemeBoot>
+          <ShellApp />
+        </ThemeBoot>
       </AuthProvider>
     </ToastProvider>
   );
+}
+
+// ============================================================
+//  主题启动器：确保即使 Login 页没渲染 topbar 时，
+//  documentElement 上的 data-theme 与 localStorage 也已同步
+// ============================================================
+function ThemeBoot({ children }: { children: React.ReactNode }) {
+  useThemeMode();
+  return <>{children}</>;
 }
 
 // ============================================================

@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from urllib.parse import urlparse
 
 
-SAFE_ACTIONS = {"goto", "fill", "click", "press", "wait", "scroll", "assert_text", "finish", "fail"}
-REF_ACTIONS = {"fill", "click"}
+SAFE_ACTIONS = {"goto", "fill", "click", "hover", "press", "wait", "scroll", "assert_text", "finish", "fail"}
+REF_ACTIONS = {"fill", "click", "hover"}
 
 
 @dataclass(slots=True)

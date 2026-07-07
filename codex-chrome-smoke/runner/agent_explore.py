@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from pathlib import Path
@@ -11,10 +12,13 @@ from runner.case_expectations import case_expected_results
 from runner.agent_stage_router import build_stage_goal, execute_stage_strategy, normalize_stage_history, now_iso, plan_agent_execution, stage_view
 from runner.browser import attach_case_runtime, ensure_logged_out, first_visible, load_case, load_case_file, load_system, open_login_page, screenshot
 from runner.evidence_recorder import attach_evidence_recorder, evidence_summary
+from runner.operation_knowledge import load_trusted_plan, write_pending_agent_asset
+from icm_platform.paths import DB_PATH, TEST_CASE_DIR
 
 
 ROOT = Path(__file__).resolve().parents[1]
 AGENT_REPORT_ROOT = ROOT / "reports" / "agent-explore"
+AGENT_KNOWLEDGE_ROOT = ROOT / "reports" / "agent-knowledge"
 
 
 def allowed_hosts_for_system(system: dict[str, Any]) -> set[str]:
@@ -197,7 +201,7 @@ OBSERVE_PAGE_SCRIPT = """() => {
           };
           const interactives = Array.from(
             document.querySelectorAll(
-              'a,button,input,textarea,select,[role="button"],[role="link"],[role="menuitem"],[contenteditable="true"],.el-submenu__title,.el-menu-item'
+              'a,button,input,textarea,select,[role="button"],[role="link"],[role="menuitem"],[contenteditable="true"],.el-submenu__title,.el-menu-item,.el-dropdown-menu__item'
             )
           )
             .filter(visible)
@@ -221,6 +225,11 @@ OBSERVE_PAGE_SCRIPT = """() => {
         }"""
 
 
+def _is_network_provider_error(exc: Exception) -> bool:
+    """判断异常是否为 AI provider 网络错误（值得重试），而非 JSON 解析或配置错误。"""
+    return type(exc).__name__ == "AIProviderError"
+
+
 async def run_agent_loop(
     goal: str,
     observe: Callable[[], Awaitable[dict[str, Any]]],
@@ -237,22 +246,43 @@ async def run_agent_loop(
         try:
             raw_decision = await decide(goal, observation, history, step_index, max_steps)
         except Exception as exc:
-            history.append(
-                {
-                    "step": step_index + 1,
-                    "decision": {
-                        "action": "fail",
-                        "ref": "",
-                        "url": "",
-                        "value": "",
-                        "key": "",
-                        "reason": str(exc),
-                    },
-                    "observation": observation,
-                    "execution": {"result": "error", "error": str(exc)},
-                }
-            )
-            return {"ok": False, "status": "failed", "goal": goal, "history": history, "error": str(exc)}
+            if step_index == 0 or not _is_network_provider_error(exc):
+                history.append(
+                    {
+                        "step": step_index + 1,
+                        "decision": {
+                            "action": "fail",
+                            "ref": "",
+                            "url": "",
+                            "value": "",
+                            "key": "",
+                            "reason": str(exc),
+                        },
+                        "observation": observation,
+                        "execution": {"result": "error", "error": str(exc)},
+                    }
+                )
+                return {"ok": False, "status": "failed", "goal": goal, "history": history, "error": str(exc)}
+            await asyncio.sleep(2)
+            try:
+                raw_decision = await decide(goal, observation, history, step_index, max_steps)
+            except Exception as retry_exc:
+                history.append(
+                    {
+                        "step": step_index + 1,
+                        "decision": {
+                            "action": "fail",
+                            "ref": "",
+                            "url": "",
+                            "value": "",
+                            "key": "",
+                            "reason": str(retry_exc),
+                        },
+                        "observation": observation,
+                        "execution": {"result": "error", "error": str(retry_exc)},
+                    }
+                )
+                return {"ok": False, "status": "failed", "goal": goal, "history": history, "error": str(retry_exc)}
         decision = normalize_decision(raw_decision)
         decision_dict = {
             "action": decision.action,
@@ -468,7 +498,7 @@ def _observation_is_authenticated_context(goal: str, observation: dict[str, Any]
     if not url or "login" in url:
         return False
     goal_text = goal.lower()
-    return "login" in goal_text or "鐧诲綍" in goal
+    return "login" in goal_text or "登录" in goal
 
 
 def _should_continue_after_login_satisfied(goal: str, observation: dict[str, Any], history: list[dict[str, Any]], reason: str) -> bool:
@@ -490,7 +520,7 @@ def _should_finish_on_success_signal(
 ) -> bool:
     if not errors or not any(error.startswith("unknown ref: empty") for error in errors):
         return False
-    if str(getattr(decision, "action", "")) not in {"click", "fill", "press"}:
+    if str(getattr(decision, "action", "")) not in {"click", "fill", "hover", "press"}:
         return False
     return _observation_indicates_logged_in(goal, observation, history)
 
@@ -511,9 +541,9 @@ def build_agent_prompt(goal: str, observation: dict[str, Any], history: list[dic
         "Return exactly one JSON object. Do not return Markdown or explanations.\n\n"
         f"Goal:\n{goal}\n\n"
         f"Step: {step_index + 1}/{max_steps}\n\n"
-        "Allowed actions: goto, fill, click, press, wait, scroll, assert_text, finish, fail.\n"
+        "Allowed actions: goto, fill, click, hover, press, wait, scroll, assert_text, finish, fail.\n"
         "Safety rules:\n"
-        "1. click/fill/press must use a ref from observation.interactives.\n"
+        "1. click/fill/hover/press must use a ref from observation.interactives.\n"
         "2. Do not invent selectors.\n"
         "3. Use credentials and other input values from the case goal exactly when they are provided.\n"
         "4. Do not substitute default admin/test accounts unless the case goal explicitly says so.\n"
@@ -525,6 +555,7 @@ def build_agent_prompt(goal: str, observation: dict[str, Any], history: list[dic
         "{\"action\":\"fill\",\"ref\":\"e1\",\"value\":\"test\",\"reason\":\"fill username from case test data\"}\n"
         "{\"action\":\"fill\",\"ref\":\"e2\",\"value\":\"123456\",\"reason\":\"fill password from case test data\"}\n"
         "{\"action\":\"click\",\"ref\":\"e2\",\"reason\":\"submit form\"}\n"
+        "{\"action\":\"hover\",\"ref\":\"e3\",\"reason\":\"reveal hover menu\"}\n"
         "{\"action\":\"assert_text\",\"value\":\"Home\",\"reason\":\"verify homepage\"}\n\n"
         f"Recent history:\n{json.dumps(compact_history, ensure_ascii=False, indent=2)}\n\n"
         f"Current observation:\n{json.dumps(observation, ensure_ascii=False, indent=2)}"
@@ -619,13 +650,36 @@ def _target_text_candidates(target: dict[str, Any]) -> list[str]:
 def _target_selector_candidates(target: dict[str, Any], action: str) -> list[str]:
     selector = str(target.get("selector") or "").strip()
     candidates = [selector] if selector else []
-    if action == "click":
+    if action in {"click", "hover"}:
         candidates.extend(f"text={text}" for text in _target_text_candidates(target))
     deduped: list[str] = []
     for candidate in candidates:
         if candidate and candidate not in deduped:
             deduped.append(candidate)
     return deduped
+
+
+def _is_pointer_intercept_error(exc: Exception) -> bool:
+    return "intercepts pointer events" in str(exc)
+
+
+def _target_looks_like_dropdown_trigger(target: dict[str, Any]) -> bool:
+    text = " ".join(
+        str(target.get(key) or "").strip().lower()
+        for key in ("text", "ariaLabel", "selector")
+    )
+    return any(token in text for token in ("更多", "more", "dropdown", "aria-haspopup", "el-dropdown-selfdefine"))
+
+
+async def _visible_dropdown_menu_item_count(page) -> int:
+    locator = page.locator(".el-dropdown-menu__item")
+    return await locator.locator(":visible").count()
+
+
+async def _dismiss_stale_hover_overlay(page) -> None:
+    await page.keyboard.press("Escape")
+    await page.mouse.move(1, 1)
+    await page.wait_for_timeout(120)
 
 
 async def decide_next_action(goal: str, observation: dict[str, Any], history: list[dict[str, Any]], step_index: int, max_steps: int) -> dict[str, Any]:
@@ -640,14 +694,22 @@ async def decide_next_action(goal: str, observation: dict[str, Any], history: li
     provider = settings.get("provider", service.provider)
     prompt = build_agent_prompt(goal, observation, history, step_index, max_steps)
     parse_error = ""
+    network_retries = 2
     for attempt in range(2):
         payload = _agent_decision_payload(settings["model"], provider, prompt, parse_error)
-        raw = service._post_json(
-            service.chat_completions_url(settings["base_url"]),
-            service.api_key_for_provider(settings),
-            payload,
-            timeout=service.request_timeout(provider),
-        )
+        for network_attempt in range(network_retries + 1):
+            try:
+                raw = service._post_json(
+                    service.chat_completions_url(settings["base_url"]),
+                    service.api_key_for_provider(settings),
+                    payload,
+                    timeout=service.request_timeout(provider),
+                )
+                break
+            except Exception as network_exc:
+                if network_attempt == network_retries:
+                    raise
+                await asyncio.sleep(2)
         try:
             return extract_json_object(_chat_content(raw))
         except ValueError as exc:
@@ -688,8 +750,26 @@ async def execute_agent_decision(page, decision, observation: dict[str, Any]) ->
         await locator.fill(decision.value, timeout=8000)
         return {"result": "filled", "ref": decision.ref, "selector": selector}
     if decision.action == "click":
-        await locator.click(timeout=8000)
-        return {"result": "clicked", "ref": decision.ref, "selector": selector}
+        try:
+            await locator.click(timeout=8000)
+            return {"result": "clicked", "ref": decision.ref, "selector": selector}
+        except Exception as exc:
+            if not _is_pointer_intercept_error(exc):
+                raise
+            if not _target_looks_like_dropdown_trigger(target):
+                raise
+            if await _visible_dropdown_menu_item_count(page) <= 0:
+                raise
+            return {"result": "dropdown_opened", "ref": decision.ref, "selector": selector}
+    if decision.action == "hover":
+        try:
+            await locator.hover(timeout=8000)
+        except Exception as exc:
+            if not _is_pointer_intercept_error(exc):
+                raise
+            await _dismiss_stale_hover_overlay(page)
+            await locator.hover(timeout=8000)
+        return {"result": "hovered", "ref": decision.ref, "selector": selector}
     if decision.action == "press":
         await locator.press(decision.key or "Enter", timeout=8000)
         return {"result": "pressed", "ref": decision.ref, "key": decision.key or "Enter", "selector": selector}
@@ -743,7 +823,7 @@ def _load_healing_context(run_id: str) -> dict[str, Any] | None:
 
 async def run_agent_explore(page, run_id: str, case_arg: str) -> dict[str, Any]:
     case = _load_case_arg(case_arg)
-    system = load_system(case["system"])
+    system = load_system(case["system"], case)
     case_id = str(case.get("id") or case_arg)
     allowed_hosts = allowed_hosts_for_system(system)
     if not allowed_hosts:
@@ -757,7 +837,13 @@ async def run_agent_explore(page, run_id: str, case_arg: str) -> dict[str, Any]:
     await screenshot(page, run_id, case_id, "01-entry.png")
     healing_context = _load_healing_context(run_id)
     goal = build_self_heal_goal(case, healing_context) if healing_context else build_agent_goal(case)
-    plan = plan_agent_execution(case)
+    plan = load_trusted_plan(
+        case,
+        plan_agent_execution(case),
+        db_path=DB_PATH,
+        case_dir=TEST_CASE_DIR,
+        flow_dir=ROOT / "runner" / "flows",
+    )
     trace: dict[str, Any] = {
         "ok": False,
         "status": "running",
@@ -851,6 +937,9 @@ async def run_agent_explore(page, run_id: str, case_arg: str) -> dict[str, Any]:
 
     _finalize_stage_runs(trace)
     trace["evidence"] = evidence_summary(run_id)
+    if trace.get("ok"):
+        pending_path = write_pending_agent_asset(AGENT_KNOWLEDGE_ROOT, run_id, case, trace)
+        trace["pending_review_path"] = str(pending_path.relative_to(ROOT))
     artifact_paths = _write_trace_artifacts(run_id, trace, case)
     return {
         **trace,
