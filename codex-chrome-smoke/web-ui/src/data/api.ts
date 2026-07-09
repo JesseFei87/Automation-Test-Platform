@@ -422,6 +422,20 @@ export type ApiReportListItem = {
   has_evidence: boolean;
 };
 
+export type ApiReportDeleteResult = {
+  ok: boolean;
+  run_id: string;
+  deleted_at: string;
+  mode: "worker" | "agent";
+};
+
+export type ApiReportBatchDeleteResult = {
+  ok: boolean;
+  deleted_count: number;
+  run_ids: string[];
+  deleted_at: string;
+};
+
 export type ApiReportAnalysis = NonNullable<ApiRunDetail["analysis"]>;
 
 export type ApiReportAnalysisVersion = {
@@ -635,6 +649,12 @@ export const api = {
       body: JSON.stringify({ test_points: testPoints }),
     }),
   reports: () => request<ApiReportListItem[]>("/reports"),
+  deleteReport: (runId: string) => request<ApiReportDeleteResult>(`/reports/${runId}`, { method: "DELETE" }),
+  batchDeleteReports: (runIds: string[]) =>
+    request<ApiReportBatchDeleteResult>("/reports/batch-delete", {
+      method: "POST",
+      body: JSON.stringify({ run_ids: runIds }),
+    }),
   testPoints: (status?: "confirmed") => testPointsWithFallback(status),
   createTestPoint: (payload: Partial<Pick<TestPoint, "requirement_id" | "parent_id" | "category" | "priority" | "status" | "description" | "module" | "source" | "sort_order">> & { name: string }) =>
     request<{ id: number; requirement_id: number }>("/test-points", { method: "POST", body: JSON.stringify(payload) }),

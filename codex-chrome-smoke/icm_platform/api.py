@@ -174,6 +174,10 @@ class AnalyzeReportRequest(BaseModel):
     force: bool = False
 
 
+class ReportBatchDeleteRequest(BaseModel):
+    run_ids: list[str]
+
+
 class RunRequest(BaseModel):
     mode: Literal["run-case", "run-batch", "run-draft", "agent-explore"]
     case_id: str | None = None
@@ -1266,7 +1270,7 @@ def run_detail(run_id: str) -> dict:
             screenshots = parse_report(report)["screenshots"]
         except FileNotFoundError:
             report = ""
-    if not screenshots and task_dict.get("case_id"):
+    if not screenshots and task_dict.get("case_id") and str(task_dict.get("status") or "") not in {"queued", "running"}:
         screenshots = [screenshot_payload(task_dict["case_id"], path) for path in latest_screenshots(task_dict["case_id"])]
     agent_explore = load_agent_explore_artifacts(run_id) if task_dict.get("mode") == "agent-explore" else None
     log_dicts = rows_to_dicts(logs)
@@ -1309,7 +1313,7 @@ def _report_screenshots(task_dict: dict, report_text: str) -> list[dict[str, str
         screenshots = parse_report(report_text)["screenshots"]
     if not screenshots:
         screenshots = _run_screenshots(str(task_dict.get("id") or ""))
-    if not screenshots and task_dict.get("case_id"):
+    if not screenshots and task_dict.get("case_id") and str(task_dict.get("status") or "") not in {"queued", "running"}:
         screenshots = [screenshot_payload(task_dict["case_id"], path) for path in latest_screenshots(task_dict["case_id"])]
     return screenshots
 
@@ -2303,6 +2307,7 @@ def _build_agent_steps(agent_explore: dict | None, logs: list[dict], screenshots
     trace_status = str(trace.get("status") or "").strip().lower()
     trace_failed = bool(trace.get("error")) or trace_status == "failed"
     trace_completed = bool(trace.get("ok")) or trace_status in {"passed", "completed", "success"}
+    trace_active = not trace_failed and not trace_completed
     if not case_steps:
         steps: list[dict] = []
         current_case_step_index = -1
@@ -2475,7 +2480,17 @@ def _build_agent_steps(agent_explore: dict | None, logs: list[dict], screenshots
                 bound_step["status"] = "failed"
                 bound_step["error_message"] = str(execution.get("error") or "")
             else:
-                bound_step["expected_result_status"] = _aggregate_assertion_status(evaluated_checks)
+                aggregated_status = _aggregate_assertion_status(evaluated_checks)
+                if trace_active and aggregated_status == "failed":
+                    evaluated_checks = [
+                        {**check, "status": "queued", "reason": "waiting for final evidence"}
+                        if str(check.get("status") or "") == "failed"
+                        else check
+                        for check in evaluated_checks
+                    ]
+                    bound_step["assertion_checks"] = evaluated_checks
+                    aggregated_status = "queued"
+                bound_step["expected_result_status"] = aggregated_status
                 if bound_step["expected_result_status"] == "failed":
                     bound_step["status"] = "failed"
                 elif bound_step["expected_result_status"] == "completed" and bound_step["status"] != "failed":
@@ -4057,9 +4072,17 @@ def get_stability_scan(scan_id: str) -> dict:
 @app.get("/api/reports")
 def reports() -> list[dict]:
     with connect() as conn:
-        rows = conn.execute("select * from run_tasks order by created_at desc limit 100").fetchall()
+        rows = conn.execute(
+            """
+            select *
+            from run_tasks
+            where coalesce(report_deleted_at, '') = ''
+            order by created_at desc
+            limit 500
+            """
+        ).fetchall()
     tasks = rows_to_dicts(rows)
-    report_meta = {item["run_id"]: item for item in list_reports(limit=100)}
+    report_meta = {item["run_id"]: item for item in list_reports(limit=500)}
     items: list[dict] = []
     for task in tasks:
         detail = load_step_details(str(task["id"])) or {}
@@ -4083,8 +4106,55 @@ def reports() -> list[dict]:
     return items
 
 
+def _get_report_task_or_404(run_id: str) -> dict:
+    with connect() as conn:
+        row = conn.execute("select * from run_tasks where id = ?", (run_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="report not found")
+    return dict(row)
+
+
+def _ensure_report_available(run_id: str) -> dict:
+    task = _get_report_task_or_404(run_id)
+    if task.get("report_deleted_at"):
+        raise HTTPException(status_code=404, detail="report not found")
+    return task
+
+
+@app.delete("/api/reports/{run_id}")
+def delete_report(run_id: str) -> dict:
+    task = _ensure_report_available(run_id)
+    now = utc_now()
+    with connect() as conn:
+        conn.execute("update run_tasks set report_deleted_at = ? where id = ?", (now, run_id))
+    return {"ok": True, "run_id": run_id, "deleted_at": now, "mode": _normalized_mode(str(task.get("mode") or ""))}
+
+
+@app.post("/api/reports/batch-delete")
+def batch_delete_reports(payload: ReportBatchDeleteRequest) -> dict:
+    run_ids = [str(item).strip() for item in payload.run_ids if str(item).strip()]
+    if not run_ids:
+        raise HTTPException(status_code=400, detail="run_ids is required")
+    placeholders = ",".join("?" for _ in run_ids)
+    now = utc_now()
+    with connect() as conn:
+        rows = conn.execute(
+            f"select id from run_tasks where coalesce(report_deleted_at, '') = '' and id in ({placeholders})",
+            run_ids,
+        ).fetchall()
+        existing_ids = [str(row["id"]) for row in rows]
+        if existing_ids:
+            update_placeholders = ",".join("?" for _ in existing_ids)
+            conn.execute(
+                f"update run_tasks set report_deleted_at = ? where id in ({update_placeholders})",
+                [now, *existing_ids],
+            )
+    return {"ok": True, "deleted_count": len(existing_ids), "run_ids": existing_ids, "deleted_at": now}
+
+
 @app.get("/api/reports/{run_id}")
 def report_detail(run_id: str) -> dict:
+    _ensure_report_available(run_id)
     report, meta, screenshots = load_report_or_run_detail_report(run_id)
     analysis = load_cached_report_analysis(run_id, report) or ai_service.analyze_run_report(report, screenshots, evidence_log_lines(run_id))
     return {
@@ -4099,6 +4169,7 @@ def report_detail(run_id: str) -> dict:
 
 @app.post("/api/reports/{run_id}/analyze")
 def analyze_report_with_ai(run_id: str, payload: AnalyzeReportRequest | None = None) -> dict:
+    _ensure_report_available(run_id)
     report, _meta, screenshots = load_report_or_run_detail_report(run_id)
     settings = get_ai_settings(mask_key=False)
     force = bool(payload.force) if payload else False
@@ -4124,6 +4195,7 @@ def analyze_report_with_ai(run_id: str, payload: AnalyzeReportRequest | None = N
 
 @app.get("/api/reports/{run_id}/analyses")
 def report_analysis_versions(run_id: str) -> list[dict]:
+    _ensure_report_available(run_id)
     report, _meta, _screenshots = load_report_or_run_detail_report(run_id)
     return load_report_analysis_versions(run_id, report)
 

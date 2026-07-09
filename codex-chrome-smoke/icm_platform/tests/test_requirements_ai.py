@@ -687,5 +687,111 @@ class RequirementAITests(unittest.TestCase):
         self.assertIsNone(result)
 
 
+    def test_reports_endpoint_hides_logically_deleted_runs(self) -> None:
+        try:
+            from fastapi.testclient import TestClient
+        except Exception as exc:  # pragma: no cover
+            self.skipTest(f"TestClient unavailable: {exc}")
+
+        with tempfile.TemporaryDirectory() as folder:
+            db_path = Path(folder) / "test.sqlite3"
+            with (
+                patch("icm_platform.db.DB_PATH", db_path),
+                patch("icm_platform.db.DATA_DIR", db_path.parent),
+                patch(
+                    "icm_platform.api.list_reports",
+                    return_value=[
+                        {
+                            "run_id": "run-visible",
+                            "case_id": "TC-001",
+                            "case_name": "Visible case",
+                            "status": "completed",
+                            "path": "reports/run-visible.md",
+                            "updated_at": 1,
+                            "screenshot_count": 1,
+                        },
+                        {
+                            "run_id": "run-deleted",
+                            "case_id": "TC-002",
+                            "case_name": "Deleted case",
+                            "status": "failed",
+                            "path": "reports/run-deleted.md",
+                            "updated_at": 2,
+                            "screenshot_count": 2,
+                        },
+                    ],
+                ),
+            ):
+                db.init_db()
+                now = "2026-07-08T10:00:00Z"
+                with db.connect() as conn:
+                    conn.execute(
+                        "insert into run_tasks(id, mode, case_id, status, command, created_at, started_at, finished_at, report_deleted_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        ("run-visible", "agent-explore", "TC-001", "completed", "run", now, now, now, None),
+                    )
+                    conn.execute(
+                        "insert into run_tasks(id, mode, case_id, status, command, created_at, started_at, finished_at, report_deleted_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        ("run-deleted", "agent-explore", "TC-002", "failed", "run", now, now, now, now),
+                    )
+                client = TestClient(app)
+                response = client.get("/api/reports")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([item["run_id"] for item in response.json()], ["run-visible"])
+
+    def test_delete_report_endpoint_marks_report_as_deleted(self) -> None:
+        try:
+            from fastapi.testclient import TestClient
+        except Exception as exc:  # pragma: no cover
+            self.skipTest(f"TestClient unavailable: {exc}")
+
+        with tempfile.TemporaryDirectory() as folder:
+            db_path = Path(folder) / "test.sqlite3"
+            with patch("icm_platform.db.DB_PATH", db_path), patch("icm_platform.db.DATA_DIR", db_path.parent):
+                db.init_db()
+                now = "2026-07-08T10:00:00Z"
+                with db.connect() as conn:
+                    conn.execute(
+                        "insert into run_tasks(id, mode, case_id, status, command, created_at, started_at, finished_at) values (?, ?, ?, ?, ?, ?, ?, ?)",
+                        ("run-delete", "agent-explore", "TC-003", "completed", "run", now, now, now),
+                    )
+                client = TestClient(app)
+                response = client.delete("/api/reports/run-delete")
+                with db.connect() as conn:
+                    deleted_at = conn.execute("select report_deleted_at from run_tasks where id = ?", ("run-delete",)).fetchone()[0]
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["ok"])
+        self.assertEqual(response.json()["run_id"], "run-delete")
+        self.assertTrue(deleted_at)
+
+    def test_deleted_report_detail_returns_not_found(self) -> None:
+        try:
+            from fastapi.testclient import TestClient
+        except Exception as exc:  # pragma: no cover
+            self.skipTest(f"TestClient unavailable: {exc}")
+
+        with tempfile.TemporaryDirectory() as folder:
+            db_path = Path(folder) / "test.sqlite3"
+            with (
+                patch("icm_platform.db.DB_PATH", db_path),
+                patch("icm_platform.db.DATA_DIR", db_path.parent),
+                patch("icm_platform.api.read_report", return_value="status: completed"),
+                patch("icm_platform.api.parse_report", return_value={"case_id": "TC-004", "case_name": "Deleted detail", "status": "completed", "screenshots": []}),
+            ):
+                db.init_db()
+                now = "2026-07-08T10:00:00Z"
+                with db.connect() as conn:
+                    conn.execute(
+                        "insert into run_tasks(id, mode, case_id, status, command, created_at, started_at, finished_at, report_deleted_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        ("run-hidden", "agent-explore", "TC-004", "completed", "run", now, now, now, now),
+                    )
+                client = TestClient(app)
+                response = client.get("/api/reports/run-hidden")
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["detail"], "report not found")
+
+
 if __name__ == "__main__":
     unittest.main()

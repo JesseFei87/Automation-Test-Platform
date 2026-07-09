@@ -165,9 +165,9 @@ export function ProjectManagement() {
     <div className="page project-page">
       <section className="project-summary">
         <div className="project-metrics">
-          <Metric label="项目总数" value={projects.length} />
-          <Metric label="已配置入口" value={projects.filter((project) => project.base_url).length} />
-          <Metric label="当前项目" value={selectedProject?.name || "--"} />
+          <Metric label="项目总数" tag="Projects" value={projects.length} />
+          <Metric label="已配置入口" tag="Configured" value={projects.filter((project) => project.base_url).length} />
+          <Metric label="当前项目" tag="Current" value={selectedProject?.name || "--"} />
         </div>
       </section>
 
@@ -245,11 +245,12 @@ export function ProjectManagement() {
   );
 }
 
-function Metric({ label, value }: { label: string; value: number | string }) {
+function Metric({ label, tag, value }: { label: string; tag: string; value: number | string }) {
   return (
-    <article className="project-metric">
+    <article className="qa-metric-card project-metric-card">
       <span>{label}</span>
       <strong>{value}</strong>
+      <small>{tag}</small>
     </article>
   );
 }

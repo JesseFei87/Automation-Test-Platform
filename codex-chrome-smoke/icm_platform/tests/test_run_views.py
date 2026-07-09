@@ -158,6 +158,15 @@ class RunViewTests(unittest.TestCase):
         self.assertEqual(len(screenshots), 1)
         self.assertEqual(screenshots[0]["url"], "/api/screenshots/runs/ui-agent/01-entry.png")
 
+    def test_running_report_screenshots_do_not_fall_back_to_case_latest(self) -> None:
+        with patch.object(api_module, "latest_screenshots", return_value=["screenshots/latest/TC-ICM-001/03-final.png"]):
+            screenshots = api_module._report_screenshots(
+                {"id": "ui-running", "case_id": "TC-ICM-001", "status": "running"},
+                "",
+            )
+
+        self.assertEqual(screenshots, [])
+
     def test_agent_run_uses_evidence_as_log_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -688,6 +697,55 @@ class RunViewTests(unittest.TestCase):
 
         self.assertEqual(steps[0]["status"], "completed")
         self.assertEqual(steps[1]["status"], "failed")
+
+    def test_build_agent_steps_keeps_active_assertion_miss_pending(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            draft_run_dir = root / "draft-runs"
+            run_id = "ui-agent-active-assertion"
+            run_dir = draft_run_dir / run_id
+            run_dir.mkdir(parents=True, exist_ok=True)
+            (run_dir / "case.yaml").write_text(
+                "\n".join(
+                    [
+                        "id: USRMGT_FUN_002",
+                        "system: icm-internal",
+                        "steps:",
+                        "  - Open target menu",
+                        "expected_results:",
+                        "  - Target page loaded",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            agent_explore = {
+                "trace": {
+                    "ok": False,
+                    "status": "running",
+                    "plan": {
+                        "stages": [
+                            {"stage_id": "stage-assert", "source_steps": [1], "strategy": "detail_assert"},
+                        ]
+                    },
+                    "history": [
+                        {
+                            "step": 1,
+                            "stage_id": "stage-assert",
+                            "stage_local_step": 1,
+                            "decision": {"action": "assert_text", "reason": "verify target page"},
+                            "observation": {"url": "https://example.test/#/system/user", "visibleText": ["Loading"]},
+                            "execution": {"result": "assert_checked", "screenshot_name": "agent-step-01.png"},
+                        },
+                    ],
+                }
+            }
+
+            with patch.object(api_module, "DRAFT_RUN_DIR", draft_run_dir):
+                steps = api_module._build_agent_steps(agent_explore, [], [], run_id, {"case_id": "USRMGT_FUN_002"})
+
+        self.assertEqual(steps[0]["expected_result_status"], "queued")
+        self.assertEqual(steps[0]["assertion_checks"][0]["status"], "queued")
+        self.assertEqual(steps[0]["status"], "running")
 
     def test_build_agent_steps_uses_immediate_following_history_as_assertion_evidence_when_current_step_misses_menu_text(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

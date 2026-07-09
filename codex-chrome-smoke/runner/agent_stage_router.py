@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from runner.browser import (
+    _open_logout_menu,
     click_first,
     click_first_in,
     ensure_logged_out,
@@ -42,6 +43,7 @@ SCENE_LABELS = {
 STRATEGY_LABELS = {
     "login_guard": "登录守卫",
     "account_switch": "账号切换",
+    "logout_prompt": "退出确认",
     "route_open": "直达路由",
     "menu_navigation": "菜单导航",
     "list_filter": "列表筛选",
@@ -176,9 +178,28 @@ def _route_for_step(case: dict[str, Any], step: str) -> str:
     return _target_route({"module": ""}, [step]) or _target_route(case, [])
 
 
+def _is_logout_step(step: str) -> bool:
+    return _contains_any(step, ("退出登录", "退出按钮", "登出", "logout")) or (
+        "退出" in step and _contains_any(step, ("头像", "按钮", "菜单", "账号", "登录"))
+    )
+
+
+def _is_login_step(step: str) -> bool:
+    return _contains_any(step, ("登录", "login")) and not _is_logout_step(step)
+
+
+def _login_step_indexes(steps: list[str]) -> list[int]:
+    return [index for index, step in enumerate(steps, start=1) if _is_login_step(step)]
+
+
+def _logout_step_indexes(steps: list[str]) -> list[int]:
+    return [index for index, step in enumerate(steps, start=1) if _is_logout_step(step)]
+
+
 def _is_multi_session_workflow(steps: list[str]) -> bool:
-    login_steps = [step for step in steps if _contains_any(step, ("登录", "login"))]
-    return len(login_steps) > 1 and any(_contains_any(step, ("退出登录", "登出", "logout")) for step in steps)
+    login_steps = _login_step_indexes(steps)
+    logout_steps = _logout_step_indexes(steps)
+    return bool(login_steps and logout_steps and [index for index in login_steps if index > logout_steps[0]])
 
 
 def _step_indexes_matching(steps: list[str], indexes: list[int], predicate) -> list[int]:
@@ -231,8 +252,8 @@ def plan_agent_execution(case: dict[str, Any]) -> dict[str, Any]:
         )
 
     if _is_multi_session_workflow(steps):
-        login_steps = [index for index, step in enumerate(steps, start=1) if _contains_any(step, ("登录", "login"))]
-        logout_step = next(index for index, step in enumerate(steps, start=1) if _contains_any(step, ("退出登录", "登出", "logout")))
+        login_steps = _login_step_indexes(steps)
+        logout_step = _logout_step_indexes(steps)[0]
         first_login = login_steps[0]
         second_login = next(index for index in login_steps if index > logout_step)
         navigation_steps = [index for index, step in enumerate(steps, start=1) if index > first_login and _contains_any(step, ("进入", "页面", "导航"))]
@@ -327,9 +348,19 @@ def plan_agent_execution(case: dict[str, Any]) -> dict[str, Any]:
         plan_steps[-1]["success_signals"] = _final_assertion_signals(case)
         return {"planner_version": "v1", "case_id": str(case.get("id") or ""), "stages": plan_steps}
 
-    login_steps = [index for index, step in enumerate(steps, start=1) if _contains_any(step, ("登录", "账号", "密码", "login"))]
+    login_steps = [index for index, step in enumerate(steps, start=1) if _contains_any(step, ("账号", "密码")) or _is_login_step(step)]
     if login_steps or case_requires_authenticated_session(case):
         add_stage("login", "登录系统", login_steps, strategy="login_guard", objective="按用例指定账号密码完成登录")
+
+    logout_steps = _logout_step_indexes(steps)
+    if logout_steps:
+        add_stage(
+            "generic",
+            "触发退出确认",
+            logout_steps,
+            strategy="logout_prompt",
+            objective="点击退出入口并打开退出确认弹窗",
+        )
 
     navigation_steps = [index for index, step in enumerate(steps, start=1) if _contains_any(step, ("菜单", "进入", "设备信息", "服务器信息", "导航"))]
     if navigation_steps:
@@ -467,6 +498,9 @@ async def execute_stage_strategy(page, system: dict[str, Any], case: dict[str, A
     if strategy == "account_switch":
         history, error = await _run_account_switch(page, system, case)
         return error == "", history, error
+    if strategy == "logout_prompt":
+        history, error = await _run_logout_prompt(page, system)
+        return error == "", history, error
     if strategy == "route_open":
         history, error = await _run_route_open(page, system, stage)
         return error == "", history, error
@@ -548,6 +582,29 @@ async def _run_account_switch(page, system: dict[str, Any], case: dict[str, Any]
         )
     )
     return history, ""
+
+
+async def _run_logout_prompt(page, system: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
+    from runner.agent_explore import observe_page
+
+    opened = await _open_logout_menu(page, system)
+    if not opened:
+        return [], "unable to open logout menu"
+    await click_first(page, ["text=退出登录", "text=登出", "text=Logout", "li:has-text(退出登录)", "li:has-text(登出)"])
+    await page.wait_for_timeout(500)
+    dialog = await first_visible(page, [".el-message-box:visible", ".el-dialog:visible"])
+    history = [
+        await _record(
+            page,
+            {"action": "click", "ref": "", "reason": "点击退出入口并打开退出确认弹窗"},
+            {"result": "logout_prompt_opened" if dialog is not None else "logout_prompt_clicked"},
+            observe_page,
+        )
+    ]
+    if dialog is None:
+        return history, "logout confirmation dialog is not visible"
+    return history, ""
+
 
 async def _run_route_open(page, system: dict[str, Any], stage: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
     from runner.agent_explore import observe_page
@@ -662,10 +719,10 @@ async def _run_dialog_form_fill(page, case: dict[str, Any]) -> tuple[list[dict[s
     if add_button is not None:
         await add_button.click(force=True)
         await page.wait_for_timeout(500)
-    dialog = await first_visible(page, [".el-dialog:visible", ".el-drawer:visible"])
+    dialog = await first_visible(page, [".el-dialog:visible", ".el-drawer:visible", ".el-message-box:visible"])
     if dialog is None:
         return [], "device dialog is not visible"
-    scope = page.locator(".el-dialog:visible, .el-drawer:visible").last
+    scope = page.locator(".el-dialog:visible, .el-drawer:visible, .el-message-box:visible").last
 
     if _is_icm_device_create_case(case):
         history = [
@@ -715,7 +772,8 @@ async def _run_dialog_form_fill(page, case: dict[str, Any]) -> tuple[list[dict[s
             applied += 1
 
     if not applied:
-        return [], "no dialog form values were applied"
+        await click_dialog_primary(page)
+        return [await _record(page, {"action": "click", "ref": "", "reason": "点击当前确认弹窗的确定按钮"}, {"result": "dialog_confirm_passed"}, observe_page)], ""
 
     await click_first_in(scope, ["button:has-text(确定)", "button:has-text(保存)", "button:has-text(提交)", ".el-dialog__footer .el-button--primary"])
     return [await _record(page, {"action": "click", "ref": "", "reason": "完成当前弹窗表单填写并提交"}, {"result": "dialog_form_fill_passed"}, observe_page)], ""

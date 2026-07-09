@@ -6,6 +6,7 @@ from runner.agent_stage_router import (
     _is_icm_device_create_case,
     _run_account_switch,
     _run_detail_assert,
+    _run_logout_prompt,
     _run_user_device_binding,
     parse_case_test_data,
     plan_agent_execution,
@@ -273,6 +274,47 @@ def test_multi_session_user_management_plan_preserves_business_step_order():
     assert stages[5]["target_route"] == "#/icm"
     assert all(stage["strategy"] != "dialog_form_fill" for stage in stages)
     assert stages[6]["success_signals"] == ["屏幕墙上可见绑定的4台设备"]
+
+
+def test_logout_without_second_login_does_not_trigger_account_switch():
+    plan = plan_agent_execution(
+        {
+            "id": "USRMGT_FUN_003",
+            "module": "用户管理",
+            "steps": [
+                "1. 打开ICM登录页",
+                "2. 使用admin/Hubble_Service!1088登录",
+                "3. 点击右上角头像，选择退出登录",
+            ],
+            "expected_results": ["退出后回到登录页"],
+        }
+    )
+
+    assert all(stage["strategy"] != "account_switch" for stage in plan["stages"])
+    assert plan["stages"][-1]["scene_type"] == "assertion"
+
+
+def test_logout_confirmation_plan_keeps_logout_click_before_confirm_dialog():
+    plan = plan_agent_execution(
+        {
+            "id": "USRMGT_FUN_003",
+            "module": "账号/退出登录",
+            "steps": [
+                "1. 使用test/123456登录ICM",
+                "2. 点击右上角的退出按钮",
+                "3. 在弹出的提示弹窗中，点击确定",
+            ],
+            "expected": ["登录成功进入首页", "页面弹出提示弹窗", "页面跳转至登录页"],
+        }
+    )
+
+    stages = plan["stages"]
+    assert [(stage["strategy"], stage["source_steps"]) for stage in stages] == [
+        ("login_guard", [1]),
+        ("logout_prompt", [2]),
+        ("dialog_form_fill", [3]),
+        ("detail_assert", [3]),
+    ]
 
 
 def test_run_detail_assert_uses_screen_wall_device_visibility(monkeypatch):
@@ -917,6 +959,40 @@ def test_run_account_switch_emits_logout_and_login_records(monkeypatch):
     assert [item["execution"]["result"] for item in history] == ["logged_out_to_login", "account_switch_passed"]
     assert history[0]["decision"]["reason"] == "????????????"
     assert history[1]["decision"]["reason"] == "?? test ????"
+
+
+def test_run_logout_prompt_emits_screenshot_record(monkeypatch):
+    recorded: list[dict] = []
+
+    async def fake_open_logout_menu(_page, _system):
+        return True
+
+    async def fake_click_first(_page, selectors):
+        recorded.append({"clicked": selectors})
+
+    async def fake_first_visible(_page, selectors):
+        recorded.append({"dialog_probe": selectors})
+        return object()
+
+    async def fake_record(_page, decision, execution, _observe_page):
+        payload = {"decision": decision, "execution": execution, "screenshot_name": "agent-step-02.png"}
+        recorded.append(payload)
+        return payload
+
+    monkeypatch.setattr("runner.agent_stage_router._open_logout_menu", fake_open_logout_menu)
+    monkeypatch.setattr("runner.agent_stage_router.click_first", fake_click_first)
+    monkeypatch.setattr("runner.agent_stage_router.first_visible", fake_first_visible)
+    monkeypatch.setattr("runner.agent_stage_router._record", fake_record)
+
+    class FakePage:
+        async def wait_for_timeout(self, _ms):
+            return None
+
+    history, error = asyncio.run(_run_logout_prompt(FakePage(), {}))
+
+    assert error == ""
+    assert history[0]["execution"]["result"] == "logout_prompt_opened"
+    assert history[0]["screenshot_name"] == "agent-step-02.png"
 
 
 

@@ -211,6 +211,7 @@ def init_db() -> None:
         ensure_column(conn, "run_tasks", "parent_run_id", "text")
         ensure_column(conn, "run_tasks", "trigger", "text")
         ensure_column(conn, "run_tasks", "healing_context_path", "text")
+        ensure_column(conn, "run_tasks", "report_deleted_at", "text")
         ensure_column(conn, "platform_settings", "environment_json", "text")
         ensure_column(conn, "platform_settings", "accounts_json", "text")
         backfill_requirement_project_id(conn)

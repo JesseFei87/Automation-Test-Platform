@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { API_ORIGIN, api, type ApiCase, type ApiRunDetailView, type ApiScreenshot } from "../data/api";
 import { buildExecutionListItems, buildRunDetailViewModel, legacyRunDetailToView, type ExecutionListItem, type RunDetailViewModel } from "../data/runViewModels";
 import { Card } from "../components/Card";
@@ -82,6 +82,15 @@ function tabForItem(item?: ExecutionListItem | null): ExecutionTab {
   return item?.mode === "agent" ? "agent" : "worker";
 }
 
+function runTimeValue(item: ExecutionListItem) {
+  return Date.parse(item.source.finished_at || "") || Date.parse(item.source.started_at || "") || Date.parse(item.source.created_at || "") || 0;
+}
+
+function latestRunId(items: ExecutionListItem[]) {
+  if (!items.length) return "";
+  return items.reduce((latest, current) => (runTimeValue(current) > runTimeValue(latest) ? current : latest)).runId;
+}
+
 export function ExecutionCenter({
   initialRunId = "",
   onOpenReport,
@@ -105,6 +114,7 @@ export function ExecutionCenter({
   const [lastPromotedCaseId, setLastPromotedCaseId] = useState("");
   const [previewShot, setPreviewShot] = useState<ApiScreenshot | null>(null);
   const [overviewExpanded, setOverviewExpanded] = useState(true);
+  const pendingAutoSelectRunIdRef = useRef("");
 
   const workerRuns = useMemo(() => runs.filter((item) => item.mode === "worker"), [runs]);
   const agentRuns = useMemo(() => runs.filter((item) => item.mode === "agent"), [runs]);
@@ -122,16 +132,18 @@ export function ExecutionCenter({
     const completedStages = detailModel.stagePlan.filter((stage) => stage.status === "completed" || stage.status === "passed" || stage.status === "success");
     return completedStages.at(-1)?.index || 0;
   }, [detailModel.stagePlan]);
-  const latestScreenshot = detailModel.screenshots.at(-1) || null;
   const selectedStep = useMemo(() => detailModel.steps.find((step) => step.key === selectedStepKey) || detailModel.steps[0] || null, [detailModel.steps, selectedStepKey]);
-  const previewScreenshotUrl = selectedStep?.screenshotUrl || latestScreenshot?.url || "";
+  const previewScreenshotUrl = selectedStep?.screenshotUrl || "";
   const previewScreenshot = useMemo(() => {
     if (!previewScreenshotUrl) return null;
     return detailModel.screenshots.find((shot) => shot.url === previewScreenshotUrl) || null;
   }, [detailModel.screenshots, previewScreenshotUrl]);
   const canPromoteRegression = detailModel.mode === "agent" && detailModel.status === "completed" && Boolean(detailModel.artifacts.candidate_flow_url);
   const canSelfHeal = detailModel.mode === "agent" && detailModel.status === "failed" && Boolean(detailModel.artifacts.trace_download_url);
-  const isProcessInitializing = Boolean(selectedRunId) && !detailModel.steps.length && (runDetail === null || detailModel.status === "queued" || detailModel.status === "running");
+  const isProcessInitializing =
+    Boolean(selectedRunId) &&
+    !detailModel.steps.length &&
+    (runDetail === null || isLiveStatus(detailModel.status) || isLiveStatus(selectedRun?.status || ""));
 
   async function loadCases() {
     try {
@@ -147,8 +159,23 @@ export function ExecutionCenter({
     try {
       const result = buildExecutionListItems(await api.runs());
       setRuns(result);
-      const preferred = result.find((item) => item.status === "running") || result.find((item) => item.status === "failed") || result[0];
-      setSelectedRunId((current) => (current && result.some((item) => item.runId === current) ? current : preferred?.runId || ""));
+      const pendingAutoSelectRunId = pendingAutoSelectRunIdRef.current;
+      const forcedSelection = pendingAutoSelectRunId ? result.find((item) => item.runId === pendingAutoSelectRunId) : undefined;
+      const preferredVisibleRuns = activeExecutionTab === "agent" ? result.filter((item) => item.mode === "agent") : result.filter((item) => item.mode === "worker");
+      const preferred =
+        preferredVisibleRuns.find((item) => item.status === "running") ||
+        preferredVisibleRuns.find((item) => item.status === "failed") ||
+        (preferredVisibleRuns.length ? preferredVisibleRuns.find((item) => item.runId === latestRunId(preferredVisibleRuns)) : undefined) ||
+        result[0];
+      setSelectedRunId((current) => {
+        if (forcedSelection) return forcedSelection.runId;
+        if (pendingAutoSelectRunId) return current || pendingAutoSelectRunId;
+        return current && result.some((item) => item.runId === current) ? current : preferred?.runId || "";
+      });
+      if (forcedSelection) {
+        setActiveExecutionTab(tabForItem(forcedSelection));
+        pendingAutoSelectRunIdRef.current = "";
+      }
       setMessage(`已加载 ${result.length} 条执行任务。`);
     } catch {
       setMessage("无法读取执行队列。");
@@ -161,6 +188,7 @@ export function ExecutionCenter({
     try {
       const task = await api.createRun(mode, mode === "run-case" ? selectedCaseId : undefined);
       setActiveExecutionTab("worker");
+      pendingAutoSelectRunIdRef.current = task.id;
       setSelectedRunId(task.id);
       setMessage(`已入队 ${task.id}`);
       await refreshRuns();
@@ -202,6 +230,7 @@ export function ExecutionCenter({
     try {
       const task = await api.selfHealAgentExplore(runId);
       setActiveExecutionTab("agent");
+      pendingAutoSelectRunIdRef.current = task.id;
       setSelectedRunId(task.id);
       setRunDetail(null);
       await refreshRuns();
@@ -244,12 +273,22 @@ export function ExecutionCenter({
   }, [hasLiveRuns]);
 
   useEffect(() => {
-    if (initialRunId) setSelectedRunId(initialRunId);
+    if (!initialRunId) return;
+    pendingAutoSelectRunIdRef.current = initialRunId;
+    setSelectedRunId(initialRunId);
   }, [initialRunId]);
 
   useEffect(() => {
     if (selectedRun) setActiveExecutionTab(tabForItem(selectedRun));
   }, [selectedRun]);
+
+  useEffect(() => {
+    if (!visibleRuns.length) return;
+    if (selectedRunId && !selectedRun) return;
+    if (visibleRuns.some((item) => item.runId === selectedRunId)) return;
+    const nextRunId = latestRunId(visibleRuns);
+    if (nextRunId) setSelectedRunId(nextRunId);
+  }, [selectedRun, selectedRunId, visibleRuns]);
 
   useEffect(() => {
     setSelectedStepKey("");
@@ -510,7 +549,7 @@ export function ExecutionCenter({
                   <div className={`execution-live-canvas ${previewScreenshotUrl ? "" : "execution-live-canvas--empty"}`}>
                     {previewScreenshotUrl ? (
                       <button className="execution-live-canvas__button" onClick={() => previewScreenshot && setPreviewShot(previewScreenshot)} type="button">
-                        <img alt={stepActionText(selectedStep) || latestScreenshot?.filename || "执行截图"} src={`${API_ORIGIN}${previewScreenshotUrl}`} />
+                        <img alt={stepActionText(selectedStep) || previewScreenshot?.filename || "执行截图"} src={`${API_ORIGIN}${previewScreenshotUrl}`} />
                       </button>
                     ) : isProcessInitializing ? (
                       <div className="execution-skeleton execution-skeleton--canvas" aria-label="正在加载执行截图" />

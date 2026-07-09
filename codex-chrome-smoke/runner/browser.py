@@ -670,12 +670,12 @@ async def _match_visible_header_username(page: Page, username: str) -> bool:
 async def current_logged_in_username(page: Page, system: dict[str, Any]) -> str | None:
     if "#/login" in page.url.lower():
         return None
-    cookie_subject = await _cookie_subject_username(page)
-    if cookie_subject:
-        return cookie_subject
     for username in _known_runtime_usernames(system):
         if await _match_visible_header_username(page, username):
             return username
+    cookie_subject = await _cookie_subject_username(page)
+    if cookie_subject:
+        return cookie_subject
     return None
 
 

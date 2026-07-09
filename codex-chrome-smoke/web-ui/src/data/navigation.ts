@@ -17,7 +17,7 @@ export const platformNavItems: PlatformNavItem[] = [
   { key: "cases", label: "用例管理", page: "cases" },
   { key: "ai-generate", label: "AI生成", page: "ai-generate", badge: "AI" },
   { key: "ai-test", label: "AI测试", page: "execution", badge: "AI" },
-  { key: "reports", label: "测试报告", page: "reports" },
+  { key: "reports", label: "测试报告", page: "reports", badge: "AI" },
   { key: "settings", label: "配置中心", page: "settings" },
 ];
 

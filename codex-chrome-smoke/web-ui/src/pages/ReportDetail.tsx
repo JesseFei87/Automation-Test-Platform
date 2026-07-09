@@ -31,7 +31,7 @@ function statusText(status: string) {
 }
 
 function displayStepTitle(title: string) {
-  return title.replace(/^用例步骤\s*\d+\s*[-－—]\s*/, "").trim() || title;
+  return title.replace(/^用例步骤\s*\d+\s*[-－—:\s]*/, "").trim() || title;
 }
 
 function formatSecondTime(value?: string | null) {
@@ -121,7 +121,10 @@ export function ReportDetail({ initialRunId = "" }: { initialRunId?: string }) {
   const [viewMode, setViewMode] = useState<ReportViewMode>("list");
   const [reports, setReports] = useState<ReturnType<typeof buildReportListItems>>([]);
   const [selectedRunId, setSelectedRunId] = useState("");
+  const [selectedReportIds, setSelectedReportIds] = useState<string[]>([]);
   const [statusFilter, setStatusFilter] = useState("all");
+  const [pageSize, setPageSize] = useState(20);
+  const [currentPage, setCurrentPage] = useState(1);
   const [runDetail, setRunDetail] = useState<ApiRunDetailView | null>(null);
   const [previewShot, setPreviewShot] = useState<ApiScreenshot | null>(null);
   const [analysisVersions, setAnalysisVersions] = useState<ApiReportAnalysisVersion[]>([]);
@@ -129,13 +132,38 @@ export function ReportDetail({ initialRunId = "" }: { initialRunId?: string }) {
   const [detailState, setDetailState] = useState("正在加载执行详情...");
   const [analysisBusy, setAnalysisBusy] = useState(false);
   const [exportBusy, setExportBusy] = useState(false);
+  const [deleteBusy, setDeleteBusy] = useState(false);
   const [expandedStepKey, setExpandedStepKey] = useState("");
   const analysisSectionRef = useRef<HTMLElement | null>(null);
 
   const filteredReports = useMemo(() => reports.filter((item) => listFilter(item.mode, item.status, statusFilter)), [reports, statusFilter]);
+  const totalPages = useMemo(() => Math.max(1, Math.ceil(filteredReports.length / pageSize)), [filteredReports.length, pageSize]);
+  const pagedReports = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return filteredReports.slice(start, start + pageSize);
+  }, [currentPage, filteredReports, pageSize]);
+  const allPagedSelected = pagedReports.length > 0 && pagedReports.every((item) => selectedReportIds.includes(item.runId));
   const detailModel = useMemo(() => buildRunDetailViewModel(runDetail), [runDetail]);
-  const selectedReport = useMemo(() => reports.find((item) => item.runId === selectedRunId) || null, [reports, selectedRunId]);
   const currentAnalysis: ApiReportAnalysis | null = detailModel.analysis || analysisVersions[0]?.analysis || null;
+
+  async function loadOverview(preferredRunId = "", preferredViewMode: ReportViewMode = "list") {
+    try {
+      const items = buildReportListItems(await api.reports());
+      setReports(items);
+      setSelectedReportIds((current) => current.filter((runId) => items.some((item) => item.runId === runId)));
+      const target =
+        (preferredRunId ? items.find((item) => item.runId === preferredRunId) : null) ||
+        (selectedRunId ? items.find((item) => item.runId === selectedRunId) : null) ||
+        items.find((item) => item.status === "failed") ||
+        items[0] ||
+        null;
+      setSelectedRunId(target?.runId || "");
+      setViewMode(target && preferredViewMode === "detail" ? "detail" : "list");
+      setLoadState(`已加载 ${items.length} 条测试报告。`);
+    } catch {
+      setLoadState("无法读取测试报告。");
+    }
+  }
 
   async function loadDetailByRunId(runId: string) {
     const [detail, versions] = await Promise.all([
@@ -148,23 +176,7 @@ export function ReportDetail({ initialRunId = "" }: { initialRunId?: string }) {
   }
 
   useEffect(() => {
-    async function loadOverview() {
-      try {
-        const items = buildReportListItems(await api.reports());
-        setReports(items);
-        const target =
-          (initialRunId ? items.find((item) => item.runId === initialRunId) : null) ||
-          items.find((item) => item.status === "failed") ||
-          items[0] ||
-          null;
-        setSelectedRunId(target?.runId || "");
-        setViewMode(initialRunId && target ? "detail" : "list");
-        setLoadState(`已加载 ${items.length} 条测试报告。`);
-      } catch {
-        setLoadState("无法读取测试报告。");
-      }
-    }
-    void loadOverview();
+    void loadOverview(initialRunId, initialRunId ? "detail" : "list");
   }, [initialRunId]);
 
   useEffect(() => {
@@ -197,6 +209,16 @@ export function ReportDetail({ initialRunId = "" }: { initialRunId?: string }) {
     const fallbackStep = failedStep || detailModel.steps[detailModel.steps.length - 1];
     setExpandedStepKey((current) => (detailModel.steps.some((step) => step.key === current) ? current : fallbackStep.key));
   }, [detailModel.steps]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [pageSize, statusFilter]);
+
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, totalPages]);
 
   function openDetail(runId: string) {
     setSelectedRunId(runId);
@@ -246,30 +268,95 @@ export function ReportDetail({ initialRunId = "" }: { initialRunId?: string }) {
     }
   }
 
+  function toggleReportSelection(runId: string) {
+    setSelectedReportIds((current) => (current.includes(runId) ? current.filter((item) => item !== runId) : [...current, runId]));
+  }
+
+  function togglePageSelection() {
+    if (allPagedSelected) {
+      const pageIds = new Set(pagedReports.map((item) => item.runId));
+      setSelectedReportIds((current) => current.filter((item) => !pageIds.has(item)));
+      return;
+    }
+    const merged = new Set(selectedReportIds);
+    pagedReports.forEach((item) => merged.add(item.runId));
+    setSelectedReportIds([...merged]);
+  }
+
+  async function handleDeleteReport(runId: string) {
+    if (!window.confirm("是否确认删除该测试报告？")) return;
+    setDeleteBusy(true);
+    try {
+      await api.deleteReport(runId);
+      if (selectedRunId === runId) {
+        setRunDetail(null);
+        setAnalysisVersions([]);
+      }
+      await loadOverview("", "list");
+    } finally {
+      setDeleteBusy(false);
+    }
+  }
+
+  async function handleBatchDeleteReports() {
+    if (!selectedReportIds.length) return;
+    if (!window.confirm(`是否确认删除已选中的 ${selectedReportIds.length} 条测试报告？`)) return;
+    setDeleteBusy(true);
+    try {
+      await api.batchDeleteReports(selectedReportIds);
+      setSelectedReportIds([]);
+      setRunDetail(null);
+      setAnalysisVersions([]);
+      await loadOverview("", "list");
+    } finally {
+      setDeleteBusy(false);
+    }
+  }
+
   return (
     <div className="page report-center-page">
       <FlowSteps activeIndex={5} />
 
       {viewMode === "list" ? (
         <Card className="report-list-view-card" title="自动化测试报告" subtitle={loadState}>
-          <div className="report-filters">
-            {[
-              ["all", "全部"],
-              ["failed", "失败"],
-              ["completed", "通过"],
-              ["agent", "智能探索"],
-              ["worker", "常规执行"],
-            ].map(([key, label]) => (
-              <button className={statusFilter === key ? "is-active" : ""} key={key} onClick={() => setStatusFilter(key)} type="button">
-                {label}
+          <div className="report-list-toolbar">
+            <div className="report-filters">
+              {[
+                ["all", "全部"],
+                ["failed", "失败"],
+                ["completed", "通过"],
+                ["agent", "智能探索"],
+                ["worker", "常规执行"],
+              ].map(([key, label]) => (
+                <button className={statusFilter === key ? "is-active" : ""} key={key} onClick={() => setStatusFilter(key)} type="button">
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div className="report-list-actions">
+              <label className="report-page-size">
+                <span>每页</span>
+                <select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}>
+                  {[20, 50, 100].map((size) => (
+                    <option key={size} value={size}>
+                      {size}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button className="btn btn--outline" disabled={!selectedReportIds.length || deleteBusy} onClick={handleBatchDeleteReports} type="button">
+                {deleteBusy ? "删除中..." : `批量删除${selectedReportIds.length ? ` (${selectedReportIds.length})` : ""}`}
               </button>
-            ))}
+            </div>
           </div>
 
           <div className="report-table-shell report-table-shell--full">
             <table className="report-table">
               <thead>
                 <tr>
+                  <th className="report-table__check">
+                    <input checked={allPagedSelected} onChange={togglePageSelection} type="checkbox" />
+                  </th>
                   <th>编号</th>
                   <th>测试用例</th>
                   <th>模式</th>
@@ -281,8 +368,11 @@ export function ReportDetail({ initialRunId = "" }: { initialRunId?: string }) {
                 </tr>
               </thead>
               <tbody>
-                {filteredReports.map((item) => (
+                {pagedReports.map((item) => (
                   <tr className={item.runId === selectedRunId ? "is-selected-row" : ""} key={item.runId}>
+                    <td className="report-table__check">
+                      <input checked={selectedReportIds.includes(item.runId)} onChange={() => toggleReportSelection(item.runId)} type="checkbox" />
+                    </td>
                     <td>{item.runId}</td>
                     <td>
                       <div className="report-table__name">
@@ -297,22 +387,39 @@ export function ReportDetail({ initialRunId = "" }: { initialRunId?: string }) {
                     <td>{item.operator}</td>
                     <td>{item.startedAtLabel}</td>
                     <td>{item.finishedAtLabel}</td>
-                    <td>
+                    <td className="report-table__actions">
                       <button className="link-button" onClick={() => openDetail(item.runId)} type="button">
                         详情
+                      </button>
+                      <button className="link-button link-button--danger" disabled={deleteBusy} onClick={() => handleDeleteReport(item.runId)} type="button">
+                        删除
                       </button>
                     </td>
                   </tr>
                 ))}
-                {!filteredReports.length ? (
+                {!pagedReports.length ? (
                   <tr>
-                    <td colSpan={8}>
+                    <td colSpan={9}>
                       <p className="empty-state report-empty">当前筛选条件下暂无测试报告。</p>
                     </td>
                   </tr>
                 ) : null}
               </tbody>
             </table>
+          </div>
+
+          <div className="report-pagination">
+            <span>
+              第 {currentPage} / {totalPages} 页，共 {filteredReports.length} 条
+            </span>
+            <div className="report-pagination__actions">
+              <button className="btn btn--outline" disabled={currentPage <= 1} onClick={() => setCurrentPage((page) => Math.max(1, page - 1))} type="button">
+                上一页
+              </button>
+              <button className="btn btn--outline" disabled={currentPage >= totalPages} onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))} type="button">
+                下一页
+              </button>
+            </div>
           </div>
         </Card>
       ) : (
@@ -330,19 +437,19 @@ export function ReportDetail({ initialRunId = "" }: { initialRunId?: string }) {
             <div className="report-summary-head">
               <div className="report-summary-head__status">
                 <div className="report-summary-head__row">
-                  <span>状态:</span>
+                  <span>状态</span>
                   <strong>{detailModel.statusLabel}</strong>
                 </div>
                 <div className="report-summary-head__row">
-                  <span>执行人:</span>
+                  <span>执行人</span>
                   <strong>{detailModel.operator}</strong>
                 </div>
                 <div className="report-summary-head__row">
-                  <span>开始时间:</span>
+                  <span>开始时间</span>
                   <strong>{detailModel.startedAtLabel}</strong>
                 </div>
                 <div className="report-summary-head__row">
-                  <span>结束时间:</span>
+                  <span>结束时间</span>
                   <strong>{detailModel.finishedAtLabel}</strong>
                 </div>
               </div>
@@ -384,7 +491,9 @@ export function ReportDetail({ initialRunId = "" }: { initialRunId?: string }) {
                     <button className="report-step-item__trigger" onClick={() => setExpandedStepKey((current) => (current === step.key ? "" : step.key))} type="button">
                       <div className="report-step-item__title">
                         <StatusPill tone={statusTone(step.status)}>{statusText(step.status)}</StatusPill>
-                        <strong>步骤 {step.index}: {displayStepTitle(step.title)}</strong>
+                        <strong>
+                          步骤 {step.index}: {displayStepTitle(step.title)}
+                        </strong>
                       </div>
                       <span>{isOpen ? "收起" : "展开"}</span>
                     </button>
@@ -446,9 +555,7 @@ export function ReportDetail({ initialRunId = "" }: { initialRunId?: string }) {
                 <button className="btn btn--primary" disabled={analysisBusy || !selectedRunId} onClick={handleAnalysisAction} type="button">
                   {analysisBusy ? "AI 分析中..." : analysisVersions.length ? "查看 AI 分析" : "AI 分析"}
                 </button>
-                <span className="report-analysis-toolbar__hint">
-                  基于当前测试报告内容自动生成分析结论、风险提示和复测建议
-                </span>
+                <span className="report-analysis-toolbar__hint">基于当前测试报告内容自动生成分析结论、风险提示和复测建议</span>
               </div>
               <div className="report-summary-panels">
                 <section className="report-summary-panel">

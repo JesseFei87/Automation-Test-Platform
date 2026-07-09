@@ -39,14 +39,14 @@ async def wait_for_table_row(page: Page, row_text: str, timeout: int = 20000) ->
 
 
 async def wait_for_visible_dialog(page: Page, timeout: int = 5000) -> Locator:
-    dialog = page.locator(".el-dialog:visible").last
+    dialog = page.locator(".el-dialog:visible, .el-message-box:visible").last
     await dialog.wait_for(state="visible", timeout=timeout)
     return dialog
 
 
 async def click_dialog_primary(page: Page, timeout: int = 5000) -> None:
     dialog = await wait_for_visible_dialog(page, timeout=timeout)
-    button = dialog.locator(".el-dialog__footer .el-button--primary:visible").first
+    button = dialog.locator(".el-dialog__footer .el-button--primary:visible, .el-message-box__btns .el-button--primary:visible, button:has-text('确定')").first
     await button.wait_for(state="visible", timeout=timeout)
     await button.click(force=True)
 

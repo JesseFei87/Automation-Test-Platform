@@ -24,3 +24,5 @@
 2026-06-30: 同一页面的同类内部列表应复用统一滚动条来源；若任务队列使用浏览器原生样式，步骤列表不得单独设置 scrollbar-color 或 WebKit thumb/track。
 2026-06-30: 跨页面复用统计卡视觉时，应直接对齐高度、间距、内边距、圆角、阴影、字号和装饰元素，避免只改背景色形成近似但不一致的卡片。
 2026-06-30: 异步详情页初始化时不得通过数据有无切换 Grid 列数；应固定最终几何结构，用等尺寸骨架替换内容，避免接口返回时发生宽度和位置跳变。
+- 2026-07-01: Agent action schema and executor must support hover as a first-class browser action. Do not silently rewrite hover into click because click changes application state; use locator.hover() (Playwright mouse movement) and preserve the case intent.
+- 2026-07-01: AI 测试步骤中文化不得用“是否包含拉丁字母”判断整段文本语言；`登录ICM系统`、`用户test所在行`这类中英混合中文步骤必须优先按汉字存在性保留原文，仅纯英文文本进入英文翻译规则。

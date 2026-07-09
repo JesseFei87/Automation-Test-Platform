@@ -26,6 +26,35 @@ class _FakePage:
         return None
 
 
+class _FakeLocator:
+    def __init__(self, username: str, visible_username: str | None) -> None:
+        self._username = username
+        self._visible_username = visible_username
+
+    async def count(self) -> int:
+        return 1 if self._username == self._visible_username else 0
+
+    def nth(self, _index: int):
+        return self
+
+    async def is_visible(self) -> bool:
+        return self._username == self._visible_username
+
+    async def bounding_box(self):
+        if self._username != self._visible_username:
+            return None
+        return {"x": 1400, "y": 80, "width": 60, "height": 24}
+
+
+class _FakeHeaderPage(_FakePage):
+    def __init__(self, visible_username: str | None) -> None:
+        super().__init__()
+        self._visible_username = visible_username
+
+    def get_by_text(self, username: str, exact: bool = True):
+        return _FakeLocator(username, self._visible_username)
+
+
 class _FakeEvidence:
     def __init__(self) -> None:
         self.events: list[tuple[str, str, str | None]] = []
@@ -116,6 +145,22 @@ class BrowserLoginFlowTests(unittest.TestCase):
 
         assert logout_calls == ["logout"]
         assert fill_values == ["test", "123456"]
+
+
+    def test_current_logged_in_username_prefers_visible_header_over_cookie_subject(self) -> None:
+        page = _FakeHeaderPage("admin")
+        system = {
+            "_runtime_accounts": {
+                "tester": {"username": "test"},
+                "admin": {"username": "admin"},
+            },
+            "credentials": {"username": "admin", "password": "admin-pass"},
+        }
+
+        with patch.object(browser_module, "_cookie_subject_username", _async_return("test")):
+            current = asyncio.run(browser_module.current_logged_in_username(page, system))
+
+        assert current == "admin"
 
 
 if __name__ == "__main__":
