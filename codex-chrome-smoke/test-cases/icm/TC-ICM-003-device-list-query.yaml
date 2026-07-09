@@ -1,56 +1,58 @@
-﻿id: TC-ICM-003
+id: TC-ICM-003
 system: icm-internal
 title: ICM device list open and query
 priority: P1
 category: action
 preconditions:
-  - "The system is already logged in."
-  - "The left menu contains Device Ops > Device List or the equivalent visible labels."
-  - "A device_keyword input is provided by the operator."
+- The system is already logged in.
+- The left menu contains Device Ops > Device List or the equivalent visible labels.
+- A device_keyword input is provided by the operator.
 steps:
-  - "Open the device list route or its equivalent visible label."
-  - "Wait for the list page to render."
-  - "Enter device_keyword in the query field."
-  - "Run the query."
+- Open the device list route or its equivalent visible label.
+- Wait for the list page to render.
+- Enter device_keyword in the query field.
+- Run the query.
 expected_results:
-  - "The page stays on the device list view."
-  - "The result area refreshes after the query."
+- The page stays on the device list view.
+- The result area refreshes after the query.
 failure_signals:
-  - "The menu item is missing."
-  - "The list page does not open."
-  - "The query action cannot be triggered."
+- The menu item is missing.
+- The list page does not open.
+- The query action cannot be triggered.
 evidence_points:
-  - "01-entry.png: before entering the device list"
-  - "02-action.png: after running the query"
-  - "03-final.png: result page"
+- '01-entry.png: before entering the device list'
+- '02-action.png: after running the query'
+- '03-final.png: result page'
 risk_notes:
-  - "If the environment has unstable data, it is acceptable to prove that the query ran without asserting a specific record count."
-  - "If the sidebar label is unstable, going directly to /#/hubble/device is acceptable as long as the device list view is verified."
+- If the environment has unstable data, it is acceptable to prove that the query ran without asserting a specific record count.
+- If the sidebar label is unstable, going directly to /#/hubble/device is acceptable as long as the device list view is verified.
 automation_asset:
   operation_steps:
-    - "Ensure the session is already logged in."
-    - "Open the device list at #/hubble/device or its equivalent stable route."
-    - "Wait for the device list view to render."
-    - "Enter the device keyword into the query field."
-    - "Run the query."
-    - "Confirm the page remains on the device list view and the results refresh."
+  - Ensure the session is already logged in.
+  - 'Open the device list at #/hubble/device or its equivalent stable route.'
+  - Wait for the device list view to render.
+  - Enter the device keyword into the query field.
+  - Run the query.
+  - Confirm the page remains on the device list view and the results refresh.
   selectors:
     device_list_url:
-      - "#/hubble/device"
+    - '#/hubble/device'
     device_query_input:
-      - "placeholder=请输入设备名称"
-      - "placeholder=请输入设备名"
-      - "placeholder*=device"
+    - placeholder=请输入设备名称
+    - placeholder=请输入设备名
+    - placeholder*=device
     device_list_table:
-      - "table"
-      - "tbody"
+    - table
+    - tbody
     stable_list_signals:
-      - "设备信息"
-      - "device"
+    - 设备信息
+    - device
   input_values:
-    device_keyword: "AU5800"
+    device_keyword: AU5800
   assertions:
-    - "The URL contains #/hubble/device or the device list view is otherwise confirmed."
-    - "The page stays on the device list view after the query."
-    - "The result area refreshes after the query."
-    - "The body or table contains AU5800."
+  - 'The URL contains #/hubble/device or the device list view is otherwise confirmed.'
+  - The page stays on the device list view after the query.
+  - The result area refreshes after the query.
+  - The body or table contains AU5800.
+  - Wait for the list page to render.
+  - Decide whether the query action completed successfully.

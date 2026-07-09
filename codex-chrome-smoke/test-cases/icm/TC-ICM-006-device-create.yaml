@@ -4,84 +4,85 @@ title: ICM create device record
 priority: P0
 category: action
 preconditions:
-  - "This case must be run after TC-ICM-001 to TC-ICM-005 in the same batch."
-  - "The system is logged in as admin."
-  - "The ICM device information page is reachable."
+- This case must be run after TC-ICM-001 to TC-ICM-005 in the same batch.
+- The system is logged in as admin.
+- The ICM device information page is reachable.
 steps:
-  - "Open ICM > Device Information."
-  - "Search Test_Ins01 first."
-  - "If the device does not exist, click Add/New."
-  - "Fill the device form with the provided device data."
-  - "Enable the device status before submit."
-  - "Submit and confirm the device is visible in the list."
+- Open ICM > Device Information.
+- Search Test_Ins01 first.
+- If the device does not exist, click Add/New.
+- Fill the device form with the provided device data.
+- Enable the device status before submit.
+- Submit and confirm the device is visible in the list.
 expected_results:
-  - "A device record named Test_Ins01 is created successfully."
-  - "The record shows connector, device type, IP, port, control permission, and enabled status."
+- A device record named Test_Ins01 is created successfully.
+- The record shows connector, device type, IP, port, control permission, and enabled status.
 failure_signals:
-  - "The device form cannot be opened."
-  - "The device status is left disabled after creation."
-  - "The record fails validation or is not saved."
-  - "The new device cannot be found in the list after save."
+- The device form cannot be opened.
+- The device status is left disabled after creation.
+- The record fails validation or is not saved.
+- The new device cannot be found in the list after save.
 evidence_points:
-  - "01-entry.png: device list before creation"
-  - "02-action.png: filled create form with enabled status before submit"
-  - "03-final.png: created device visible in list"
+- '01-entry.png: device list before creation'
+- '02-action.png: filled create form with enabled status before submit'
+- '03-final.png: created device visible in list'
 risk_notes:
-  - "The device name, IP, port, and VNC password must stay exactly the same across later cases."
-  - "If the UI uses a modal, drawer, or full page form, any of them is acceptable as long as the record is saved."
+- The device name, IP, port, and VNC password must stay exactly the same across later cases.
+- If the UI uses a modal, drawer, or full page form, any of them is acceptable as long as the record is saved.
 automation_asset:
   operation_steps:
-    - "Ensure the session is already logged in as admin."
-    - "Open ICM > Device Information at #/hubble/device."
-    - "Search Test_Ins01 first; if it already exists, reuse it."
-    - "Click Add/New and wait for the visible device dialog."
-    - "Fill the device form with the test device data."
-    - "Toggle Device Status to enabled."
-    - "Capture the filled form as the action screenshot."
-    - "Submit the form, then search the device by name again."
-    - "Confirm the device appears in the list with enabled status."
+  - Ensure the session is already logged in as admin.
+  - 'Open ICM > Device Information at #/hubble/device.'
+  - Search Test_Ins01 first; if it already exists, reuse it.
+  - Click Add/New and wait for the visible device dialog.
+  - Fill the device form with the test device data.
+  - Toggle Device Status to enabled.
+  - Capture the filled form as the action screenshot.
+  - Submit the form, then search the device by name again.
+  - Confirm the device appears in the list with enabled status.
   selectors:
     device_list_url:
-      - "#/hubble/device"
+    - '#/hubble/device'
     device_search_input:
-      - "placeholder=请输入设备名称"
+    - placeholder=请输入设备名称
     search_button:
-      - "button:has-text(搜索)"
+    - button:has-text(搜索)
     add_button:
-      - "button:has-text(新增)"
-      - "text=新增"
+    - button:has-text(新增)
+    - text=新增
     add_dialog:
-      - ".el-dialog:visible"
+    - .el-dialog:visible
     connection_type_select:
-      - "dialog input index 0"
+    - dialog input index 0
     device_type_select:
-      - "dialog input index 1"
+    - dialog input index 1
     device_name_input:
-      - "dialog input index 2"
+    - dialog input index 2
     device_ip_input:
-      - "dialog input index 3"
+    - dialog input index 3
     device_port_input:
-      - "dialog input index 4"
+    - dialog input index 4
     vnc_password_input:
-      - "dialog input index 8"
+    - dialog input index 8
     allow_control_select:
-      - "dialog input index 9"
+    - dialog input index 9
     device_status_switch:
-      - ".el-switch input[role='switch']"
+    - .el-switch input[role='switch']
     confirm_button:
-      - ".el-dialog__footer .el-button--primary"
+    - .el-dialog__footer .el-button--primary
   input_values:
-    device_name: "Test_Ins01"
-    device_ip: "192.168.16.11"
-    device_port: "5900"
-    vnc_password: "BCService"
-    connection_type: "连接器-1"
-    device_type: "标准设备"
-    allow_control: "是"
+    device_name: Test_Ins01
+    device_ip: 192.168.16.11
+    device_port: '5900'
+    vnc_password: BCService
+    connection_type: 连接器-1
+    device_type: 标准设备
+    allow_control: 是
     device_enabled: true
   assertions:
-    - "The Add/New button opens a visible device dialog."
-    - "The form accepts the supplied device data."
-    - "The Device Status switch is enabled before submit."
-    - "The action screenshot shows the filled form with enabled status."
-    - "After save, searching Test_Ins01 returns a visible device row with enabled status."
+  - The Add/New button opens a visible device dialog.
+  - The form accepts the supplied device data.
+  - The Device Status switch is enabled before submit.
+  - The action screenshot shows the filled form with enabled status.
+  - After save, searching Test_Ins01 returns a visible device row with enabled status.
+  - Save the record and confirm it appears in the list.

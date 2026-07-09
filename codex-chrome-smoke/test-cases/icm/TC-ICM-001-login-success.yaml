@@ -4,52 +4,53 @@ title: ICM login success
 priority: P0
 category: login
 preconditions:
-  - "Chrome is running and the Chrome extension backend is available."
-  - "The ICM entry URL is reachable."
-  - "Valid credentials are available or an existing usable Chrome session can be claimed."
+- Chrome is running and the Chrome extension backend is available.
+- The ICM entry URL is reachable.
+- Valid credentials are available or an existing usable Chrome session can be claimed.
 steps:
-  - "Open the ICM login page."
-  - "Confirm that account, password, and login controls are visible."
-  - "Enter valid credentials."
-  - "Click login."
+- Open the ICM login page.
+- Confirm that account, password, and login controls are visible.
+- Enter valid credentials.
+- Click login.
 expected_results:
-  - "The page lands on the homepage or the URL contains #/index."
-  - "Homepage signals are visible."
+- 'The page lands on the homepage or the URL contains #/index.'
+- Homepage signals are visible.
 failure_signals:
-  - "The page remains on login."
-  - "A connection error page is shown."
-  - "A clear login failure message appears."
+- The page remains on login.
+- A connection error page is shown.
+- A clear login failure message appears.
 evidence_points:
-  - "01-entry.png: login page loaded"
-  - "02-action.png: after submit"
-  - "03-final.png: homepage verdict"
+- '01-entry.png: login page loaded'
+- '02-action.png: after submit'
+- '03-final.png: homepage verdict'
 risk_notes:
-  - "If the entry URL has both an error tab and a usable tab, switch to the usable tab before acting."
+- If the entry URL has both an error tab and a usable tab, switch to the usable tab before acting.
 automation_asset:
   operation_steps:
-    - "Open the ICM login page."
-    - "Confirm that the login controls are visible."
-    - "Enter the credentials."
-    - "Click login."
-    - "Wait for the homepage to appear."
+  - Open the ICM login page.
+  - Confirm that the login controls are visible.
+  - Enter the credentials.
+  - Click login.
+  - Wait for the homepage to appear.
   selectors:
     username_input:
-      - "input[type=\"text\"]"
-      - "placeholder=账号"
+    - input[type="text"]
+    - placeholder=账号
     password_input:
-      - "input[type=\"password\"]"
-      - "placeholder=密码"
+    - input[type="password"]
+    - placeholder=密码
     login_button:
-      - "button[text=登录]"
-      - "button.el-button--primary.el-button--medium"
+    - button[text=登录]
+    - button.el-button--primary.el-button--medium
     success_signals:
-      - "#/index"
-      - "home"
-      - "portal"
+    - '#/index'
+    - home
+    - portal
   input_values:
-    username: "admin"
-    password: ""
+    username: admin
+    password: ''
   assertions:
-    - "The URL contains #/index."
-    - "Homepage signals are visible."
-    - "The page does not stay on the login screen."
+  - 'The URL contains #/index.'
+  - Homepage signals are visible.
+  - The page does not stay on the login screen.
+  - Decide whether the homepage is reached.

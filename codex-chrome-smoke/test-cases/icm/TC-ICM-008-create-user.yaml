@@ -1,60 +1,61 @@
-﻿id: TC-ICM-008
+id: TC-ICM-008
 system: icm-internal
 title: ICM create user
 priority: P0
 category: action
 preconditions:
-  - "The system is logged in as admin."
-  - "The system management > user management page is reachable."
+- The system is logged in as admin.
+- The system management > user management page is reachable.
 steps:
-  - "Open System Management > User Management."
-  - "Click Add/New."
-  - "Fill the user form with the provided user data."
-  - "Confirm the user is created."
+- Open System Management > User Management.
+- Click Add/New.
+- Fill the user form with the provided user data.
+- Confirm the user is created.
 expected_results:
-  - "A user named Tester is created successfully."
-  - "The user has the expected department, role, job title, and password data."
+- A user named Tester is created successfully.
+- The user has the expected department, role, job title, and password data.
 failure_signals:
-  - "The add form cannot be opened."
-  - "The form fails validation or cannot be saved."
-  - "The Tester user does not appear in the list after save."
+- The add form cannot be opened.
+- The form fails validation or cannot be saved.
+- The Tester user does not appear in the list after save.
 evidence_points:
-  - "01-entry.png: user list before creation"
-  - "02-action.png: filled create form or submit state"
-  - "03-final.png: created user visible in list"
+- '01-entry.png: user list before creation'
+- '02-action.png: filled create form or submit state'
+- '03-final.png: created user visible in list'
 risk_notes:
-  - "The department, role, and position labels must match the test data used by the environment."
-  - "If some dropdown options are named differently in the UI, use the closest visible equivalent and record it in the run report."
+- The department, role, and position labels must match the test data used by the environment.
+- If some dropdown options are named differently in the UI, use the closest visible equivalent and record it in the run report.
 automation_asset:
   operation_steps:
-    - "Ensure the session is already logged in as admin."
-    - "Open System Management > User Management at #/system/user."
-    - "Click Add/New."
-    - "Fill the user form with the test user data."
-    - "Confirm the new user appears in the list."
+  - Ensure the session is already logged in as admin.
+  - 'Open System Management > User Management at #/system/user.'
+  - Click Add/New.
+  - Fill the user form with the test user data.
+  - Confirm the new user appears in the list.
   selectors:
     user_list_url:
-      - "#/system/user"
+    - '#/system/user'
     add_button:
-      - "button[text=新增]"
-      - "button:has-text(新增)"
+    - button[text=新增]
+    - button:has-text(新增)
     nickname_input:
-      - "placeholder=请输入用户昵称"
+    - placeholder=请输入用户昵称
     username_input:
-      - "placeholder=请输入用户名称"
+    - placeholder=请输入用户名称
     password_input:
-      - "placeholder=请输入用户密码"
+    - placeholder=请输入用户密码
     dept_picker:
-      - "placeholder=请选择归属部门"
+    - placeholder=请选择归属部门
     role_picker:
-      - "placeholder=请选择角色"
+    - placeholder=请选择角色
     post_picker:
-      - "placeholder=请选择岗位"
+    - placeholder=请选择岗位
   input_values:
-    nickname: "Tester"
-    username: "Tester"
-    password: ""
+    nickname: Tester
+    username: Tester
+    password: ''
   assertions:
-    - "The add form opens."
-    - "The submitted user appears in the user list."
-    - "The run report records a successful creation."
+  - The add form opens.
+  - The submitted user appears in the user list.
+  - The run report records a successful creation.
+  - Save the user and confirm it appears in the list.

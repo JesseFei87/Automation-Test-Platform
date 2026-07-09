@@ -1,0 +1,3050 @@
+{
+  "summary": {
+    "total_cases_scanned": 25,
+    "cases_with_automation_asset": 25,
+    "unique_elements": 72,
+    "routes_extracted": 6
+  },
+  "elements": [
+    {
+      "name": "agent_candidate",
+      "human_en": "agent candidate",
+      "human_zh": [],
+      "context_keys": [],
+      "selectors": [
+        "candidate_flow.py"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-015": [
+          "candidate_flow.py"
+        ],
+        "TC-ICM-021": [
+          "candidate_flow.py"
+        ],
+        "TC-ICM-022": [
+          "candidate_flow.py"
+        ],
+        "TC-ICM-023": [
+          "candidate_flow.py"
+        ],
+        "TC-ICM-024": [
+          "candidate_flow.py"
+        ],
+        "TC-ICM-025": [
+          "candidate_flow.py"
+        ],
+        "TC-ICM-026": [
+          "candidate_flow.py"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-015",
+        "TC-ICM-021",
+        "TC-ICM-022",
+        "TC-ICM-023",
+        "TC-ICM-024",
+        "TC-ICM-025",
+        "TC-ICM-026"
+      ],
+      "coverage": 7,
+      "input_values_used": [
+        "agent_candidate.assert_text_1",
+        "agent_candidate.device_name",
+        "agent_candidate.device_ip",
+        "agent_candidate.assert_text_4",
+        "agent_candidate.fill_4",
+        "agent_candidate.assert_text_7",
+        "agent_candidate.assert_text_6"
+      ],
+      "assertions_supported": []
+    },
+    {
+      "name": "fill_1",
+      "human_en": "fill 1",
+      "human_zh": [],
+      "context_keys": [],
+      "selectors": [
+        "input[placeholder=\"账号\"]",
+        "input[placeholder=\"密码\"]"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-013": [
+          "input[placeholder=\"账号\"]"
+        ],
+        "TC-ICM-016": [
+          "input[placeholder=\"账号\"]"
+        ],
+        "TC-ICM-017": [
+          "input[placeholder=\"账号\"]"
+        ],
+        "TC-ICM-019": [
+          "input[placeholder=\"密码\"]"
+        ],
+        "TC-ICM-020": [
+          "input[placeholder=\"账号\"]"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-013",
+        "TC-ICM-016",
+        "TC-ICM-017",
+        "TC-ICM-019",
+        "TC-ICM-020"
+      ],
+      "coverage": 5,
+      "input_values_used": [
+        "fill_1.fill_1",
+        "fill_1.assert_text_3",
+        "fill_1.fill_2"
+      ],
+      "assertions_supported": []
+    },
+    {
+      "name": "confirm_button",
+      "human_en": "confirm button",
+      "human_zh": [
+        "confirm",
+        "确认",
+        "按钮"
+      ],
+      "context_keys": [],
+      "selectors": [
+        "button[text=确定]",
+        "button:has-text(确定)",
+        ".el-dialog__footer .el-button--primary",
+        "button:has-text(确 定)"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-005": [
+          "button[text=确定]",
+          "button:has-text(确定)"
+        ],
+        "TC-ICM-006": [
+          ".el-dialog__footer .el-button--primary"
+        ],
+        "TC-ICM-007": [
+          "button[text=确定]",
+          "button:has-text(确定)"
+        ],
+        "TC-ICM-009": [
+          "button:has-text(确 定)",
+          "button:has-text(确定)"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-005",
+        "TC-ICM-006",
+        "TC-ICM-007",
+        "TC-ICM-009"
+      ],
+      "coverage": 4,
+      "input_values_used": [
+        "confirm_button.device_name",
+        "confirm_button.device_ip",
+        "confirm_button.device_port",
+        "confirm_button.vnc_password",
+        "confirm_button.connection_type",
+        "confirm_button.device_type",
+        "confirm_button.allow_control",
+        "confirm_button.device_enabled",
+        "confirm_button.tester_user",
+        "confirm_button.server_name"
+      ],
+      "assertions_supported": [
+        "The final URL contains `#/login` after logout confirmation.",
+        "The login controls are visible again after confirmation.",
+        "Click `Confirm` in the logout dialog.",
+        "Keep 3 screenshots: homepage, logout confirm dialog, returned login page.",
+        "Save the record and confirm it appears in the list.",
+        "Check the device and confirm the save.",
+        "In the server selection page, check `Test Server#203` and confirm."
+      ]
+    },
+    {
+      "name": "device_list_url",
+      "human_en": "device list url",
+      "human_zh": [
+        "device",
+        "设备",
+        "列表",
+        "页面"
+      ],
+      "context_keys": [
+        "route",
+        "list_page"
+      ],
+      "selectors": [
+        "#/hubble/device"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-003": [
+          "#/hubble/device"
+        ],
+        "TC-ICM-004": [
+          "#/hubble/device"
+        ],
+        "TC-ICM-006": [
+          "#/hubble/device"
+        ],
+        "TC-ICM-011": [
+          "#/hubble/device"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-003",
+        "TC-ICM-004",
+        "TC-ICM-006",
+        "TC-ICM-011"
+      ],
+      "coverage": 4,
+      "input_values_used": [
+        "device_list_url.device_keyword",
+        "device_list_url.device_name",
+        "device_list_url.device_ip",
+        "device_list_url.device_port",
+        "device_list_url.vnc_password",
+        "device_list_url.connection_type",
+        "device_list_url.device_type",
+        "device_list_url.allow_control",
+        "device_list_url.device_enabled",
+        "device_list_url.tester_user",
+        "device_list_url.server_name"
+      ],
+      "assertions_supported": [
+        "The URL contains #/hubble/device or the device list view is otherwise confirmed.",
+        "The page stays on the device list view after the query.",
+        "The detail surface contains device name, IP, and port fields.",
+        "The Add/New button opens a visible device dialog.",
+        "The form accepts the supplied device data.",
+        "The Device Status switch is enabled before submit.",
+        "After save, searching Test_Ins01 returns a visible device row with enabled status.",
+        "The device Test_Ins01 is removed.",
+        "The server edit dialog no longer returns Test_Ins01 in the bound device search."
+      ]
+    },
+    {
+      "name": "click_3",
+      "human_en": "click 3",
+      "human_zh": [],
+      "context_keys": [],
+      "selectors": [
+        "div:nth-of-type(1) > form > div:nth-of-type(4) > div > button"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-016": [
+          "div:nth-of-type(1) > form > div:nth-of-type(4) > div > button"
+        ],
+        "TC-ICM-017": [
+          "div:nth-of-type(1) > form > div:nth-of-type(4) > div > button"
+        ],
+        "TC-ICM-020": [
+          "div:nth-of-type(1) > form > div:nth-of-type(4) > div > button"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-016",
+        "TC-ICM-017",
+        "TC-ICM-020"
+      ],
+      "coverage": 3,
+      "input_values_used": [
+        "click_3.fill_1",
+        "click_3.fill_2"
+      ],
+      "assertions_supported": []
+    },
+    {
+      "name": "device_search_input",
+      "human_en": "device search input",
+      "human_zh": [
+        "device",
+        "设备",
+        "搜索",
+        "输入框"
+      ],
+      "context_keys": [],
+      "selectors": [
+        "placeholder=请输入设备名称",
+        "placeholder=输入设备名称"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-006": [
+          "placeholder=请输入设备名称"
+        ],
+        "TC-ICM-007": [
+          "placeholder=请输入设备名称"
+        ],
+        "TC-ICM-011": [
+          "placeholder=输入设备名称",
+          "placeholder=请输入设备名称"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-006",
+        "TC-ICM-007",
+        "TC-ICM-011"
+      ],
+      "coverage": 3,
+      "input_values_used": [
+        "device_search_input.device_name",
+        "device_search_input.device_ip",
+        "device_search_input.device_port",
+        "device_search_input.vnc_password",
+        "device_search_input.connection_type",
+        "device_search_input.device_type",
+        "device_search_input.allow_control",
+        "device_search_input.device_enabled",
+        "device_search_input.tester_user",
+        "device_search_input.server_name"
+      ],
+      "assertions_supported": [
+        "The Add/New button opens a visible device dialog.",
+        "The form accepts the supplied device data.",
+        "The Device Status switch is enabled before submit.",
+        "After save, searching Test_Ins01 returns a visible device row with enabled status.",
+        "The selected device appears in the binding area or the save action succeeds.",
+        "Check the device and confirm the save.",
+        "The device Test_Ins01 is removed.",
+        "The server edit dialog no longer returns Test_Ins01 in the bound device search."
+      ]
+    },
+    {
+      "name": "fill_2",
+      "human_en": "fill 2",
+      "human_zh": [],
+      "context_keys": [],
+      "selectors": [
+        "input[placeholder=\"密码\"]"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-016": [
+          "input[placeholder=\"密码\"]"
+        ],
+        "TC-ICM-017": [
+          "input[placeholder=\"密码\"]"
+        ],
+        "TC-ICM-020": [
+          "input[placeholder=\"密码\"]"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-016",
+        "TC-ICM-017",
+        "TC-ICM-020"
+      ],
+      "coverage": 3,
+      "input_values_used": [
+        "fill_2.fill_1",
+        "fill_2.fill_2"
+      ],
+      "assertions_supported": []
+    },
+    {
+      "name": "password_input",
+      "human_en": "password input",
+      "human_zh": [
+        "password",
+        "密码",
+        "输入框"
+      ],
+      "context_keys": [],
+      "selectors": [
+        "input[type=\"password\"]",
+        "placeholder=密码",
+        "placeholder=请输入用户密码",
+        "placeholder=password"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-001": [
+          "input[type=\"password\"]",
+          "placeholder=密码"
+        ],
+        "TC-ICM-008": [
+          "placeholder=请输入用户密码"
+        ],
+        "TC-ICM-010": [
+          "placeholder=password"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-001",
+        "TC-ICM-008",
+        "TC-ICM-010"
+      ],
+      "coverage": 3,
+      "input_values_used": [
+        "password_input.username",
+        "password_input.password",
+        "password_input.nickname",
+        "password_input.device_name"
+      ],
+      "assertions_supported": []
+    },
+    {
+      "name": "user_list_url",
+      "human_en": "user list url",
+      "human_zh": [
+        "user",
+        "用户",
+        "列表",
+        "页面"
+      ],
+      "context_keys": [
+        "route",
+        "list_page"
+      ],
+      "selectors": [
+        "#/system/user"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-008": [
+          "#/system/user"
+        ],
+        "TC-ICM-009": [
+          "#/system/user"
+        ],
+        "TC-ICM-011": [
+          "#/system/user"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-008",
+        "TC-ICM-009",
+        "TC-ICM-011"
+      ],
+      "coverage": 3,
+      "input_values_used": [
+        "user_list_url.nickname",
+        "user_list_url.username",
+        "user_list_url.password",
+        "user_list_url.tester_user",
+        "user_list_url.server_name",
+        "user_list_url.device_name"
+      ],
+      "assertions_supported": [
+        "The submitted user appears in the user list.",
+        "Save the user and confirm it appears in the list.",
+        "The Tester user is removed."
+      ]
+    },
+    {
+      "name": "username_input",
+      "human_en": "username input",
+      "human_zh": [
+        "username",
+        "账号",
+        "输入框"
+      ],
+      "context_keys": [],
+      "selectors": [
+        "input[type=\"text\"]",
+        "placeholder=账号",
+        "placeholder=请输入用户名称",
+        "placeholder=account"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-001": [
+          "input[type=\"text\"]",
+          "placeholder=账号"
+        ],
+        "TC-ICM-008": [
+          "placeholder=请输入用户名称"
+        ],
+        "TC-ICM-010": [
+          "placeholder=account"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-001",
+        "TC-ICM-008",
+        "TC-ICM-010"
+      ],
+      "coverage": 3,
+      "input_values_used": [
+        "username_input.username",
+        "username_input.password",
+        "username_input.nickname",
+        "username_input.device_name"
+      ],
+      "assertions_supported": []
+    },
+    {
+      "name": "add_button",
+      "human_en": "add button",
+      "human_zh": [
+        "add",
+        "新增",
+        "按钮"
+      ],
+      "context_keys": [],
+      "selectors": [
+        "button:has-text(新增)",
+        "text=新增",
+        "button[text=新增]"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-006": [
+          "button:has-text(新增)",
+          "text=新增"
+        ],
+        "TC-ICM-008": [
+          "button[text=新增]",
+          "button:has-text(新增)"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-006",
+        "TC-ICM-008"
+      ],
+      "coverage": 2,
+      "input_values_used": [
+        "add_button.device_name",
+        "add_button.device_ip",
+        "add_button.device_port",
+        "add_button.vnc_password",
+        "add_button.connection_type",
+        "add_button.device_type",
+        "add_button.allow_control",
+        "add_button.device_enabled",
+        "add_button.nickname",
+        "add_button.username",
+        "add_button.password"
+      ],
+      "assertions_supported": [
+        "The Add/New button opens a visible device dialog.",
+        "The add form opens."
+      ]
+    },
+    {
+      "name": "device_row",
+      "human_en": "device row",
+      "human_zh": [
+        "device",
+        "设备"
+      ],
+      "context_keys": [],
+      "selectors": [
+        "tr:has-text(AU5800)",
+        "tr:has-text(Device)",
+        "tr:has-text(Test_Ins01)"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-004": [
+          "tr:has-text(AU5800)",
+          "tr:has-text(Device)"
+        ],
+        "TC-ICM-011": [
+          "tr:has-text(Test_Ins01)"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-004",
+        "TC-ICM-011"
+      ],
+      "coverage": 2,
+      "input_values_used": [
+        "device_row.tester_user",
+        "device_row.device_name",
+        "device_row.server_name"
+      ],
+      "assertions_supported": [
+        "The URL contains #/hubble/device or the device list view is otherwise confirmed.",
+        "The detail surface contains device name, IP, and port fields.",
+        "The device Test_Ins01 is removed.",
+        "The server edit dialog no longer returns Test_Ins01 in the bound device search."
+      ]
+    },
+    {
+      "name": "login_button",
+      "human_en": "login button",
+      "human_zh": [
+        "login",
+        "登录",
+        "按钮"
+      ],
+      "context_keys": [],
+      "selectors": [
+        "button[text=登录]",
+        "button.el-button--primary.el-button--medium",
+        "button:has-text(login)"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-001": [
+          "button[text=登录]",
+          "button.el-button--primary.el-button--medium"
+        ],
+        "TC-ICM-010": [
+          "button:has-text(login)"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-001",
+        "TC-ICM-010"
+      ],
+      "coverage": 2,
+      "input_values_used": [
+        "login_button.username",
+        "login_button.password",
+        "login_button.device_name"
+      ],
+      "assertions_supported": [
+        "The page does not stay on the login screen."
+      ]
+    },
+    {
+      "name": "modify_button",
+      "human_en": "modify button",
+      "human_zh": [
+        "modify",
+        "按钮"
+      ],
+      "context_keys": [],
+      "selectors": [
+        "text=修改",
+        "button:has-text(修改)",
+        "button:has-text(Edit)"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-007": [
+          "text=修改",
+          "button:has-text(修改)"
+        ],
+        "TC-ICM-011": [
+          "button:has-text(Edit)"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-007",
+        "TC-ICM-011"
+      ],
+      "coverage": 2,
+      "input_values_used": [
+        "modify_button.tester_user",
+        "modify_button.device_name",
+        "modify_button.server_name"
+      ],
+      "assertions_supported": []
+    },
+    {
+      "name": "screen_wall_url",
+      "human_en": "screen wall url",
+      "human_zh": [
+        "screen",
+        "墙",
+        "页面"
+      ],
+      "context_keys": [
+        "route"
+      ],
+      "selectors": [
+        "#/icm"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-010": [
+          "#/icm"
+        ],
+        "TC-ICM-012": [
+          "#/icm"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-010",
+        "TC-ICM-012"
+      ],
+      "coverage": 2,
+      "input_values_used": [
+        "screen_wall_url.username",
+        "screen_wall_url.password",
+        "screen_wall_url.device_name",
+        "screen_wall_url.labo_username",
+        "screen_wall_url.labo_password",
+        "screen_wall_url.request_valid_days",
+        "screen_wall_url.request_contact",
+        "screen_wall_url.request_phone",
+        "screen_wall_url.request_text",
+        "screen_wall_url.jesse_login_url",
+        "screen_wall_url.jesse_username",
+        "screen_wall_url.jesse_password",
+        "screen_wall_url.remote_help_url"
+      ],
+      "assertions_supported": [
+        "The screen wall page opens."
+      ]
+    },
+    {
+      "name": "search_button",
+      "human_en": "search button",
+      "human_zh": [
+        "search",
+        "搜索",
+        "按钮"
+      ],
+      "context_keys": [],
+      "selectors": [
+        "button:has-text(搜索)",
+        "button:has-text(查询)"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-006": [
+          "button:has-text(搜索)"
+        ],
+        "TC-ICM-011": [
+          "button:has-text(搜索)",
+          "button:has-text(查询)"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-006",
+        "TC-ICM-011"
+      ],
+      "coverage": 2,
+      "input_values_used": [
+        "search_button.device_name",
+        "search_button.device_ip",
+        "search_button.device_port",
+        "search_button.vnc_password",
+        "search_button.connection_type",
+        "search_button.device_type",
+        "search_button.allow_control",
+        "search_button.device_enabled",
+        "search_button.tester_user",
+        "search_button.server_name"
+      ],
+      "assertions_supported": [
+        "After save, searching Test_Ins01 returns a visible device row with enabled status.",
+        "The server edit dialog no longer returns Test_Ins01 in the bound device search."
+      ]
+    },
+    {
+      "name": "server_list_url",
+      "human_en": "server list url",
+      "human_zh": [
+        "server",
+        "服务器",
+        "列表",
+        "页面"
+      ],
+      "context_keys": [
+        "route",
+        "list_page"
+      ],
+      "selectors": [
+        "#/hubble/server"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-007": [
+          "#/hubble/server"
+        ],
+        "TC-ICM-011": [
+          "#/hubble/server"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-007",
+        "TC-ICM-011"
+      ],
+      "coverage": 2,
+      "input_values_used": [
+        "server_list_url.tester_user",
+        "server_list_url.device_name",
+        "server_list_url.server_name"
+      ],
+      "assertions_supported": [
+        "The server edit dialog can be opened.",
+        "The server edit dialog no longer returns Test_Ins01 in the bound device search."
+      ]
+    },
+    {
+      "name": "server_row",
+      "human_en": "server row",
+      "human_zh": [
+        "server",
+        "服务器"
+      ],
+      "context_keys": [],
+      "selectors": [
+        "tr:has-text(Test Server#203)"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-007": [
+          "tr:has-text(Test Server#203)"
+        ],
+        "TC-ICM-011": [
+          "tr:has-text(Test Server#203)"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-007",
+        "TC-ICM-011"
+      ],
+      "coverage": 2,
+      "input_values_used": [
+        "server_row.tester_user",
+        "server_row.device_name",
+        "server_row.server_name"
+      ],
+      "assertions_supported": [
+        "The server edit dialog can be opened.",
+        "The server edit dialog no longer returns Test_Ins01 in the bound device search."
+      ]
+    },
+    {
+      "name": "tester_row",
+      "human_en": "tester row",
+      "human_zh": [],
+      "context_keys": [],
+      "selectors": [
+        "tr:has-text(Tester)"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-009": [
+          "tr:has-text(Tester)"
+        ],
+        "TC-ICM-011": [
+          "tr:has-text(Tester)"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-009",
+        "TC-ICM-011"
+      ],
+      "coverage": 2,
+      "input_values_used": [
+        "tester_row.tester_user",
+        "tester_row.server_name",
+        "tester_row.device_name"
+      ],
+      "assertions_supported": []
+    },
+    {
+      "name": "add_dialog",
+      "human_en": "add dialog",
+      "human_zh": [
+        "add",
+        "新增",
+        "弹窗"
+      ],
+      "context_keys": [
+        "dialog"
+      ],
+      "selectors": [
+        ".el-dialog:visible"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-006": [
+          ".el-dialog:visible"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-006"
+      ],
+      "coverage": 1,
+      "input_values_used": [
+        "add_dialog.device_name",
+        "add_dialog.device_ip",
+        "add_dialog.device_port",
+        "add_dialog.vnc_password",
+        "add_dialog.connection_type",
+        "add_dialog.device_type",
+        "add_dialog.allow_control",
+        "add_dialog.device_enabled"
+      ],
+      "assertions_supported": [
+        "The Add/New button opens a visible device dialog."
+      ]
+    },
+    {
+      "name": "add_server_button",
+      "human_en": "add server button",
+      "human_zh": [
+        "add",
+        "新增",
+        "服务器",
+        "按钮"
+      ],
+      "context_keys": [],
+      "selectors": [
+        "button:has-text(Add Server)"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-009": [
+          "button:has-text(Add Server)"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-009"
+      ],
+      "coverage": 1,
+      "input_values_used": [
+        "add_server_button.tester_user",
+        "add_server_button.server_name",
+        "add_server_button.device_name"
+      ],
+      "assertions_supported": []
+    },
+    {
+      "name": "allow_control_select",
+      "human_en": "allow control select",
+      "human_zh": [
+        "allow",
+        "控制",
+        "下拉选择"
+      ],
+      "context_keys": [],
+      "selectors": [
+        "dialog input index 9"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-006": [
+          "dialog input index 9"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-006"
+      ],
+      "coverage": 1,
+      "input_values_used": [
+        "allow_control_select.device_name",
+        "allow_control_select.device_ip",
+        "allow_control_select.device_port",
+        "allow_control_select.vnc_password",
+        "allow_control_select.connection_type",
+        "allow_control_select.device_type",
+        "allow_control_select.allow_control",
+        "allow_control_select.device_enabled"
+      ],
+      "assertions_supported": []
+    },
+    {
+      "name": "click_1",
+      "human_en": "click 1",
+      "human_zh": [],
+      "context_keys": [],
+      "selectors": [
+        "div:nth-of-type(1) > form > div:nth-of-type(4) > div > button"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-018": [
+          "div:nth-of-type(1) > form > div:nth-of-type(4) > div > button"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-018"
+      ],
+      "coverage": 1,
+      "input_values_used": [
+        "click_1.assert_text_2"
+      ],
+      "assertions_supported": []
+    },
+    {
+      "name": "click_2",
+      "human_en": "click 2",
+      "human_zh": [],
+      "context_keys": [],
+      "selectors": [
+        "div:nth-of-type(1) > form > div:nth-of-type(4) > div > button"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-013": [
+          "div:nth-of-type(1) > form > div:nth-of-type(4) > div > button"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-013"
+      ],
+      "coverage": 1,
+      "input_values_used": [
+        "click_2.fill_1",
+        "click_2.assert_text_3"
+      ],
+      "assertions_supported": []
+    },
+    {
+      "name": "configure_server_device_item",
+      "human_en": "configure server device item",
+      "human_zh": [
+        "configure",
+        "服务器",
+        "设备"
+      ],
+      "context_keys": [],
+      "selectors": [
+        "text=Configure Server and Device"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-009": [
+          "text=Configure Server and Device"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-009"
+      ],
+      "coverage": 1,
+      "input_values_used": [
+        "configure_server_device_item.tester_user",
+        "configure_server_device_item.server_name",
+        "configure_server_device_item.device_name"
+      ],
+      "assertions_supported": [
+        "The configure action can be opened."
+      ]
+    },
+    {
+      "name": "connection_type_select",
+      "human_en": "connection type select",
+      "human_zh": [
+        "connection",
+        "类型",
+        "下拉选择"
+      ],
+      "context_keys": [],
+      "selectors": [
+        "dialog input index 0"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-006": [
+          "dialog input index 0"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-006"
+      ],
+      "coverage": 1,
+      "input_values_used": [
+        "connection_type_select.device_name",
+        "connection_type_select.device_ip",
+        "connection_type_select.device_port",
+        "connection_type_select.vnc_password",
+        "connection_type_select.connection_type",
+        "connection_type_select.device_type",
+        "connection_type_select.allow_control",
+        "connection_type_select.device_enabled"
+      ],
+      "assertions_supported": []
+    },
+    {
+      "name": "current_server_switch",
+      "human_en": "current server switch",
+      "human_zh": [
+        "current",
+        "服务器",
+        "开关"
+      ],
+      "context_keys": [],
+      "selectors": [
+        ".el-switch:nth-of-type(2)"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-009": [
+          ".el-switch:nth-of-type(2)"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-009"
+      ],
+      "coverage": 1,
+      "input_values_used": [
+        "current_server_switch.tester_user",
+        "current_server_switch.server_name",
+        "current_server_switch.device_name"
+      ],
+      "assertions_supported": [
+        "The current-server switch can be enabled.",
+        "Refresh server info and enable the current server."
+      ]
+    },
+    {
+      "name": "delete_button",
+      "human_en": "delete button",
+      "human_zh": [
+        "delete",
+        "删除",
+        "按钮"
+      ],
+      "context_keys": [],
+      "selectors": [
+        "button:has-text(Delete)",
+        "text=Delete"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-011": [
+          "button:has-text(Delete)",
+          "text=Delete"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-011"
+      ],
+      "coverage": 1,
+      "input_values_used": [
+        "delete_button.tester_user",
+        "delete_button.device_name",
+        "delete_button.server_name"
+      ],
+      "assertions_supported": []
+    },
+    {
+      "name": "dept_picker",
+      "human_en": "dept picker",
+      "human_zh": [],
+      "context_keys": [],
+      "selectors": [
+        "placeholder=请选择归属部门"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-008": [
+          "placeholder=请选择归属部门"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-008"
+      ],
+      "coverage": 1,
+      "input_values_used": [
+        "dept_picker.nickname",
+        "dept_picker.username",
+        "dept_picker.password"
+      ],
+      "assertions_supported": []
+    },
+    {
+      "name": "detail_dialog",
+      "human_en": "detail dialog",
+      "human_zh": [
+        "detail",
+        "弹窗"
+      ],
+      "context_keys": [
+        "dialog"
+      ],
+      "selectors": [
+        "[role=\"dialog\"]"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-004": [
+          "[role=\"dialog\"]"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-004"
+      ],
+      "coverage": 1,
+      "input_values_used": [],
+      "assertions_supported": [
+        "Clicking Modify opens a dialog, drawer, or detail form.",
+        "The detail surface contains device name, IP, and port fields.",
+        "Open `Detail` or the equivalent visible entry.",
+        "Decide whether the detail appears as a page, modal, or drawer."
+      ]
+    },
+    {
+      "name": "detail_fields",
+      "human_en": "detail fields",
+      "human_zh": [],
+      "context_keys": [],
+      "selectors": [
+        "placeholder=请输入设备名称",
+        "placeholder=请输入设备ip",
+        "placeholder=请输入设备端口"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-004": [
+          "placeholder=请输入设备名称",
+          "placeholder=请输入设备ip",
+          "placeholder=请输入设备端口"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-004"
+      ],
+      "coverage": 1,
+      "input_values_used": [],
+      "assertions_supported": []
+    },
+    {
+      "name": "dev_login_url",
+      "human_en": "dev login url",
+      "human_zh": [
+        "dev",
+        "登录",
+        "页面"
+      ],
+      "context_keys": [
+        "route"
+      ],
+      "selectors": [
+        "https://dev.tcsoft.net.cn/login?redirect=%2Fredirect"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-012": [
+          "https://dev.tcsoft.net.cn/login?redirect=%2Fredirect"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-012"
+      ],
+      "coverage": 1,
+      "input_values_used": [
+        "dev_login_url.labo_username",
+        "dev_login_url.labo_password",
+        "dev_login_url.device_name",
+        "dev_login_url.request_valid_days",
+        "dev_login_url.request_contact",
+        "dev_login_url.request_phone",
+        "dev_login_url.request_text",
+        "dev_login_url.jesse_login_url",
+        "dev_login_url.jesse_username",
+        "dev_login_url.jesse_password",
+        "dev_login_url.remote_help_url"
+      ],
+      "assertions_supported": [
+        "The AU5800 tile becomes ready and exposes Request Assistance in the device info card."
+      ]
+    },
+    {
+      "name": "device_checkbox",
+      "human_en": "device checkbox",
+      "human_zh": [
+        "device",
+        "设备"
+      ],
+      "context_keys": [],
+      "selectors": [
+        ".el-checkbox__inner"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-009": [
+          ".el-checkbox__inner"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-009"
+      ],
+      "coverage": 1,
+      "input_values_used": [
+        "device_checkbox.tester_user",
+        "device_checkbox.server_name",
+        "device_checkbox.device_name"
+      ],
+      "assertions_supported": [
+        "The bound device list shows Test_Ins01 on page 1 after selection.",
+        "Refresh bound device info and check `Test_Ins01`."
+      ]
+    },
+    {
+      "name": "device_info_entry",
+      "human_en": "device info entry",
+      "human_zh": [
+        "device",
+        "设备"
+      ],
+      "context_keys": [],
+      "selectors": [
+        ".screen-top-head"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-012": [
+          ".screen-top-head"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-012"
+      ],
+      "coverage": 1,
+      "input_values_used": [
+        "device_info_entry.labo_username",
+        "device_info_entry.labo_password",
+        "device_info_entry.device_name",
+        "device_info_entry.request_valid_days",
+        "device_info_entry.request_contact",
+        "device_info_entry.request_phone",
+        "device_info_entry.request_text",
+        "device_info_entry.jesse_login_url",
+        "device_info_entry.jesse_username",
+        "device_info_entry.jesse_password",
+        "device_info_entry.remote_help_url"
+      ],
+      "assertions_supported": [
+        "The AU5800 tile becomes ready and exposes Request Assistance in the device info card."
+      ]
+    },
+    {
+      "name": "device_ip_input",
+      "human_en": "device ip input",
+      "human_zh": [
+        "device",
+        "设备",
+        "IP",
+        "输入框"
+      ],
+      "context_keys": [],
+      "selectors": [
+        "dialog input index 3"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-006": [
+          "dialog input index 3"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-006"
+      ],
+      "coverage": 1,
+      "input_values_used": [
+        "device_ip_input.device_name",
+        "device_ip_input.device_ip",
+        "device_ip_input.device_port",
+        "device_ip_input.vnc_password",
+        "device_ip_input.connection_type",
+        "device_ip_input.device_type",
+        "device_ip_input.allow_control",
+        "device_ip_input.device_enabled"
+      ],
+      "assertions_supported": [
+        "The Add/New button opens a visible device dialog.",
+        "The form accepts the supplied device data.",
+        "The Device Status switch is enabled before submit.",
+        "After save, searching Test_Ins01 returns a visible device row with enabled status."
+      ]
+    },
+    {
+      "name": "device_list_table",
+      "human_en": "device list table",
+      "human_zh": [
+        "device",
+        "设备",
+        "列表"
+      ],
+      "context_keys": [
+        "list_page"
+      ],
+      "selectors": [
+        "table",
+        "tbody"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-003": [
+          "table",
+          "tbody"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-003"
+      ],
+      "coverage": 1,
+      "input_values_used": [
+        "device_list_table.device_keyword"
+      ],
+      "assertions_supported": [
+        "The URL contains #/hubble/device or the device list view is otherwise confirmed.",
+        "The page stays on the device list view after the query."
+      ]
+    },
+    {
+      "name": "device_name",
+      "human_en": "device name",
+      "human_zh": [
+        "device",
+        "设备",
+        "名称"
+      ],
+      "context_keys": [],
+      "selectors": [
+        "Test_Ins01"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-007": [
+          "Test_Ins01"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-007"
+      ],
+      "coverage": 1,
+      "input_values_used": [],
+      "assertions_supported": [
+        "The selected device appears in the binding area or the save action succeeds.",
+        "Check the device and confirm the save."
+      ]
+    },
+    {
+      "name": "device_name_input",
+      "human_en": "device name input",
+      "human_zh": [
+        "device",
+        "设备",
+        "名称",
+        "输入框"
+      ],
+      "context_keys": [],
+      "selectors": [
+        "dialog input index 2"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-006": [
+          "dialog input index 2"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-006"
+      ],
+      "coverage": 1,
+      "input_values_used": [
+        "device_name_input.device_name",
+        "device_name_input.device_ip",
+        "device_name_input.device_port",
+        "device_name_input.vnc_password",
+        "device_name_input.connection_type",
+        "device_name_input.device_type",
+        "device_name_input.allow_control",
+        "device_name_input.device_enabled"
+      ],
+      "assertions_supported": [
+        "The Add/New button opens a visible device dialog.",
+        "The form accepts the supplied device data.",
+        "The Device Status switch is enabled before submit.",
+        "After save, searching Test_Ins01 returns a visible device row with enabled status."
+      ]
+    },
+    {
+      "name": "device_page_1",
+      "human_en": "device page 1",
+      "human_zh": [
+        "device",
+        "设备"
+      ],
+      "context_keys": [],
+      "selectors": [
+        ".el-pager li.number:has-text(1)"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-009": [
+          ".el-pager li.number:has-text(1)"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-009"
+      ],
+      "coverage": 1,
+      "input_values_used": [
+        "device_page_1.tester_user",
+        "device_page_1.server_name",
+        "device_page_1.device_name"
+      ],
+      "assertions_supported": [
+        "The bound device list shows Test_Ins01 on page 1 after selection.",
+        "Refresh bound device info and check `Test_Ins01`."
+      ]
+    },
+    {
+      "name": "device_page_3",
+      "human_en": "device page 3",
+      "human_zh": [
+        "device",
+        "设备"
+      ],
+      "context_keys": [],
+      "selectors": [
+        ".el-pager li.number:has-text(3)"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-009": [
+          ".el-pager li.number:has-text(3)"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-009"
+      ],
+      "coverage": 1,
+      "input_values_used": [
+        "device_page_3.tester_user",
+        "device_page_3.server_name",
+        "device_page_3.device_name"
+      ],
+      "assertions_supported": [
+        "The bound device list shows Test_Ins01 on page 1 after selection.",
+        "Refresh bound device info and check `Test_Ins01`."
+      ]
+    },
+    {
+      "name": "device_port_input",
+      "human_en": "device port input",
+      "human_zh": [
+        "device",
+        "设备",
+        "端口",
+        "输入框"
+      ],
+      "context_keys": [],
+      "selectors": [
+        "dialog input index 4"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-006": [
+          "dialog input index 4"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-006"
+      ],
+      "coverage": 1,
+      "input_values_used": [
+        "device_port_input.device_name",
+        "device_port_input.device_ip",
+        "device_port_input.device_port",
+        "device_port_input.vnc_password",
+        "device_port_input.connection_type",
+        "device_port_input.device_type",
+        "device_port_input.allow_control",
+        "device_port_input.device_enabled"
+      ],
+      "assertions_supported": [
+        "The Add/New button opens a visible device dialog.",
+        "The form accepts the supplied device data.",
+        "The Device Status switch is enabled before submit.",
+        "After save, searching Test_Ins01 returns a visible device row with enabled status."
+      ]
+    },
+    {
+      "name": "device_query_input",
+      "human_en": "device query input",
+      "human_zh": [
+        "device",
+        "设备",
+        "输入框"
+      ],
+      "context_keys": [],
+      "selectors": [
+        "placeholder=请输入设备名称",
+        "placeholder=请输入设备名",
+        "placeholder*=device"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-003": [
+          "placeholder=请输入设备名称",
+          "placeholder=请输入设备名",
+          "placeholder*=device"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-003"
+      ],
+      "coverage": 1,
+      "input_values_used": [
+        "device_query_input.device_keyword"
+      ],
+      "assertions_supported": [
+        "The URL contains #/hubble/device or the device list view is otherwise confirmed.",
+        "The page stays on the device list view after the query."
+      ]
+    },
+    {
+      "name": "device_row_checkbox",
+      "human_en": "device row checkbox",
+      "human_zh": [
+        "device",
+        "设备"
+      ],
+      "context_keys": [],
+      "selectors": [
+        "xpath=(//tr[contains(., \"Test_Ins01\")]//label[contains(@class,\"el-checkbox\")])[1]"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-007": [
+          "xpath=(//tr[contains(., \"Test_Ins01\")]//label[contains(@class,\"el-checkbox\")])[1]"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-007"
+      ],
+      "coverage": 1,
+      "input_values_used": [],
+      "assertions_supported": [
+        "The selected device appears in the binding area or the save action succeeds.",
+        "Check the device and confirm the save."
+      ]
+    },
+    {
+      "name": "device_row_text",
+      "human_en": "device row text",
+      "human_zh": [
+        "device",
+        "设备"
+      ],
+      "context_keys": [],
+      "selectors": [
+        "text=Test_Ins01"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-009": [
+          "text=Test_Ins01"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-009"
+      ],
+      "coverage": 1,
+      "input_values_used": [
+        "device_row_text.tester_user",
+        "device_row_text.server_name",
+        "device_row_text.device_name"
+      ],
+      "assertions_supported": [
+        "The bound device list shows Test_Ins01 on page 1 after selection.",
+        "Refresh bound device info and check `Test_Ins01`."
+      ]
+    },
+    {
+      "name": "device_status_switch",
+      "human_en": "device status switch",
+      "human_zh": [
+        "device",
+        "设备",
+        "状态",
+        "开关"
+      ],
+      "context_keys": [],
+      "selectors": [
+        ".el-switch input[role='switch']"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-006": [
+          ".el-switch input[role='switch']"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-006"
+      ],
+      "coverage": 1,
+      "input_values_used": [
+        "device_status_switch.device_name",
+        "device_status_switch.device_ip",
+        "device_status_switch.device_port",
+        "device_status_switch.vnc_password",
+        "device_status_switch.connection_type",
+        "device_status_switch.device_type",
+        "device_status_switch.allow_control",
+        "device_status_switch.device_enabled"
+      ],
+      "assertions_supported": [
+        "The Add/New button opens a visible device dialog.",
+        "The form accepts the supplied device data.",
+        "The Device Status switch is enabled before submit.",
+        "After save, searching Test_Ins01 returns a visible device row with enabled status."
+      ]
+    },
+    {
+      "name": "device_tile",
+      "human_en": "device tile",
+      "human_zh": [
+        "device",
+        "设备"
+      ],
+      "context_keys": [],
+      "selectors": [
+        "text=Test_Ins01"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-010": [
+          "text=Test_Ins01"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-010"
+      ],
+      "coverage": 1,
+      "input_values_used": [
+        "device_tile.username",
+        "device_tile.password",
+        "device_tile.device_name"
+      ],
+      "assertions_supported": [
+        "Wait until all devices finish refreshing."
+      ]
+    },
+    {
+      "name": "device_type_select",
+      "human_en": "device type select",
+      "human_zh": [
+        "device",
+        "设备",
+        "类型",
+        "下拉选择"
+      ],
+      "context_keys": [],
+      "selectors": [
+        "dialog input index 1"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-006": [
+          "dialog input index 1"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-006"
+      ],
+      "coverage": 1,
+      "input_values_used": [
+        "device_type_select.device_name",
+        "device_type_select.device_ip",
+        "device_type_select.device_port",
+        "device_type_select.vnc_password",
+        "device_type_select.connection_type",
+        "device_type_select.device_type",
+        "device_type_select.allow_control",
+        "device_type_select.device_enabled"
+      ],
+      "assertions_supported": [
+        "The Add/New button opens a visible device dialog.",
+        "The form accepts the supplied device data.",
+        "The Device Status switch is enabled before submit.",
+        "After save, searching Test_Ins01 returns a visible device row with enabled status."
+      ]
+    },
+    {
+      "name": "first_device_name",
+      "human_en": "first device name",
+      "human_zh": [
+        "first",
+        "设备",
+        "名称"
+      ],
+      "context_keys": [],
+      "selectors": [
+        "text=AU5800"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-012": [
+          "text=AU5800"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-012"
+      ],
+      "coverage": 1,
+      "input_values_used": [
+        "first_device_name.labo_username",
+        "first_device_name.labo_password",
+        "first_device_name.device_name",
+        "first_device_name.request_valid_days",
+        "first_device_name.request_contact",
+        "first_device_name.request_phone",
+        "first_device_name.request_text",
+        "first_device_name.jesse_login_url",
+        "first_device_name.jesse_username",
+        "first_device_name.jesse_password",
+        "first_device_name.remote_help_url"
+      ],
+      "assertions_supported": []
+    },
+    {
+      "name": "homepage_url",
+      "human_en": "homepage url",
+      "human_zh": [
+        "homepage",
+        "页面"
+      ],
+      "context_keys": [
+        "route"
+      ],
+      "selectors": [
+        "#/index"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-002": [
+          "#/index"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-002"
+      ],
+      "coverage": 1,
+      "input_values_used": [],
+      "assertions_supported": [
+        "The homepage no longer shows a loading message.",
+        "Decide whether stable homepage sections are rendered."
+      ]
+    },
+    {
+      "name": "labo_login_url",
+      "human_en": "labo login url",
+      "human_zh": [
+        "labo",
+        "登录",
+        "页面"
+      ],
+      "context_keys": [
+        "route"
+      ],
+      "selectors": [
+        "https://192.168.16.203:49187/#/login?redirect=%2Fredirect"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-012": [
+          "https://192.168.16.203:49187/#/login?redirect=%2Fredirect"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-012"
+      ],
+      "coverage": 1,
+      "input_values_used": [
+        "labo_login_url.labo_username",
+        "labo_login_url.labo_password",
+        "labo_login_url.device_name",
+        "labo_login_url.request_valid_days",
+        "labo_login_url.request_contact",
+        "labo_login_url.request_phone",
+        "labo_login_url.request_text",
+        "labo_login_url.jesse_login_url",
+        "labo_login_url.jesse_username",
+        "labo_login_url.jesse_password",
+        "labo_login_url.remote_help_url"
+      ],
+      "assertions_supported": []
+    },
+    {
+      "name": "login_controls",
+      "human_en": "login controls",
+      "human_zh": [
+        "login",
+        "登录"
+      ],
+      "context_keys": [],
+      "selectors": [
+        "placeholder=账号",
+        "placeholder=密码"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-005": [
+          "placeholder=账号",
+          "placeholder=密码"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-005"
+      ],
+      "coverage": 1,
+      "input_values_used": [],
+      "assertions_supported": [
+        "The final URL contains `#/login` after logout confirmation.",
+        "Do not finish this case while still on the login page before logging in and opening the homepage.",
+        "The login controls are visible again after confirmation.",
+        "The login page shows account and password controls again.",
+        "Decide whether the page returned to login and whether account, password, and login controls are visible again.",
+        "Keep 3 screenshots: homepage, logout confirm dialog, returned login page."
+      ]
+    },
+    {
+      "name": "login_url",
+      "human_en": "login url",
+      "human_zh": [
+        "login",
+        "登录",
+        "页面"
+      ],
+      "context_keys": [
+        "route"
+      ],
+      "selectors": [
+        "#/login"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-010": [
+          "#/login"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-010"
+      ],
+      "coverage": 1,
+      "input_values_used": [
+        "login_url.username",
+        "login_url.password",
+        "login_url.device_name"
+      ],
+      "assertions_supported": []
+    },
+    {
+      "name": "logout_menu_item",
+      "human_en": "logout menu item",
+      "human_zh": [
+        "logout",
+        "退出",
+        "菜单"
+      ],
+      "context_keys": [],
+      "selectors": [
+        "text=退出登录",
+        "text=退出"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-005": [
+          "text=退出登录",
+          "text=退出"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-005"
+      ],
+      "coverage": 1,
+      "input_values_used": [],
+      "assertions_supported": [
+        "The final URL contains `#/login` after logout confirmation.",
+        "The homepage is visible before opening the logout menu.",
+        "Click `Confirm` in the logout dialog.",
+        "Keep 3 screenshots: homepage, logout confirm dialog, returned login page."
+      ]
+    },
+    {
+      "name": "more_button",
+      "human_en": "more button",
+      "human_zh": [
+        "more",
+        "按钮"
+      ],
+      "context_keys": [],
+      "selectors": [
+        "text=More",
+        "button:has-text(More)"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-009": [
+          "text=More",
+          "button:has-text(More)"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-009"
+      ],
+      "coverage": 1,
+      "input_values_used": [
+        "more_button.tester_user",
+        "more_button.server_name",
+        "more_button.device_name"
+      ],
+      "assertions_supported": []
+    },
+    {
+      "name": "nickname_input",
+      "human_en": "nickname input",
+      "human_zh": [
+        "nickname",
+        "输入框"
+      ],
+      "context_keys": [],
+      "selectors": [
+        "placeholder=请输入用户昵称"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-008": [
+          "placeholder=请输入用户昵称"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-008"
+      ],
+      "coverage": 1,
+      "input_values_used": [
+        "nickname_input.nickname",
+        "nickname_input.username",
+        "nickname_input.password"
+      ],
+      "assertions_supported": []
+    },
+    {
+      "name": "open_remote_button",
+      "human_en": "open remote button",
+      "human_zh": [
+        "open",
+        "按钮"
+      ],
+      "context_keys": [],
+      "selectors": [
+        "button:has-text(打开远程界面)"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-012": [
+          "button:has-text(打开远程界面)"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-012"
+      ],
+      "coverage": 1,
+      "input_values_used": [
+        "open_remote_button.labo_username",
+        "open_remote_button.labo_password",
+        "open_remote_button.device_name",
+        "open_remote_button.request_valid_days",
+        "open_remote_button.request_contact",
+        "open_remote_button.request_phone",
+        "open_remote_button.request_text",
+        "open_remote_button.jesse_login_url",
+        "open_remote_button.jesse_username",
+        "open_remote_button.jesse_password",
+        "open_remote_button.remote_help_url"
+      ],
+      "assertions_supported": [
+        "The remoteView tab opens."
+      ]
+    },
+    {
+      "name": "post_picker",
+      "human_en": "post picker",
+      "human_zh": [],
+      "context_keys": [],
+      "selectors": [
+        "placeholder=请选择岗位"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-008": [
+          "placeholder=请选择岗位"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-008"
+      ],
+      "coverage": 1,
+      "input_values_used": [
+        "post_picker.nickname",
+        "post_picker.username",
+        "post_picker.password"
+      ],
+      "assertions_supported": []
+    },
+    {
+      "name": "process_button",
+      "human_en": "process button",
+      "human_zh": [
+        "process",
+        "按钮"
+      ],
+      "context_keys": [],
+      "selectors": [
+        "button:has-text(处理)"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-012": [
+          "button:has-text(处理)"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-012"
+      ],
+      "coverage": 1,
+      "input_values_used": [
+        "process_button.labo_username",
+        "process_button.labo_password",
+        "process_button.device_name",
+        "process_button.request_valid_days",
+        "process_button.request_contact",
+        "process_button.request_phone",
+        "process_button.request_text",
+        "process_button.jesse_login_url",
+        "process_button.jesse_username",
+        "process_button.jesse_password",
+        "process_button.remote_help_url"
+      ],
+      "assertions_supported": []
+    },
+    {
+      "name": "remote_help_url",
+      "human_en": "remote help url",
+      "human_zh": [
+        "remote",
+        "页面"
+      ],
+      "context_keys": [
+        "route"
+      ],
+      "selectors": [
+        "https://dev.tcsoft.net.cn/hubble/remoteHelpInfo"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-012": [
+          "https://dev.tcsoft.net.cn/hubble/remoteHelpInfo"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-012"
+      ],
+      "coverage": 1,
+      "input_values_used": [
+        "remote_help_url.labo_username",
+        "remote_help_url.labo_password",
+        "remote_help_url.device_name",
+        "remote_help_url.request_valid_days",
+        "remote_help_url.request_contact",
+        "remote_help_url.request_phone",
+        "remote_help_url.request_text",
+        "remote_help_url.jesse_login_url",
+        "remote_help_url.jesse_username",
+        "remote_help_url.jesse_password",
+        "remote_help_url.remote_help_url"
+      ],
+      "assertions_supported": [
+        "The matching remote-help detail page contains 自动化测试专用，请勿回复！.",
+        "The remoteView tab opens."
+      ]
+    },
+    {
+      "name": "remote_toolbar_solve_icon",
+      "human_en": "remote toolbar solve icon",
+      "human_zh": [],
+      "context_keys": [],
+      "selectors": [
+        ".top-center img.el-tooltip:nth-of-type(2)"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-012": [
+          ".top-center img.el-tooltip:nth-of-type(2)"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-012"
+      ],
+      "coverage": 1,
+      "input_values_used": [
+        "remote_toolbar_solve_icon.labo_username",
+        "remote_toolbar_solve_icon.labo_password",
+        "remote_toolbar_solve_icon.device_name",
+        "remote_toolbar_solve_icon.request_valid_days",
+        "remote_toolbar_solve_icon.request_contact",
+        "remote_toolbar_solve_icon.request_phone",
+        "remote_toolbar_solve_icon.request_text",
+        "remote_toolbar_solve_icon.jesse_login_url",
+        "remote_toolbar_solve_icon.jesse_username",
+        "remote_toolbar_solve_icon.jesse_password",
+        "remote_toolbar_solve_icon.remote_help_url"
+      ],
+      "assertions_supported": []
+    },
+    {
+      "name": "request_assistance_button",
+      "human_en": "request assistance button",
+      "human_zh": [
+        "request",
+        "按钮"
+      ],
+      "context_keys": [],
+      "selectors": [
+        "button:has-text(请求协助)",
+        "text=请求协助"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-012": [
+          "button:has-text(请求协助)",
+          "text=请求协助"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-012"
+      ],
+      "coverage": 1,
+      "input_values_used": [
+        "request_assistance_button.labo_username",
+        "request_assistance_button.labo_password",
+        "request_assistance_button.device_name",
+        "request_assistance_button.request_valid_days",
+        "request_assistance_button.request_contact",
+        "request_assistance_button.request_phone",
+        "request_assistance_button.request_text",
+        "request_assistance_button.jesse_login_url",
+        "request_assistance_button.jesse_username",
+        "request_assistance_button.jesse_password",
+        "request_assistance_button.remote_help_url"
+      ],
+      "assertions_supported": [
+        "The AU5800 tile becomes ready and exposes Request Assistance in the device info card.",
+        "The request form accepts the required values and can be submitted."
+      ]
+    },
+    {
+      "name": "request_dialog",
+      "human_en": "request dialog",
+      "human_zh": [
+        "request",
+        "弹窗"
+      ],
+      "context_keys": [
+        "dialog"
+      ],
+      "selectors": [
+        ".el-dialog:visible"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-012": [
+          ".el-dialog:visible"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-012"
+      ],
+      "coverage": 1,
+      "input_values_used": [
+        "request_dialog.labo_username",
+        "request_dialog.labo_password",
+        "request_dialog.device_name",
+        "request_dialog.request_valid_days",
+        "request_dialog.request_contact",
+        "request_dialog.request_phone",
+        "request_dialog.request_text",
+        "request_dialog.jesse_login_url",
+        "request_dialog.jesse_username",
+        "request_dialog.jesse_password",
+        "request_dialog.remote_help_url"
+      ],
+      "assertions_supported": [
+        "The AU5800 tile becomes ready and exposes Request Assistance in the device info card.",
+        "The request form accepts the required values and can be submitted."
+      ]
+    },
+    {
+      "name": "role_picker",
+      "human_en": "role picker",
+      "human_zh": [],
+      "context_keys": [],
+      "selectors": [
+        "placeholder=请选择角色"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-008": [
+          "placeholder=请选择角色"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-008"
+      ],
+      "coverage": 1,
+      "input_values_used": [
+        "role_picker.nickname",
+        "role_picker.username",
+        "role_picker.password"
+      ],
+      "assertions_supported": []
+    },
+    {
+      "name": "row_modify_button",
+      "human_en": "row modify button",
+      "human_zh": [
+        "row",
+        "按钮"
+      ],
+      "context_keys": [],
+      "selectors": [
+        "button[text=修改]",
+        "button:has-text(修改)"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-004": [
+          "button[text=修改]",
+          "button:has-text(修改)"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-004"
+      ],
+      "coverage": 1,
+      "input_values_used": [],
+      "assertions_supported": []
+    },
+    {
+      "name": "server_name",
+      "human_en": "server name",
+      "human_zh": [
+        "server",
+        "服务器",
+        "名称"
+      ],
+      "context_keys": [],
+      "selectors": [
+        "Test Server#203"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-007": [
+          "Test Server#203"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-007"
+      ],
+      "coverage": 1,
+      "input_values_used": [],
+      "assertions_supported": [
+        "The server edit dialog can be opened."
+      ]
+    },
+    {
+      "name": "stable_home_signals",
+      "human_en": "stable home signals",
+      "human_zh": [],
+      "context_keys": [],
+      "selectors": [
+        "home",
+        "portal",
+        "首页",
+        "系统管理"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-002": [
+          "home",
+          "portal",
+          "首页",
+          "系统管理"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-002"
+      ],
+      "coverage": 1,
+      "input_values_used": [],
+      "assertions_supported": []
+    },
+    {
+      "name": "stable_list_signals",
+      "human_en": "stable list signals",
+      "human_zh": [
+        "stable",
+        "列表"
+      ],
+      "context_keys": [
+        "list_page"
+      ],
+      "selectors": [
+        "设备信息",
+        "device"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-003": [
+          "设备信息",
+          "device"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-003"
+      ],
+      "coverage": 1,
+      "input_values_used": [
+        "stable_list_signals.device_keyword"
+      ],
+      "assertions_supported": []
+    },
+    {
+      "name": "success_signals",
+      "human_en": "success signals",
+      "human_zh": [],
+      "context_keys": [],
+      "selectors": [
+        "#/index",
+        "home",
+        "portal"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-001": [
+          "#/index",
+          "home",
+          "portal"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-001"
+      ],
+      "coverage": 1,
+      "input_values_used": [
+        "success_signals.username",
+        "success_signals.password"
+      ],
+      "assertions_supported": []
+    },
+    {
+      "name": "target_server_text",
+      "human_en": "target server text",
+      "human_zh": [
+        "target",
+        "服务器"
+      ],
+      "context_keys": [],
+      "selectors": [
+        "text=Test Server#203"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-009": [
+          "text=Test Server#203"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-009"
+      ],
+      "coverage": 1,
+      "input_values_used": [
+        "target_server_text.tester_user",
+        "target_server_text.server_name",
+        "target_server_text.device_name"
+      ],
+      "assertions_supported": [
+        "The target server can be selected."
+      ]
+    },
+    {
+      "name": "tile_hotspot",
+      "human_en": "tile hotspot",
+      "human_zh": [],
+      "context_keys": [],
+      "selectors": [
+        ".screen-mask-img"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-010": [
+          ".screen-mask-img"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-010"
+      ],
+      "coverage": 1,
+      "input_values_used": [
+        "tile_hotspot.username",
+        "tile_hotspot.password",
+        "tile_hotspot.device_name"
+      ],
+      "assertions_supported": []
+    },
+    {
+      "name": "user_avatar",
+      "human_en": "user avatar",
+      "human_zh": [
+        "user",
+        "用户",
+        "头像"
+      ],
+      "context_keys": [],
+      "selectors": [
+        "img.user-avatar"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-005": [
+          "img.user-avatar"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-005"
+      ],
+      "coverage": 1,
+      "input_values_used": [],
+      "assertions_supported": []
+    },
+    {
+      "name": "vnc_password_input",
+      "human_en": "vnc password input",
+      "human_zh": [
+        "vnc",
+        "密码",
+        "输入框"
+      ],
+      "context_keys": [],
+      "selectors": [
+        "dialog input index 8"
+      ],
+      "selectors_by_case": {
+        "TC-ICM-006": [
+          "dialog input index 8"
+        ]
+      },
+      "used_in_cases": [
+        "TC-ICM-006"
+      ],
+      "coverage": 1,
+      "input_values_used": [
+        "vnc_password_input.device_name",
+        "vnc_password_input.device_ip",
+        "vnc_password_input.device_port",
+        "vnc_password_input.vnc_password",
+        "vnc_password_input.connection_type",
+        "vnc_password_input.device_type",
+        "vnc_password_input.allow_control",
+        "vnc_password_input.device_enabled"
+      ],
+      "assertions_supported": []
+    }
+  ],
+  "by_route": {
+    "#/index": [
+      "homepage_url"
+    ],
+    "#/hubble/device": [
+      "device_list_url"
+    ],
+    "#/hubble/server": [
+      "server_list_url"
+    ],
+    "#/system/user": [
+      "user_list_url"
+    ],
+    "#/login": [
+      "login_url"
+    ],
+    "#/icm": [
+      "screen_wall_url"
+    ]
+  },
+  "by_case": {
+    "TC-ICM-001": {
+      "case_id": "TC-ICM-001",
+      "title": "ICM login success",
+      "category": "login",
+      "selectors": {
+        "username_input": [
+          "input[type=\"text\"]",
+          "placeholder=账号"
+        ],
+        "password_input": [
+          "input[type=\"password\"]",
+          "placeholder=密码"
+        ],
+        "login_button": [
+          "button[text=登录]",
+          "button.el-button--primary.el-button--medium"
+        ],
+        "success_signals": [
+          "#/index",
+          "home",
+          "portal"
+        ]
+      },
+      "selectors_count": 4
+    },
+    "TC-ICM-002": {
+      "case_id": "TC-ICM-002",
+      "title": "ICM homepage load success",
+      "category": "navigation",
+      "selectors": {
+        "homepage_url": [
+          "#/index"
+        ],
+        "stable_home_signals": [
+          "home",
+          "portal",
+          "首页",
+          "系统管理"
+        ]
+      },
+      "selectors_count": 2
+    },
+    "TC-ICM-003": {
+      "case_id": "TC-ICM-003",
+      "title": "ICM device list open and query",
+      "category": "action",
+      "selectors": {
+        "device_list_url": [
+          "#/hubble/device"
+        ],
+        "device_query_input": [
+          "placeholder=请输入设备名称",
+          "placeholder=请输入设备名",
+          "placeholder*=device"
+        ],
+        "device_list_table": [
+          "table",
+          "tbody"
+        ],
+        "stable_list_signals": [
+          "设备信息",
+          "device"
+        ]
+      },
+      "selectors_count": 4
+    },
+    "TC-ICM-004": {
+      "case_id": "TC-ICM-004",
+      "title": "ICM device detail open",
+      "category": "navigation",
+      "selectors": {
+        "device_list_url": [
+          "#/hubble/device"
+        ],
+        "device_row": [
+          "tr:has-text(AU5800)",
+          "tr:has-text(Device)"
+        ],
+        "row_modify_button": [
+          "button[text=修改]",
+          "button:has-text(修改)"
+        ],
+        "detail_dialog": [
+          "[role=\"dialog\"]"
+        ],
+        "detail_fields": [
+          "placeholder=请输入设备名称",
+          "placeholder=请输入设备ip",
+          "placeholder=请输入设备端口"
+        ]
+      },
+      "selectors_count": 5
+    },
+    "TC-ICM-005": {
+      "case_id": "TC-ICM-005",
+      "title": "ICM logout returns to login page",
+      "category": "logout",
+      "selectors": {
+        "user_avatar": [
+          "img.user-avatar"
+        ],
+        "logout_menu_item": [
+          "text=退出登录",
+          "text=退出"
+        ],
+        "confirm_button": [
+          "button[text=确定]",
+          "button:has-text(确定)"
+        ],
+        "login_controls": [
+          "placeholder=账号",
+          "placeholder=密码"
+        ]
+      },
+      "selectors_count": 4
+    },
+    "TC-ICM-006": {
+      "case_id": "TC-ICM-006",
+      "title": "ICM create device record",
+      "category": "action",
+      "selectors": {
+        "device_list_url": [
+          "#/hubble/device"
+        ],
+        "device_search_input": [
+          "placeholder=请输入设备名称"
+        ],
+        "search_button": [
+          "button:has-text(搜索)"
+        ],
+        "add_button": [
+          "button:has-text(新增)",
+          "text=新增"
+        ],
+        "add_dialog": [
+          ".el-dialog:visible"
+        ],
+        "connection_type_select": [
+          "dialog input index 0"
+        ],
+        "device_type_select": [
+          "dialog input index 1"
+        ],
+        "device_name_input": [
+          "dialog input index 2"
+        ],
+        "device_ip_input": [
+          "dialog input index 3"
+        ],
+        "device_port_input": [
+          "dialog input index 4"
+        ],
+        "vnc_password_input": [
+          "dialog input index 8"
+        ],
+        "allow_control_select": [
+          "dialog input index 9"
+        ],
+        "device_status_switch": [
+          ".el-switch input[role='switch']"
+        ],
+        "confirm_button": [
+          ".el-dialog__footer .el-button--primary"
+        ]
+      },
+      "selectors_count": 14
+    },
+    "TC-ICM-007": {
+      "case_id": "TC-ICM-007",
+      "title": "ICM bind device to server",
+      "category": "action",
+      "selectors": {
+        "server_list_url": [
+          "#/hubble/server"
+        ],
+        "server_row": [
+          "tr:has-text(Test Server#203)"
+        ],
+        "modify_button": [
+          "text=修改",
+          "button:has-text(修改)"
+        ],
+        "device_search_input": [
+          "placeholder=请输入设备名称"
+        ],
+        "device_row_checkbox": [
+          "xpath=(//tr[contains(., \"Test_Ins01\")]//label[contains(@class,\"el-checkbox\")])[1]"
+        ],
+        "confirm_button": [
+          "button[text=确定]",
+          "button:has-text(确定)"
+        ],
+        "device_name": [
+          "Test_Ins01"
+        ],
+        "server_name": [
+          "Test Server#203"
+        ]
+      },
+      "selectors_count": 8
+    },
+    "TC-ICM-008": {
+      "case_id": "TC-ICM-008",
+      "title": "ICM create user",
+      "category": "action",
+      "selectors": {
+        "user_list_url": [
+          "#/system/user"
+        ],
+        "add_button": [
+          "button[text=新增]",
+          "button:has-text(新增)"
+        ],
+        "nickname_input": [
+          "placeholder=请输入用户昵称"
+        ],
+        "username_input": [
+          "placeholder=请输入用户名称"
+        ],
+        "password_input": [
+          "placeholder=请输入用户密码"
+        ],
+        "dept_picker": [
+          "placeholder=请选择归属部门"
+        ],
+        "role_picker": [
+          "placeholder=请选择角色"
+        ],
+        "post_picker": [
+          "placeholder=请选择岗位"
+        ]
+      },
+      "selectors_count": 8
+    },
+    "TC-ICM-009": {
+      "case_id": "TC-ICM-009",
+      "title": "ICM bind server and device to user",
+      "category": "action",
+      "selectors": {
+        "user_list_url": [
+          "#/system/user"
+        ],
+        "tester_row": [
+          "tr:has-text(Tester)"
+        ],
+        "more_button": [
+          "text=More",
+          "button:has-text(More)"
+        ],
+        "configure_server_device_item": [
+          "text=Configure Server and Device"
+        ],
+        "add_server_button": [
+          "button:has-text(Add Server)"
+        ],
+        "target_server_text": [
+          "text=Test Server#203"
+        ],
+        "confirm_button": [
+          "button:has-text(确 定)",
+          "button:has-text(确定)"
+        ],
+        "current_server_switch": [
+          ".el-switch:nth-of-type(2)"
+        ],
+        "device_page_3": [
+          ".el-pager li.number:has-text(3)"
+        ],
+        "device_page_1": [
+          ".el-pager li.number:has-text(1)"
+        ],
+        "device_row_text": [
+          "text=Test_Ins01"
+        ],
+        "device_checkbox": [
+          ".el-checkbox__inner"
+        ]
+      },
+      "selectors_count": 12
+    },
+    "TC-ICM-010": {
+      "case_id": "TC-ICM-010",
+      "title": "ICM screen wall open remote desktop",
+      "category": "navigation",
+      "selectors": {
+        "login_url": [
+          "#/login"
+        ],
+        "username_input": [
+          "placeholder=account"
+        ],
+        "password_input": [
+          "placeholder=password"
+        ],
+        "login_button": [
+          "button:has-text(login)"
+        ],
+        "screen_wall_url": [
+          "#/icm"
+        ],
+        "device_tile": [
+          "text=Test_Ins01"
+        ],
+        "tile_hotspot": [
+          ".screen-mask-img"
+        ]
+      },
+      "selectors_count": 7
+    },
+    "TC-ICM-011": {
+      "case_id": "TC-ICM-011",
+      "title": "ICM cleanup user and device bindings",
+      "category": "action",
+      "selectors": {
+        "user_list_url": [
+          "#/system/user"
+        ],
+        "tester_row": [
+          "tr:has-text(Tester)"
+        ],
+        "delete_button": [
+          "button:has-text(Delete)",
+          "text=Delete"
+        ],
+        "device_list_url": [
+          "#/hubble/device"
+        ],
+        "device_row": [
+          "tr:has-text(Test_Ins01)"
+        ],
+        "device_search_input": [
+          "placeholder=输入设备名称",
+          "placeholder=请输入设备名称"
+        ],
+        "search_button": [
+          "button:has-text(搜索)",
+          "button:has-text(查询)"
+        ],
+        "server_list_url": [
+          "#/hubble/server"
+        ],
+        "server_row": [
+          "tr:has-text(Test Server#203)"
+        ],
+        "modify_button": [
+          "button:has-text(Edit)"
+        ]
+      },
+      "selectors_count": 10
+    },
+    "TC-ICM-012": {
+      "case_id": "TC-ICM-012",
+      "title": "ICM remote repair request to resolve",
+      "category": "action",
+      "selectors": {
+        "labo_login_url": [
+          "https://192.168.16.203:49187/#/login?redirect=%2Fredirect"
+        ],
+        "screen_wall_url": [
+          "#/icm"
+        ],
+        "first_device_name": [
+          "text=AU5800"
+        ],
+        "device_info_entry": [
+          ".screen-top-head"
+        ],
+        "request_assistance_button": [
+          "button:has-text(请求协助)",
+          "text=请求协助"
+        ],
+        "request_dialog": [
+          ".el-dialog:visible"
+        ],
+        "dev_login_url": [
+          "https://dev.tcsoft.net.cn/login?redirect=%2Fredirect"
+        ],
+        "remote_help_url": [
+          "https://dev.tcsoft.net.cn/hubble/remoteHelpInfo"
+        ],
+        "process_button": [
+          "button:has-text(处理)"
+        ],
+        "open_remote_button": [
+          "button:has-text(打开远程界面)"
+        ],
+        "remote_toolbar_solve_icon": [
+          ".top-center img.el-tooltip:nth-of-type(2)"
+        ]
+      },
+      "selectors_count": 11
+    },
+    "TC-ICM-013": {
+      "case_id": "TC-ICM-013",
+      "title": "仅密码为空时提示请输入密码",
+      "category": "",
+      "selectors": {
+        "fill_1": [
+          "input[placeholder=\"账号\"]"
+        ],
+        "click_2": [
+          "div:nth-of-type(1) > form > div:nth-of-type(4) > div > button"
+        ]
+      },
+      "selectors_count": 2
+    },
+    "TC-ICM-015": {
+      "case_id": "TC-ICM-015",
+      "title": "未登录访问受保护页面被重定向至登录页",
+      "category": "",
+      "selectors": {
+        "agent_candidate": [
+          "candidate_flow.py"
+        ]
+      },
+      "selectors_count": 1
+    },
+    "TC-ICM-016": {
+      "case_id": "TC-ICM-016",
+      "title": "登录成功后刷新页面仍保持登录态",
+      "category": "",
+      "selectors": {
+        "fill_1": [
+          "input[placeholder=\"账号\"]"
+        ],
+        "fill_2": [
+          "input[placeholder=\"密码\"]"
+        ],
+        "click_3": [
+          "div:nth-of-type(1) > form > div:nth-of-type(4) > div > button"
+        ]
+      },
+      "selectors_count": 3
+    },
+    "TC-ICM-017": {
+      "case_id": "TC-ICM-017",
+      "title": "账号包含特殊字符时登录被拒绝",
+      "category": "",
+      "selectors": {
+        "fill_1": [
+          "input[placeholder=\"账号\"]"
+        ],
+        "fill_2": [
+          "input[placeholder=\"密码\"]"
+        ],
+        "click_3": [
+          "div:nth-of-type(1) > form > div:nth-of-type(4) > div > button"
+        ]
+      },
+      "selectors_count": 3
+    },
+    "TC-ICM-018": {
+      "case_id": "TC-ICM-018",
+      "title": "账号为空时点击登录提示请输入账号",
+      "category": "",
+      "selectors": {
+        "click_1": [
+          "div:nth-of-type(1) > form > div:nth-of-type(4) > div > button"
+        ]
+      },
+      "selectors_count": 1
+    },
+    "TC-ICM-019": {
+      "case_id": "TC-ICM-019",
+      "title": "密码输入框为掩码显示",
+      "category": "",
+      "selectors": {
+        "fill_1": [
+          "input[placeholder=\"密码\"]"
+        ]
+      },
+      "selectors_count": 1
+    },
+    "TC-ICM-020": {
+      "case_id": "TC-ICM-020",
+      "title": "使用正确账号密码登录成功跳转屏幕墙",
+      "category": "",
+      "selectors": {
+        "fill_1": [
+          "input[placeholder=\"账号\"]"
+        ],
+        "fill_2": [
+          "input[placeholder=\"密码\"]"
+        ],
+        "click_3": [
+          "div:nth-of-type(1) > form > div:nth-of-type(4) > div > button"
+        ]
+      },
+      "selectors_count": 3
+    },
+    "TC-ICM-021": {
+      "case_id": "TC-ICM-021",
+      "title": "填写全部合法字段新增设备信息成功",
+      "category": "",
+      "selectors": {
+        "agent_candidate": [
+          "candidate_flow.py"
+        ]
+      },
+      "selectors_count": 1
+    },
+    "TC-ICM-022": {
+      "case_id": "TC-ICM-022",
+      "title": "设备名称输入恰好15个字符通过校验",
+      "category": "",
+      "selectors": {
+        "agent_candidate": [
+          "candidate_flow.py"
+        ]
+      },
+      "selectors_count": 1
+    },
+    "TC-ICM-023": {
+      "case_id": "TC-ICM-023",
+      "title": "设备名称输入16个字符触发自动截断",
+      "category": "",
+      "selectors": {
+        "agent_candidate": [
+          "candidate_flow.py"
+        ]
+      },
+      "selectors_count": 1
+    },
+    "TC-ICM-024": {
+      "case_id": "TC-ICM-024",
+      "title": "备注输入恰好500个字符通过校验",
+      "category": "",
+      "selectors": {
+        "agent_candidate": [
+          "candidate_flow.py"
+        ]
+      },
+      "selectors_count": 1
+    },
+    "TC-ICM-025": {
+      "case_id": "TC-ICM-025",
+      "title": "设备端口填写合法边界值65535通过校验",
+      "category": "",
+      "selectors": {
+        "agent_candidate": [
+          "candidate_flow.py"
+        ]
+      },
+      "selectors_count": 1
+    },
+    "TC-ICM-026": {
+      "case_id": "TC-ICM-026",
+      "title": "必填字段为空提交触发非空校验",
+      "category": "",
+      "selectors": {
+        "agent_candidate": [
+          "candidate_flow.py"
+        ]
+      },
+      "selectors_count": 1
+    }
+  }
+}

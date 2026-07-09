@@ -4,46 +4,59 @@ title: ICM logout returns to login page
 priority: P0
 category: logout
 preconditions:
-  - "The system is already on the logged-in homepage."
+- The browser starts from the ICM login page.
+test_data:
+  username: admin
+  password: Hubble_Service!1088
 steps:
-  - "Wait for homepage loading to finish."
-  - "Click the top-right avatar."
-  - "Click Logout."
-  - "Click Confirm in the logout dialog."
+- Fill account with `admin` and password with the case password, then click login.
+- Wait for homepage loading to finish.
+- Click the top-right avatar.
+- Click Logout.
+- Click Confirm in the logout dialog.
 expected_results:
-  - "The page returns to login."
-  - "Account, password, and login controls are visible again."
+- '#/login'
+- The page returns to login.
+- Account, password, and login controls are visible again.
 failure_signals:
-  - "The logout menu does not open."
-  - "The page stays on the homepage after confirmation."
-  - "The final page is not the login page."
+- The logout menu does not open.
+- The page stays on the homepage after confirmation.
+- The final page is not the login page.
 evidence_points:
-  - "01-entry.png: homepage loaded"
-  - "02-action.png: logout confirmation dialog"
-  - "03-final.png: returned login page"
+- '01-entry.png: homepage loaded'
+- '02-action.png: logout confirmation dialog'
+- '03-final.png: returned login page'
 risk_notes:
-  - "This flow includes a second confirmation dialog. The dialog itself is not a successful logout."
+- This flow includes a second confirmation dialog. The dialog itself is not a successful logout.
 automation_asset:
   operation_steps:
-    - "Ensure the session is already logged in on the homepage."
-    - "Click the user avatar in the top-right corner."
-    - "Choose Logout from the dropdown menu."
-    - "Confirm the logout dialog."
-    - "Wait for the login page to reappear."
+  - Fill the account input with `admin`.
+  - Fill the password input with the case password.
+  - Click login and wait until the homepage is visible.
+  - Click the user avatar in the top-right corner.
+  - Choose Logout from the dropdown menu.
+  - Confirm the logout dialog.
+  - Wait for the login page to reappear.
   selectors:
     user_avatar:
-      - "img.user-avatar"
+    - img.user-avatar
     logout_menu_item:
-      - "text=退出登录"
-      - "text=退出"
+    - text=退出登录
+    - text=退出
     confirm_button:
-      - "button[text=确定]"
-      - "button:has-text(确定)"
+    - button[text=确定]
+    - button:has-text(确定)
     login_controls:
-      - "placeholder=账号"
-      - "placeholder=密码"
+    - placeholder=账号
+    - placeholder=密码
   input_values: {}
   assertions:
-    - "The login controls are visible again after confirmation."
-    - "The login page shows account and password controls again."
-    - "The page does not stay on the homepage."
+  - The final URL contains `#/login` after logout confirmation.
+  - Do not finish this case while still on the login page before logging in and opening the homepage.
+  - The homepage is visible before opening the logout menu.
+  - The login controls are visible again after confirmation.
+  - The login page shows account and password controls again.
+  - The page does not stay on the homepage.
+  - Click `Confirm` in the logout dialog.
+  - Decide whether the page returned to login and whether account, password, and login controls are visible again.
+  - 'Keep 3 screenshots: homepage, logout confirm dialog, returned login page.'

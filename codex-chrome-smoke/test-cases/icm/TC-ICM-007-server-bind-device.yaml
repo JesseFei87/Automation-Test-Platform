@@ -1,59 +1,59 @@
-﻿id: TC-ICM-007
+id: TC-ICM-007
 system: icm-internal
 title: ICM bind device to server
 priority: P0
 category: action
 preconditions:
-  - "This case must be run after TC-ICM-006 in the same batch."
-  - "The system is logged in as admin."
-  - "The server information page is reachable."
-  - "The device Test_Ins01 already exists."
+- This case must be run after TC-ICM-006 in the same batch.
+- The system is logged in as admin.
+- The server information page is reachable.
+- The device Test_Ins01 already exists.
 steps:
-  - "Open ICM > Server Information."
-  - "Click Edit/Modify for the target server."
-  - "Search for Test_Ins01 in the bound device selector."
-  - "Check the device and confirm the change."
+- Open ICM > Server Information.
+- Click Edit/Modify for the target server.
+- Search for Test_Ins01 in the bound device selector.
+- Check the device and confirm the change.
 expected_results:
-  - "The server is updated with Test_Ins01 bound to it."
-  - "The bound device appears in the server's device list or binding area."
+- The server is updated with Test_Ins01 bound to it.
+- The bound device appears in the server's device list or binding area.
 failure_signals:
-  - "The edit dialog cannot be opened."
-  - "The device cannot be found in the binding selector."
-  - "The save action fails or the binding is not persisted."
+- The edit dialog cannot be opened.
+- The device cannot be found in the binding selector.
+- The save action fails or the binding is not persisted.
 evidence_points:
-  - "01-entry.png: server list before edit"
-  - "02-action.png: selected device in binding dialog"
-  - "03-final.png: saved server binding state"
+- '01-entry.png: server list before edit'
+- '02-action.png: selected device in binding dialog'
+- '03-final.png: saved server binding state'
 risk_notes:
-  - "The target server name should stay fixed for the whole batch."
-  - "If the binding area is a modal, drawer, or tab panel, capture the actual visible form."
+- The target server name should stay fixed for the whole batch.
+- If the binding area is a modal, drawer, or tab panel, capture the actual visible form.
 automation_asset:
   operation_steps:
-    - "Ensure the session is already logged in as admin."
-    - "Open ICM > Server Information at #/hubble/server."
-    - "Click Modify for the target server row."
-    - "Search for Test_Ins01 in the bound device selector."
-    - "Check the device and confirm the change."
-    - "Verify the success message or binding state refreshes."
+  - Ensure the session is already logged in as admin.
+  - 'Open ICM > Server Information at #/hubble/server.'
+  - Click Modify for the target server row.
+  - Search for Test_Ins01 in the bound device selector.
+  - Check the device and confirm the change.
+  - Verify the success message or binding state refreshes.
   selectors:
     server_list_url:
-      - "#/hubble/server"
+    - '#/hubble/server'
     server_row:
-      - "tr:has-text(Test Server#203)"
+    - tr:has-text(Test Server#203)
     modify_button:
-    modify_button:
-      - "text=修改"
-      - "button:has-text(修改)"
+    - text=修改
+    - button:has-text(修改)
     device_search_input:
-      - "placeholder=请输入设备名称"
+    - placeholder=请输入设备名称
     device_row_checkbox:
-      - "xpath=(//tr[contains(., \"Test_Ins01\")]//label[contains(@class,\"el-checkbox\")])[1]"
+    - xpath=(//tr[contains(., "Test_Ins01")]//label[contains(@class,"el-checkbox")])[1]
     confirm_button:
-      - "button[text=确定]"
-      - "button:has-text(确定)"
-    device_name: "Test_Ins01"
-    server_name: "Test Server#203"
+    - button[text=确定]
+    - button:has-text(确定)
+    device_name: Test_Ins01
+    server_name: Test Server#203
   assertions:
-    - "The server edit dialog can be opened."
-    - "The selected device appears in the binding area or the save action succeeds."
-    - "The final state shows the binding was persisted."
+  - The server edit dialog can be opened.
+  - The selected device appears in the binding area or the save action succeeds.
+  - The final state shows the binding was persisted.
+  - Check the device and confirm the save.

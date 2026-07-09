@@ -4,74 +4,75 @@ title: ICM cleanup user and device bindings
 priority: P0
 category: action
 preconditions:
-  - "This case must be run after TC-ICM-010 in the same batch."
-  - "The system is logged in as admin with a locally configured password."
-  - "The Tester user exists."
-  - "The device Test_Ins01 exists."
-  - "The target server Test Server#203 exists."
+- This case must be run after TC-ICM-010 in the same batch.
+- The system is logged in as admin with a locally configured password.
+- The Tester user exists.
+- The device Test_Ins01 exists.
+- The target server Test Server#203 exists.
 steps:
-  - "Open System Management > User Management."
-  - "Delete the Tester user."
-  - "Open ICM > Device Information and delete Test_Ins01."
-  - "Open ICM > Server Information and edit Test Server#203."
-  - "Search for Test_Ins01 in the bound device area."
-  - "Confirm that Test_Ins01 cannot be found."
-  - "Exit the server edit dialog without leaving it open."
+- Open System Management > User Management.
+- Delete the Tester user.
+- Open ICM > Device Information and delete Test_Ins01.
+- Open ICM > Server Information and edit Test Server#203.
+- Search for Test_Ins01 in the bound device area.
+- Confirm that Test_Ins01 cannot be found.
+- Exit the server edit dialog without leaving it open.
 expected_results:
-  - "The Tester user is removed."
-  - "The device Test_Ins01 is removed."
-  - "The server binding area no longer shows or returns Test_Ins01."
+- The Tester user is removed.
+- The device Test_Ins01 is removed.
+- The server binding area no longer shows or returns Test_Ins01.
 failure_signals:
-  - "The Tester user cannot be deleted."
-  - "The device cannot be removed."
-  - "The server still shows Test_Ins01 in bound device search results."
+- The Tester user cannot be deleted.
+- The device cannot be removed.
+- The server still shows Test_Ins01 in bound device search results.
 evidence_points:
-  - "01-entry.png: before cleanup"
-  - "02-action.png: server binding search showing the cleanup result"
-  - "03-final.png: after closing the dialog"
+- '01-entry.png: before cleanup'
+- '02-action.png: server binding search showing the cleanup result'
+- '03-final.png: after closing the dialog'
 risk_notes:
-  - "This is a cleanup and verification case, so the search result being empty is the key success signal."
-  - "If the server dialog keeps the binding area open after the search, record that state in the final screenshot and report."
+- This is a cleanup and verification case, so the search result being empty is the key success signal.
+- If the server dialog keeps the binding area open after the search, record that state in the final screenshot and report.
 automation_asset:
   operation_steps:
-    - "Ensure the session is already logged in as admin."
-    - "Open System Management > User Management at #/system/user."
-    - "Delete the Tester user if it still exists."
-    - "Open ICM > Device Information and search for Test_Ins01 by device name."
-    - "Click Search."
-    - "Delete Test_Ins01 if the search returns a matching row."
-    - "Open ICM > Server Information at #/hubble/server and edit Test Server#203."
-    - "Search for Test_Ins01 in the bound device area."
-    - "Confirm that Test_Ins01 cannot be found."
+  - Ensure the session is already logged in as admin.
+  - 'Open System Management > User Management at #/system/user.'
+  - Delete the Tester user if it still exists.
+  - Open ICM > Device Information and search for Test_Ins01 by device name.
+  - Click Search.
+  - Delete Test_Ins01 if the search returns a matching row.
+  - 'Open ICM > Server Information at #/hubble/server and edit Test Server#203.'
+  - Search for Test_Ins01 in the bound device area.
+  - Confirm that Test_Ins01 cannot be found.
   selectors:
     user_list_url:
-      - "#/system/user"
+    - '#/system/user'
     tester_row:
-      - "tr:has-text(Tester)"
+    - tr:has-text(Tester)
     delete_button:
-      - "button:has-text(Delete)"
-      - "text=Delete"
+    - button:has-text(Delete)
+    - text=Delete
     device_list_url:
-      - "#/hubble/device"
+    - '#/hubble/device'
     device_row:
-      - "tr:has-text(Test_Ins01)"
+    - tr:has-text(Test_Ins01)
     device_search_input:
-      - "placeholder=\u8f93\u5165\u8bbe\u5907\u540d\u79f0"
-      - "placeholder=\u8bf7\u8f93\u5165\u8bbe\u5907\u540d\u79f0"
+    - placeholder=输入设备名称
+    - placeholder=请输入设备名称
     search_button:
-      - "button:has-text(\u641c\u7d22)"
-      - "button:has-text(\u67e5\u8be2)"
+    - button:has-text(搜索)
+    - button:has-text(查询)
     server_list_url:
-      - "#/hubble/server"
+    - '#/hubble/server'
     server_row:
-      - "tr:has-text(Test Server#203)"
+    - tr:has-text(Test Server#203)
     modify_button:
-      - "button:has-text(Edit)"
+    - button:has-text(Edit)
   input_values:
-    tester_user: "Tester"
-    device_name: "Test_Ins01"
-    server_name: "Test Server#203"
+    tester_user: Tester
+    device_name: Test_Ins01
+    server_name: Test Server#203
   assertions:
-    - "The Tester user is removed."
-    - "The device Test_Ins01 is removed."
-    - "The server edit dialog no longer returns Test_Ins01 in the bound device search."
+  - The Tester user is removed.
+  - The device Test_Ins01 is removed.
+  - The server edit dialog no longer returns Test_Ins01 in the bound device search.
+  - Confirm that `Test_Ins01` cannot be found.
