@@ -6,6 +6,7 @@ from runner.agent_stage_router import (
     _is_icm_device_create_case,
     _run_account_switch,
     _run_detail_assert,
+    _run_login_guard,
     _run_logout_prompt,
     _run_user_device_binding,
     parse_case_test_data,
@@ -381,6 +382,32 @@ def test_run_detail_assert_passes_when_all_screen_wall_devices_are_visible(monke
     assert error == ""
     assert history[0]["execution"]["result"] == "detail_assert_passed"
     assert history[0]["decision"]["value"] == "AU5800、AU5800(2)、DxI(1)、DxI(2)"
+
+
+def test_run_detail_assert_passes_when_logout_returns_to_login(monkeypatch):
+    class FakePage:
+        url = "https://example.test/#/login?redirect=%2Fredirect"
+
+    async def fake_record(_page, decision, execution, _observe_page):
+        return {"decision": decision, "execution": execution}
+
+    async def fake_observe_page(_page):
+        return {}
+
+    monkeypatch.setattr("runner.agent_stage_router._record", fake_record)
+    monkeypatch.setattr("runner.agent_explore.observe_page", fake_observe_page)
+
+    history, error = asyncio.run(
+        _run_detail_assert(
+            FakePage(),
+            {"steps": ["login", "click logout", "confirm logout"]},
+            {"success_signals": ["page redirects to login"]},
+        )
+    )
+
+    assert error == ""
+    assert history[0]["decision"]["action"] == "assert_url"
+    assert history[0]["decision"]["value"] == "#/login"
 
 
 def test_run_user_device_binding_prefers_checkbox_and_verifies_checked(monkeypatch):
@@ -961,28 +988,59 @@ def test_run_account_switch_emits_logout_and_login_records(monkeypatch):
     assert history[1]["decision"]["reason"] == "?? test ????"
 
 
+def test_run_login_guard_records_one_screenshot_checkpoint_per_source_step(monkeypatch):
+    recorded: list[dict] = []
+
+    async def fake_record(_page, decision, execution, _observe_page):
+        payload = {"decision": decision, "execution": execution, "screenshot_name": f"agent-step-{len(recorded) + 1:02d}.png"}
+        recorded.append(payload)
+        return payload
+
+    async def fake_perform_login(_page, _system, username=None, password=None, checkpoint=None):
+        assert username == "test"
+        assert password == "123456"
+        assert checkpoint is not None
+        for name in ("login_page_opened", "credentials_filled", "login_completed"):
+            await checkpoint(name)
+
+    monkeypatch.setattr("runner.agent_stage_router._record", fake_record)
+    monkeypatch.setattr("runner.agent_stage_router.perform_login", fake_perform_login)
+    monkeypatch.setattr("runner.agent_stage_router.resolve_case_login_credentials", lambda _case, _system: ("test", "123456"))
+
+    history, error = asyncio.run(_run_login_guard(object(), {}, {"id": "LOGIN_FUN_002"}))
+
+    assert error == ""
+    assert [item["execution"]["result"] for item in history] == [
+        "login_page_opened",
+        "login_credentials_filled",
+        "login_guard_passed",
+    ]
+    assert [item["screenshot_name"] for item in history] == ["agent-step-01.png", "agent-step-02.png", "agent-step-03.png"]
+
+
 def test_run_logout_prompt_emits_screenshot_record(monkeypatch):
     recorded: list[dict] = []
 
-    async def fake_open_logout_menu(_page, _system):
+    async def fake_open_screen_wall_logout_prompt(_page):
         return True
-
-    async def fake_click_first(_page, selectors):
-        recorded.append({"clicked": selectors})
 
     async def fake_first_visible(_page, selectors):
         recorded.append({"dialog_probe": selectors})
-        return object()
+        return FakeLogoutEntry() if len(recorded) == 1 else object()
 
     async def fake_record(_page, decision, execution, _observe_page):
         payload = {"decision": decision, "execution": execution, "screenshot_name": "agent-step-02.png"}
         recorded.append(payload)
         return payload
 
-    monkeypatch.setattr("runner.agent_stage_router._open_logout_menu", fake_open_logout_menu)
-    monkeypatch.setattr("runner.agent_stage_router.click_first", fake_click_first)
+    monkeypatch.setattr("runner.agent_stage_router._open_screen_wall_logout_prompt", fake_open_screen_wall_logout_prompt)
     monkeypatch.setattr("runner.agent_stage_router.first_visible", fake_first_visible)
     monkeypatch.setattr("runner.agent_stage_router._record", fake_record)
+
+    class FakeLogoutEntry:
+        async def click(self, force=False):
+            assert force is True
+            recorded.append({"clicked": "logout"})
 
     class FakePage:
         async def wait_for_timeout(self, _ms):
@@ -993,6 +1051,26 @@ def test_run_logout_prompt_emits_screenshot_record(monkeypatch):
     assert error == ""
     assert history[0]["execution"]["result"] == "logout_prompt_opened"
     assert history[0]["screenshot_name"] == "agent-step-02.png"
+
+
+def test_run_logout_prompt_reports_missing_user_visible_logout_action(monkeypatch):
+    async def fake_open_screen_wall_logout_prompt(_page):
+        return False
+
+    async def fake_open_logout_menu(_page, _system):
+        return True
+
+    async def fake_first_visible(_page, _selectors):
+        return None
+
+    monkeypatch.setattr("runner.agent_stage_router._open_screen_wall_logout_prompt", fake_open_screen_wall_logout_prompt)
+    monkeypatch.setattr("runner.agent_stage_router._open_logout_menu", fake_open_logout_menu)
+    monkeypatch.setattr("runner.agent_stage_router.first_visible", fake_first_visible)
+
+    history, error = asyncio.run(_run_logout_prompt(object(), {}))
+
+    assert history == []
+    assert "user-visible logout action" in error
 
 
 
@@ -1020,7 +1098,10 @@ def test_agent_stage_router_user_visible_strings_are_chinese():
         async def observe(_page):
             return {}
 
-        async def noop_login(*_args, **_kwargs):
+        async def noop_login(*_args, **kwargs):
+            checkpoint = kwargs.get("checkpoint")
+            if checkpoint:
+                await checkpoint("login_completed")
             return None
 
         # Patch perform_login / ensure_logged_out / goto_route so the call path runs without a real browser.

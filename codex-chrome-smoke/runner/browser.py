@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import base64
+import asyncio
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Awaitable, Callable, Iterable
 import shutil
 import time
+from urllib.parse import urlparse
 
 import yaml
 from playwright.async_api import Browser, BrowserContext, Locator, Page, Playwright, async_playwright
@@ -30,6 +32,81 @@ class BrowserSession:
     browser: Browser
     context: BrowserContext
     page: Page
+    headless: bool = False
+    maximize_window: bool = False
+    viewport_mode: str = "fixed"
+    viewport_width: int = 1600
+    viewport_height: int = 1100
+    ignore_https_errors: bool = True
+    attached_over_cdp: bool = False
+
+
+async def _maximize_browser_window(page: Page) -> None:
+    """Use Chromium's window API because --start-maximized is not always honored on Windows."""
+    cdp = await page.context.new_cdp_session(page)
+    target = await cdp.send("Target.getTargetInfo")
+    target_id = target.get("targetInfo", {}).get("targetId")
+    if not target_id:
+        raise RuntimeError("Chromium target id unavailable for window maximization")
+    window = await cdp.send("Browser.getWindowForTarget", {"targetId": target_id})
+    await cdp.send(
+        "Browser.setWindowBounds",
+        {"windowId": window["windowId"], "bounds": {"windowState": "maximized"}},
+    )
+
+
+async def _sync_window_viewport(page: Page) -> None:
+    """Refresh Chromium metrics after an OS window resize."""
+    cdp = await page.context.new_cdp_session(page)
+    target = await cdp.send("Target.getTargetInfo")
+    target_id = target.get("targetInfo", {}).get("targetId")
+    if not target_id:
+        raise RuntimeError("Chromium target id unavailable for viewport synchronization")
+    window = await cdp.send("Browser.getWindowForTarget", {"targetId": target_id})
+    bounds = window.get("bounds", {})
+    width = max(320, int(bounds.get("width") or 1280) - 16)
+    height = max(240, int(bounds.get("height") or 720) - 16)
+    await cdp.send(
+        "Emulation.setDeviceMetricsOverride",
+        {"width": width, "height": height, "deviceScaleFactor": 1, "mobile": False},
+    )
+
+
+def _fixed_viewport(width: int, height: int) -> dict[str, int]:
+    return {
+        "width": max(320, min(7680, int(width))),
+        "height": max(240, min(4320, int(height))),
+    }
+
+
+async def _prepare_page_window_viewport(page: Page, *, headless: bool, maximize_window: bool, viewport_mode: str) -> None:
+    if maximize_window and not headless:
+        try:
+            await _maximize_browser_window(page)
+        except Exception as exc:
+            print(f"[runner] browser maximize failed: {exc}", flush=True)
+    if viewport_mode == "window":
+        try:
+            await _sync_window_viewport(page)
+        except Exception as exc:
+            print(f"[runner] window viewport sync failed: {exc}", flush=True)
+
+
+def _attach_window_viewport_resync(page: Page, *, headless: bool, maximize_window: bool, viewport_mode: str) -> None:
+    if viewport_mode != "window":
+        return
+
+    def schedule_resync(_event: object | None = None) -> None:
+        asyncio.create_task(
+            _prepare_page_window_viewport(
+                page,
+                headless=headless,
+                maximize_window=maximize_window,
+                viewport_mode=viewport_mode,
+            )
+        )
+
+    page.on("load", schedule_resync)
 
 
 # 路线 B · T6：依据 (system, account) 推导 user_key，用于 storage_state 文件名
@@ -74,25 +151,69 @@ async def save_storage_state(context: BrowserContext, system: dict[str, Any]) ->
         return None
 
 
+def _configured_storage_state_path(system: dict[str, Any]) -> Path | None:
+    value = str(system.get("storage_state") or "").strip()
+    if not value:
+        return None
+    path = Path(value)
+    return path if path.is_absolute() else ROOT / path
+
+
+def _legacy_storage_state_candidates(system: dict[str, Any]) -> list[Path]:
+    candidates: list[Path] = []
+    login = system.get("login") or {}
+    username = str(login.get("username") or "").strip()
+    if username:
+        for account_name in _ACCOUNT_PRIORITY:
+            candidates.append(AUTH_STATE_DIR / f"icm-internal_{account_name}_{username}.json")
+    candidates.extend(sorted(AUTH_STATE_DIR.glob("icm-internal_*.json")) if AUTH_STATE_DIR.exists() else [])
+    return candidates
+
+
+def _storage_state_path_for_launch(system: dict[str, Any]) -> Path | None:
+    configured = _configured_storage_state_path(system)
+    if configured and configured.exists():
+        return configured
+    for candidate in _legacy_storage_state_candidates(system):
+        if candidate.exists():
+            return candidate
+    derived = auth_state_path_for(system)
+    return derived if derived.exists() else None
+
+
 async def relaunch_context(
     session: "BrowserSession",
     system: dict[str, Any] | None = None,
     *,
+    storage_state: str | None = None,
     reuse_storage_state: bool = True,
 ) -> None:
     """关闭当前 context，新建一个。如果 system 有 storage_state 落盘则加载复用。"""
     old_context = session.context
-    storage_state_arg: str | None = None
-    if reuse_storage_state and system is not None:
-        path = auth_state_path_for(system)
-        if path.exists():
+    storage_state_arg: str | None = storage_state
+    if not storage_state_arg and reuse_storage_state and system is not None:
+        path = _storage_state_path_for_launch(system)
+        if path:
             storage_state_arg = str(path)
+    viewport = None if session.viewport_mode == "window" else _fixed_viewport(session.viewport_width, session.viewport_height)
     new_context = await session.browser.new_context(
         storage_state=storage_state_arg,
-        viewport={"width": 1600, "height": 1100},
-        ignore_https_errors=True,
+        viewport=viewport,
+        ignore_https_errors=session.ignore_https_errors,
     )
     new_page = await new_context.new_page()
+    await _prepare_page_window_viewport(
+        new_page,
+        headless=session.headless,
+        maximize_window=session.maximize_window,
+        viewport_mode=session.viewport_mode,
+    )
+    _attach_window_viewport_resync(
+        new_page,
+        headless=session.headless,
+        maximize_window=session.maximize_window,
+        viewport_mode=session.viewport_mode,
+    )
     try:
         await old_context.close()
     except Exception:
@@ -186,7 +307,13 @@ async def launch_browser(
     headless: bool = False,
     system: dict[str, Any] | None = None,
     *,
+    storage_state: str | None = None,
     reuse_storage_state: bool = True,
+    maximize_window: bool = False,
+    viewport_mode: str = "fixed",
+    viewport_width: int = 1600,
+    viewport_height: int = 1100,
+    ignore_https_errors: bool = True,
 ) -> BrowserSession:
     """系统级启动浏览器。
 
@@ -195,24 +322,88 @@ async def launch_browser(
     """
     playwright = await async_playwright().start()
     try:
-        browser = await playwright.chromium.launch(channel="chrome", headless=headless)
+        launch_args = ["--start-maximized"] if maximize_window else []
+        browser = await playwright.chromium.launch(channel="chrome", headless=headless, args=launch_args)
     except Exception:
-        browser = await playwright.chromium.launch(headless=headless)
-    storage_state_arg: str | None = None
-    if reuse_storage_state and system is not None:
-        path = auth_state_path_for(system)
-        if path.exists():
+        launch_args = ["--start-maximized"] if maximize_window else []
+        browser = await playwright.chromium.launch(headless=headless, args=launch_args)
+    storage_state_arg: str | None = storage_state
+    if not storage_state_arg and reuse_storage_state and system is not None:
+        path = _storage_state_path_for_launch(system)
+        if path:
             storage_state_arg = str(path)
+    viewport = None if viewport_mode == "window" else _fixed_viewport(viewport_width, viewport_height)
     context = await browser.new_context(
         storage_state=storage_state_arg,
-        viewport={"width": 1600, "height": 1100},
-        ignore_https_errors=True,
+        viewport=viewport,
+        ignore_https_errors=ignore_https_errors,
     )
     page = await context.new_page()
-    return BrowserSession(playwright=playwright, browser=browser, context=context, page=page)
+    await _prepare_page_window_viewport(
+        page,
+        headless=headless,
+        maximize_window=maximize_window,
+        viewport_mode=viewport_mode,
+    )
+    _attach_window_viewport_resync(
+        page,
+        headless=headless,
+        maximize_window=maximize_window,
+        viewport_mode=viewport_mode,
+    )
+    return BrowserSession(
+        playwright=playwright,
+        browser=browser,
+        context=context,
+        page=page,
+        headless=headless,
+        maximize_window=maximize_window,
+        viewport_mode=viewport_mode,
+        viewport_width=viewport_width,
+        viewport_height=viewport_height,
+        ignore_https_errors=ignore_https_errors,
+    )
+
+
+def _is_local_cdp_endpoint(endpoint: str) -> bool:
+    parsed = urlparse(endpoint)
+    return parsed.scheme in {"http", "https"} and parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+
+
+async def attach_browser_over_cdp(endpoint: str) -> BrowserSession:
+    """Attach a scanner tab to a locally running, dedicated Chrome profile."""
+    cdp_endpoint = str(endpoint or "").strip()
+    if not _is_local_cdp_endpoint(cdp_endpoint):
+        raise ValueError("cdp_endpoint must use a loopback host such as http://127.0.0.1:9222")
+    playwright = await async_playwright().start()
+    try:
+        browser = await playwright.chromium.connect_over_cdp(cdp_endpoint)
+        contexts = list(browser.contexts)
+        if not contexts:
+            raise RuntimeError("CDP Chrome has no browser context")
+        context = contexts[0]
+        page = await context.new_page()
+        return BrowserSession(
+            playwright=playwright,
+            browser=browser,
+            context=context,
+            page=page,
+            headless=False,
+            viewport_mode="window",
+            attached_over_cdp=True,
+        )
+    except Exception:
+        await playwright.stop()
+        raise
 
 
 async def close_browser(session: BrowserSession) -> None:
+    if session.attached_over_cdp:
+        try:
+            await session.page.close()
+        finally:
+            await session.playwright.stop()
+        return
     await session.context.close()
     await session.browser.close()
     await session.playwright.stop()
@@ -746,6 +937,19 @@ async def _open_logout_menu(page: Page, system: dict[str, Any]) -> bool:
     return False
 
 
+async def _open_screen_wall_logout_prompt(page: Page) -> bool:
+    """Open the screen-wall logout confirmation through its icon-only header control."""
+    if "#/icm" not in str(page.url or ""):
+        return False
+    control = page.locator(".top_button > img.el-tooltip.button:nth-of-type(1)").first
+    try:
+        await control.wait_for(state="visible", timeout=2000)
+        await control.click(force=True)
+        return True
+    except Exception:
+        return False
+
+
 async def _wait_for_expected_username(page: Page, system: dict[str, Any], expected_username: str, timeout_ms: int = 20000) -> None:
     deadline = time.monotonic() + timeout_ms / 1000
     mismatch_username: str | None = None
@@ -761,7 +965,13 @@ async def _wait_for_expected_username(page: Page, system: dict[str, Any], expect
     raise RuntimeError(f"Login did not reach expected account: {expected_username}")
 
 
-async def perform_login(page: Page, system: dict[str, Any], username: str | None = None, password: str | None = None) -> None:
+async def perform_login(
+    page: Page,
+    system: dict[str, Any],
+    username: str | None = None,
+    password: str | None = None,
+    checkpoint: Callable[[str], Awaitable[None]] | None = None,
+) -> None:
     expected_username = username or system["credentials"]["username"]
     expected_password = password or system["credentials"]["password"]
     await open_login_page(page, system)
@@ -770,19 +980,27 @@ async def perform_login(page: Page, system: dict[str, Any], username: str | None
         evidence = get_evidence_recorder(page)
         if evidence:
             evidence.event(page, "login_probe", "already logged in with expected account", value=expected_username)
+        if checkpoint:
+            await checkpoint("already_logged_in")
         return
     if current_username and current_username != expected_username:
         await ensure_logged_out(page, system)
         await open_login_page(page, system)
     usernames, passwords, submits = _login_labels(system)
+    if checkpoint:
+        await checkpoint("login_page_opened")
     await fill_first(page, usernames, expected_username)
     await fill_first(page, passwords, expected_password)
+    if checkpoint:
+        await checkpoint("credentials_filled")
     await click_first(page, submits)
     try:
         await page.wait_for_url("**/#/index**", timeout=20000)
     except Exception:
         await page.wait_for_timeout(1000)
     await _wait_for_expected_username(page, system, expected_username)
+    if checkpoint:
+        await checkpoint("login_completed")
 
 
 async def ensure_logged_in(page: Page, system: dict[str, Any], username: str | None = None, password: str | None = None) -> None:

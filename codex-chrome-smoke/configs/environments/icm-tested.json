@@ -1,0 +1,175 @@
+{
+  "id": "icm-tested",
+  "name": "ICM tested system",
+  "element_knowledge_scan_enabled": true,
+  "auth_mode": "cdp_attach",
+  "cdp_endpoint": "http://127.0.0.1:9222",
+  "auto_discover_routes": true,
+  "route_discovery_max_actions": 24,
+  "route_discovery_max_pages": 20,
+  "state_scan_max_states": 8,
+  "state_scan_max_per_kind": 2,
+  "base_url": "https://192.168.16.203:49187",
+  "headless": false,
+  "storage_state": "platform-data/auth/icm-tested-admin.json",
+  "login": {
+    "url": "https://192.168.16.203:49187/#/login?redirect=%2Fredirect",
+    "username": "admin",
+    "password": "[ENV:ICM_ADMIN_PASSWORD]",
+    "username_selector": "form input[type=\"text\"]",
+    "password_selector": "form input[type=\"password\"]",
+    "submit_selector": "form button.el-button--primary",
+    "check_url": "https://192.168.16.203:49187/#/index",
+    "success_url_contains": "#/index"
+  },
+  "verified_menu_routes": [
+    {"name": "智控中台", "path": "/#/", "canonical_page_id": "home"},
+    {"name": "首页", "path": "/#/index", "canonical_page_id": "home"},
+    {"name": "用户管理", "path": "/#/system/user", "canonical_page_id": "user_management"},
+    {"name": "角色管理", "path": "/#/system/role", "canonical_page_id": "role_management"},
+    {"name": "菜单管理", "path": "/#/system/menu", "canonical_page_id": "menu_management"},
+    {"name": "部门管理", "path": "/#/system/dept", "canonical_page_id": "department_management"},
+    {"name": "岗位管理", "path": "/#/system/post", "canonical_page_id": "post_management"},
+    {"name": "字典管理", "path": "/#/system/dict", "canonical_page_id": "dictionary_management"},
+    {"name": "参数设置", "path": "/#/system/config", "canonical_page_id": "system_config"},
+    {"name": "通知公告", "path": "/#/system/notice", "canonical_page_id": "notice_management"},
+    {"name": "操作日志", "path": "/#/system/log/operlog", "canonical_page_id": "operation_log"},
+    {"name": "登录日志", "path": "/#/system/log/logininfor", "canonical_page_id": "login_log"},
+    {"name": "在线用户", "path": "/#/monitor/online", "canonical_page_id": "online_users"},
+    {"name": "定时任务", "path": "/#/monitor/job", "canonical_page_id": "scheduled_jobs"},
+    {"name": "缓存列表", "path": "/#/monitor/cacheList", "canonical_page_id": "cache_list"},
+    {"name": "设备列表", "path": "/#/maintain/deviceList", "canonical_page_id": "device_list"},
+    {"name": "激活信息", "path": "/#/hubble/active", "canonical_page_id": "activation_info"},
+    {"name": "连接类型", "path": "/#/hubble/connType", "canonical_page_id": "connection_types"},
+    {"name": "文件传输日志", "path": "/#/hubble/fileTrans", "canonical_page_id": "file_transfer_log"},
+    {"name": "设备类型", "path": "/#/hubble/deviceType", "canonical_page_id": "device_types"},
+    {"name": "设备信息", "path": "/#/hubble/device", "canonical_page_id": "device_information"},
+    {"name": "服务器信息", "path": "/#/hubble/server", "canonical_page_id": "server_information"},
+    {"name": "远程协助信息", "path": "/#/hubble/remoteHelpInfo", "canonical_page_id": "remote_assistance_information"},
+    {"name": "个人中心", "path": "/#/user/profile", "canonical_page_id": "user_profile"}
+  ],
+  "pages": [
+    {
+      "page_id": "home",
+      "name": "首页",
+      "path": "/#/index",
+      "minimum_interactive_count": 10
+    },
+    {
+      "page_id": "user_management",
+      "name": "用户管理",
+      "path": "/#/system/user",
+      "minimum_interactive_count": 30,
+      "ready_selector": ".app-main button:has-text('新增')",
+      "content_selector": ".app-main",
+      "minimum_content_interactive_count": 15
+    },
+    {
+      "page_id": "role_management",
+      "name": "角色管理",
+      "path": "/#/system/role"
+    },
+    {
+      "page_id": "menu_management",
+      "name": "菜单管理",
+      "path": "/#/system/menu"
+    },
+    {
+      "page_id": "department_management",
+      "name": "部门管理",
+      "path": "/#/system/dept"
+    },
+    {
+      "page_id": "post_management",
+      "name": "岗位管理",
+      "path": "/#/system/post"
+    },
+    {
+      "page_id": "dictionary_management",
+      "name": "字典管理",
+      "path": "/#/system/dict"
+    },
+    {
+      "page_id": "system_config",
+      "name": "参数设置",
+      "path": "/#/system/config"
+    },
+    {
+      "page_id": "notice_management",
+      "name": "通知公告",
+      "path": "/#/system/notice"
+    },
+    {
+      "page_id": "operation_log",
+      "name": "操作日志",
+      "path": "/#/system/log/operlog"
+    },
+    {
+      "page_id": "login_log",
+      "name": "登录日志",
+      "path": "/#/system/log/logininfor"
+    },
+    {
+      "page_id": "online_users",
+      "name": "在线用户",
+      "path": "/#/monitor/online"
+    },
+    {
+      "page_id": "scheduled_jobs",
+      "name": "定时任务",
+      "path": "/#/monitor/job"
+    },
+    {
+      "page_id": "cache_list",
+      "name": "缓存列表",
+      "path": "/#/monitor/cacheList"
+    },
+    {
+      "page_id": "device_list",
+      "name": "设备列表",
+      "path": "/#/maintain/deviceList",
+      "minimum_interactive_count": 30
+    },
+    {
+      "page_id": "activation_info",
+      "name": "激活信息",
+      "path": "/#/hubble/active"
+    },
+    {
+      "page_id": "connection_types",
+      "name": "连接类型",
+      "path": "/#/hubble/connType"
+    },
+    {
+      "page_id": "file_transfer_log",
+      "name": "文件传输日志",
+      "path": "/#/hubble/fileTrans"
+    },
+    {
+      "page_id": "device_types",
+      "name": "设备类型",
+      "path": "/#/hubble/deviceType"
+    },
+    {
+      "page_id": "device_information",
+      "name": "设备信息",
+      "path": "/#/hubble/device"
+    },
+    {
+      "page_id": "server_information",
+      "name": "服务器信息",
+      "path": "/#/hubble/server",
+      "minimum_interactive_count": 30
+    },
+    {
+      "page_id": "remote_assistance_information",
+      "name": "远程协助信息",
+      "path": "/#/hubble/remoteHelpInfo"
+    },
+    {
+      "page_id": "user_profile",
+      "name": "个人中心",
+      "path": "/#/user/profile"
+    }
+  ]
+}

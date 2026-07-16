@@ -1,0 +1,11 @@
+.pixel-blast-container {
+  width: 100%;
+  height: 100%;
+  position: relative;
+  overflow: hidden;
+  /* 让 click/pointer 事件能穿过外层 `pointer-events: none` 的 wrapper：
+     父元素 pointer-events: none 在 Chromium hit-test 阶段会触发"祖先优先"
+     优化——直接跳过整个子树。子元素显式 pointer-events: auto 可绕过此优化，
+     让 canvas 上的 pointerdown 真正传到 onPointerDown。 */
+  pointer-events: auto;
+}

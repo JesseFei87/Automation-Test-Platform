@@ -9,8 +9,10 @@ import { RequirementManagement } from "./pages/RequirementManagement";
 import { RequirementsWorkspace } from "./pages/RequirementsWorkspace";
 import { TestPointsMap } from "./pages/TestPointsMap";
 import { CaseToolbox } from "./pages/CaseToolbox";
+import { Recorder } from "./pages/Recorder";
 import { ExecutionCenter } from "./pages/ExecutionCenter";
 import { ReportDetail } from "./pages/ReportDetail";
+import { ElementKnowledge } from "./pages/ElementKnowledge";
 import { SystemSettings } from "./pages/SystemSettings";
 import { Login } from "./pages/Login";
 import { AuthProvider, useAuth } from "./data/authStore";
@@ -147,7 +149,7 @@ function UserMenuTrigger({
 //  路由状态机 + 弹窗状态
 // ============================================================
 const LAST_PAGE_STORAGE_KEY = "icm.currentPage";
-const PAGE_IDS: PageId[] = ["dashboard", "projects", "requirements", "ai-generate", "points", "cases", "execution", "reports", "settings"];
+const PAGE_IDS: PageId[] = ["dashboard", "projects", "requirements", "ai-generate", "points", "cases", "recorder", "execution", "reports", "element-knowledge", "settings"];
 
 function navKeyForPage(pageId: PageId, navKey?: PlatformNavKey): PlatformNavKey {
   return navKey || platformNavItems.find((candidate) => candidate.page === pageId)?.key || "dashboard";
@@ -312,8 +314,10 @@ function ShellApp() {
         ) : null}
         {page === "points" ? <TestPointsMap /> : null}
         {page === "cases" ? <CaseToolbox onRunCreated={openExecution} /> : null}
+        {page === "recorder" ? <Recorder /> : null}
         {page === "execution" ? <ExecutionCenter initialRunId={executionRunId} onOpenReport={openReport} onOpenCaseDraft={openCaseDraft} /> : null}
         {page === "reports" ? <ReportDetail initialRunId={reportRunId} /> : null}
+        {page === "element-knowledge" ? <ElementKnowledge /> : null}
         {page === "settings" ? <SystemSettings onAISettingsChange={refreshAISettings} /> : null}
       </main>
 

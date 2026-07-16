@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Card } from "../components/Card";
 import { StatusPill } from "../components/StatusPill";
-import { api, type AISettings, type OllamaModel, type PlatformSettings, type SystemHealth } from "../data/api";
+import { api, type AISettings, type ApiElementKnowledgeEnvironment, type ApiElementKnowledgeRefreshTask, type OllamaModel, type PlatformSettings, type SystemHealth } from "../data/api";
 
 const MODEL_PRESETS = {
   "minimax-m3": {
@@ -22,9 +22,13 @@ const DEFAULT_PLATFORM_SETTINGS: PlatformSettings = {
   runner: {
     browser_mode: "background",
     queue_mode: "serial",
-    batch_range: "TC-ICM-001..TC-ICM-012",
     screenshot_policy: "latest_plus_failed_archive",
     headless: true,
+    maximize_window: false,
+    viewport_mode: "fixed",
+    viewport_width: 1600,
+    viewport_height: 1100,
+    ignore_https_errors: true,
   },
   asset_policy: {
     observed_asset_enabled: true,
@@ -88,12 +92,87 @@ export function SystemSettings({ onAISettingsChange }: SystemSettingsProps) {
   const [ollamaModels, setOllamaModels] = useState<OllamaModel[]>([]);
   const [status, setStatus] = useState("正在读取系统设置...");
   const [aiActionNotice, setAiActionNotice] = useState("");
+  const [elementPreview, setElementPreview] = useState<ApiElementKnowledgeEnvironment[]>([]);
+  const [selectedElementEnvId, setSelectedElementEnvId] = useState("");
+  const [elementTargetUrl, setElementTargetUrl] = useState(DEFAULT_PLATFORM_SETTINGS.environment.icm_login_url);
+  const [elementTargetPageId, setElementTargetPageId] = useState("login");
+  const [elementTargetName, setElementTargetName] = useState("被测系统登录页");
+  const [elementTask, setElementTask] = useState<ApiElementKnowledgeRefreshTask | null>(null);
+  const [elementNotice, setElementNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [testingAIConnection, setTestingAIConnection] = useState(false);
 
   useEffect(() => {
     void loadSettings();
+    void loadElementPreview();
   }, []);
+
+  useEffect(() => {
+    if (!elementTask?.id || !["queued", "running"].includes(elementTask.status)) return;
+    const timer = window.setTimeout(() => {
+      void pollElementTask(elementTask.id);
+    }, 1200);
+    return () => window.clearTimeout(timer);
+  }, [elementTask?.id, elementTask?.status]);
+
+  async function loadElementPreview() {
+    try {
+      const result = await api.elementKnowledgeEnvironmentPreview();
+      setElementPreview(result);
+      if (!selectedElementEnvId && result[0]?.id) setSelectedElementEnvId(result[0].id);
+    } catch (error) {
+      setElementNotice(`读取元素知识库扫描环境失败：${error instanceof Error ? error.message : "unknown error"}`);
+    }
+  }
+
+  function applyElementTask(task: ApiElementKnowledgeRefreshTask) {
+    setElementTask(task);
+    if (["queued", "running"].includes(task.status)) {
+      setElementNotice(`扫描任务${task.status === "queued" ? "已排队" : "运行中"}：${task.id}`);
+      return;
+    }
+    if (task.status === "done" || task.status === "passed") {
+      setElementNotice(`扫描完成：${task.id}`);
+      void loadElementPreview();
+      return;
+    }
+    if (task.status === "failed") {
+      setElementNotice(`扫描失败：${task.error || "unknown error"}`);
+      return;
+    }
+    setElementNotice(`扫描任务状态：${task.status}`);
+  }
+
+  async function pollElementTask(taskId: string) {
+    try {
+      applyElementTask(await api.elementKnowledgeRefreshTask(taskId));
+    } catch (error) {
+      setElementNotice(`查询扫描任务失败：${error instanceof Error ? error.message : "unknown error"}`);
+    }
+  }
+
+  async function startElementScan() {
+    if (!elementTargetUrl.trim()) {
+      setElementNotice("请先填写要扫描的 target_url");
+      return;
+    }
+    setElementNotice("正在创建元素知识库扫描任务...");
+    try {
+      const task = await api.refreshElementKnowledge({
+        no_scan: false,
+        environment_id: selectedElementEnvId || undefined,
+        target_url: elementTargetUrl.trim(),
+        target_page_id: elementTargetPageId.trim() || "login",
+        target_name: elementTargetName.trim() || elementTargetPageId.trim() || "被测系统页面",
+        include_states: true,
+        headless: platformSettings.runner.headless,
+        min_healing_failures: 1,
+      });
+      applyElementTask(task);
+    } catch (error) {
+      setElementNotice(`创建扫描任务失败：${error instanceof Error ? error.message : "unknown error"}`);
+    }
+  }
 
   async function loadSettings() {
     setBusy(true);
@@ -260,6 +339,8 @@ export function SystemSettings({ onAISettingsChange }: SystemSettingsProps) {
       },
     }));
   }
+
+  const selectedElementEnv = elementPreview.find((item) => item.id === selectedElementEnvId);
 
   return (
     <div className="page settings-page">
@@ -449,6 +530,55 @@ export function SystemSettings({ onAISettingsChange }: SystemSettingsProps) {
         </Card>
 
         <Card
+          title="元素知识库扫描预览 / 验证"
+          subtitle="直接复用上方环境与账号配置，验证登录态并触发后台扫描刷新。"
+        >
+          <label className="field-label">扫描环境（可选，用于读取登录态配置）</label>
+          <select className="text-input" value={selectedElementEnvId} onChange={(event) => setSelectedElementEnvId(event.target.value)}>
+            <option value="">不使用环境页面清单</option>
+            {elementPreview.length ? elementPreview.map((item) => (
+              <option key={item.id} value={item.id}>{item.name || item.id}</option>
+            )) : null}
+          </select>
+
+          <label className="field-label">Target URL</label>
+          <input className="text-input" value={elementTargetUrl} onChange={(event) => setElementTargetUrl(event.target.value)} placeholder="https://host/#/login" />
+          <label className="field-label">Target Page ID</label>
+          <input className="text-input" value={elementTargetPageId} onChange={(event) => setElementTargetPageId(event.target.value)} placeholder="login" />
+          <label className="field-label">Target Name</label>
+          <input className="text-input" value={elementTargetName} onChange={(event) => setElementTargetName(event.target.value)} placeholder="被测系统登录页" />
+
+          <div className="health-grid">
+            <HealthLine label="配置来源" value={selectedElementEnv?.source || "-"} ok={Boolean(selectedElementEnv)} />
+            <HealthLine label="Base URL" value={selectedElementEnv?.base_url || "-"} ok={Boolean(selectedElementEnv?.base_url)} />
+            <HealthLine label="登录配置" value={selectedElementEnv?.login_configured ? "已配置登录页和账号" : "未配置登录"} ok={Boolean(selectedElementEnv?.login_configured)} />
+            <HealthLine label="Storage State" value={selectedElementEnv?.storage_state_updated_at || selectedElementEnv?.storage_state_path || selectedElementEnv?.storage_state || "未生成"} ok={Boolean(selectedElementEnv?.storage_state_exists)} />
+            <HealthLine label="扫描页面数" value={`${selectedElementEnv?.page_count ?? selectedElementEnv?.pages?.length ?? 0} 个页面`} ok={Boolean((selectedElementEnv?.page_count ?? selectedElementEnv?.pages?.length ?? 0) > 0)} />
+            <HealthLine label="任务状态" value={elementTask ? `${elementTask.id} · ${elementTask.status}` : "尚未触发"} ok={elementTask ? ["done", "passed"].includes(elementTask.status) : true} />
+          </div>
+
+          {elementTask?.progress ? (
+            <div className="settings-note settings-note--progress">
+              当前阶段：{elementTask.progress.stage || "-"}
+              {elementTask.progress.current_page ? `，页面：${elementTask.progress.current_page}` : ""}
+              {elementTask.progress.page_total ? `，进度：${elementTask.progress.page_index || 0}/${elementTask.progress.page_total}` : ""}
+              {typeof elementTask.progress.element_count === "number" ? `，元素：${elementTask.progress.element_count}` : ""}
+            </div>
+          ) : null}
+
+          {elementNotice ? <div className="settings-note">{elementNotice}</div> : null}
+
+          <div className="button-row">
+            <button className="btn btn--outline" disabled={busy} onClick={loadElementPreview} type="button">
+              刷新预览
+            </button>
+            <button className="btn btn--primary" disabled={busy || !elementTargetUrl.trim() || elementTask?.status === "queued" || elementTask?.status === "running"} onClick={startElementScan} type="button">
+              验证并扫描元素知识库
+            </button>
+          </div>
+        </Card>
+
+        <Card
           title="Runner 执行设置"
           subtitle="控制后台 runner 的运行方式；执行中心发起任务时会读取这些设置。"
         >
@@ -468,6 +598,61 @@ export function SystemSettings({ onAISettingsChange }: SystemSettingsProps) {
               : "可视化浏览器会自动使用 headless=false，方便观察调试过程。"}
           </div>
 
+          <label className="settings-check">
+            <input
+              type="checkbox"
+              checked={platformSettings.runner.maximize_window}
+              onChange={(event) => patchRunner({ maximize_window: event.target.checked })}
+            />
+            启动时最大化浏览器窗口
+          </label>
+
+          <label className="field-label">网页视口模式</label>
+          <select
+            className="text-input"
+            value={platformSettings.runner.viewport_mode}
+            onChange={(event) => patchRunner({ viewport_mode: event.target.value as "fixed" | "window" })}
+          >
+            <option value="fixed">固定视口</option>
+            <option value="window">跟随浏览器窗口</option>
+          </select>
+
+          {platformSettings.runner.viewport_mode === "fixed" ? (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+              <label className="field-label">
+                视口宽度
+                <input
+                  className="text-input"
+                  type="number"
+                  min="320"
+                  max="7680"
+                  value={platformSettings.runner.viewport_width}
+                  onChange={(event) => patchRunner({ viewport_width: Number(event.target.value) || 1600 })}
+                />
+              </label>
+              <label className="field-label">
+                视口高度
+                <input
+                  className="text-input"
+                  type="number"
+                  min="240"
+                  max="4320"
+                  value={platformSettings.runner.viewport_height}
+                  onChange={(event) => patchRunner({ viewport_height: Number(event.target.value) || 1100 })}
+                />
+              </label>
+            </div>
+          ) : null}
+
+          <label className="settings-check">
+            <input
+              type="checkbox"
+              checked={platformSettings.runner.ignore_https_errors}
+              onChange={(event) => patchRunner({ ignore_https_errors: event.target.checked })}
+            />
+            忽略 HTTPS 证书错误
+          </label>
+
           <label className="field-label">队列模式</label>
           <select
             className="text-input"
@@ -477,13 +662,6 @@ export function SystemSettings({ onAISettingsChange }: SystemSettingsProps) {
             <option value="serial">串行执行</option>
             <option value="limited_parallel">小并发预留</option>
           </select>
-
-          <label className="field-label">默认 Batch 范围</label>
-          <input
-            className="text-input"
-            value={platformSettings.runner.batch_range}
-            onChange={(event) => patchRunner({ batch_range: event.target.value })}
-          />
 
           <label className="field-label">截图策略</label>
           <select

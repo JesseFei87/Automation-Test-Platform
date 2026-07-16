@@ -6,6 +6,7 @@ from typing import Any
 
 from runner.browser import (
     _open_logout_menu,
+    _open_screen_wall_logout_prompt,
     click_first,
     click_first_in,
     ensure_logged_out,
@@ -552,8 +553,32 @@ async def _run_login_guard(page, system: dict[str, Any], case: dict[str, Any]) -
     username, password = resolve_case_login_credentials(case, system)
     if not username or not password:
         return [], "missing username or password for login stage"
-    await perform_login(page, system, username=username, password=password)
-    return [await _record(page, {"action": "click", "ref": "", "reason": f"使用 {username} 完成登录阶段"}, {"result": "login_guard_passed"}, observe_page)], ""
+    history: list[dict[str, Any]] = []
+    checkpoints = {
+        "login_page_opened": (
+            {"action": "goto", "ref": "", "reason": "已访问登录页面"},
+            {"result": "login_page_opened"},
+        ),
+        "credentials_filled": (
+            {"action": "fill", "ref": "", "reason": f"已填写账号 {username} 和密码"},
+            {"result": "login_credentials_filled"},
+        ),
+        "login_completed": (
+            {"action": "click", "ref": "", "reason": f"使用 {username} 完成登录"},
+            {"result": "login_guard_passed"},
+        ),
+        "already_logged_in": (
+            {"action": "wait", "ref": "", "reason": f"已使用 {username} 登录"},
+            {"result": "login_already_active"},
+        ),
+    }
+
+    async def record_checkpoint(name: str) -> None:
+        decision, execution = checkpoints[name]
+        history.append(await _record(page, decision, execution, observe_page))
+
+    await perform_login(page, system, username=username, password=password, checkpoint=record_checkpoint)
+    return history, ""
 
 
 
@@ -587,10 +612,16 @@ async def _run_account_switch(page, system: dict[str, Any], case: dict[str, Any]
 async def _run_logout_prompt(page, system: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
     from runner.agent_explore import observe_page
 
-    opened = await _open_logout_menu(page, system)
-    if not opened:
-        return [], "unable to open logout menu"
-    await click_first(page, ["text=退出登录", "text=登出", "text=Logout", "li:has-text(退出登录)", "li:has-text(登出)"])
+    logout_selectors = ["text=退出登录", "text=登出", "text=Logout", "li:has-text(退出登录)", "li:has-text(登出)"]
+    opened_screen_wall_prompt = await _open_screen_wall_logout_prompt(page)
+    if not opened_screen_wall_prompt:
+        opened = await _open_logout_menu(page, system)
+        if not opened:
+            return [], "unable to open a user-visible logout control"
+        logout_entry = await first_visible(page, logout_selectors)
+        if logout_entry is None:
+            return [], "logout control is not available in the opened account menu; verify the tested system exposes a user-visible logout action on this route"
+        await logout_entry.click(force=True)
     await page.wait_for_timeout(500)
     dialog = await first_visible(page, [".el-message-box:visible", ".el-dialog:visible"])
     history = [
@@ -1060,6 +1091,16 @@ async def _run_detail_assert(page, case: dict[str, Any], stage: dict[str, Any]) 
         history, error = await _run_icm_device_create_assert(page, case, observe_page)
         if error == "":
             return history, error
+
+    if _logout_step_indexes([str(item or "") for item in case.get("steps") or []]) and "#/login" in str(page.url or ""):
+        return [
+            await _record(
+                page,
+                {"action": "assert_url", "value": "#/login", "reason": "logout confirmation returned to the login page"},
+                {"result": "detail_assert_passed"},
+                observe_page,
+            )
+        ], ""
 
     signals = [item for item in stage.get("success_signals") or [] if item]
     if any("屏幕墙" in signal for signal in signals) or "#/icm" in page.url:

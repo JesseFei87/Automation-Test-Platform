@@ -125,6 +125,8 @@ function statusLabel(status: string) {
   if (status === "completed" || status === "passed" || status === "success") return "已通过";
   if (status === "failed") return "失败";
   if (status === "running") return "运行中";
+  if (status === "stopping") return "停止中";
+  if (status === "stopped") return "已停止";
   if (status === "queued") return "排队中";
   return status || "未知";
 }

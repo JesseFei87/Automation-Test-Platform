@@ -1,0 +1,17 @@
+{
+  "id": "dev",
+  "name": "开发环境",
+  "base_url": "http://localhost:5173",
+  "headless": true,
+  "storage_state": "",
+  "pages": [
+    {"page_id": "login", "name": "登录页", "path": "/login"},
+    {"page_id": "home", "name": "首页", "path": "/"},
+    {"page_id": "project", "name": "项目管理", "path": "/project"},
+    {"page_id": "requirement", "name": "需求管理", "path": "/requirement"},
+    {"page_id": "testcase", "name": "测试用例", "path": "/testcase"},
+    {"page_id": "execution", "name": "执行中心", "path": "/execution"},
+    {"page_id": "report", "name": "报告详情", "path": "/report"},
+    {"page_id": "settings", "name": "系统设置", "path": "/settings"}
+  ]
+}

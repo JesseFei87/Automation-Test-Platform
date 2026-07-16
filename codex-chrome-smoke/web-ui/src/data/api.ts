@@ -70,9 +70,13 @@ export type PlatformSettings = {
   runner: {
     browser_mode: string;
     queue_mode: string;
-    batch_range: string;
     screenshot_policy: string;
     headless: boolean;
+    maximize_window: boolean;
+    viewport_mode: "fixed" | "window";
+    viewport_width: number;
+    viewport_height: number;
+    ignore_https_errors: boolean;
   };
   asset_policy: {
     observed_asset_enabled: boolean;
@@ -525,6 +529,106 @@ export type ApiStabilityScanResponse = {
   started_at?: string;
 };
 
+export type ApiElementKnowledgeElement = {
+  element_id?: string;
+  page_id?: string;
+  state?: string;
+  states?: string[];
+  name?: string;
+  human_zh?: string[];
+  human_en?: string;
+  tag?: string;
+  role?: string;
+  type?: string;
+  text?: string;
+  placeholder?: string;
+  selectors?: string[];
+  actions?: string[];
+  risk_level?: string;
+  confidence?: number;
+  last_seen_url?: string;
+  execution_count?: number;
+  success_count?: number;
+  failed_count?: number;
+  success_rate?: number;
+  last_error?: string;
+  healing_issue?: string;
+  healing_suggestion?: string;
+};
+
+export type ApiElementKnowledgeSummary = {
+  title?: string;
+  refreshed_at?: string;
+  source?: string;
+  output_path?: string;
+  page_count: number;
+  element_count: number;
+  feedback_record_count: number;
+  feedback_stat_count: number;
+  healing_suggestion_count: number;
+  elements_with_feedback: number;
+  elements_with_healing: number;
+};
+
+export type ApiElementKnowledgeEnvironment = {
+  id: string;
+  name?: string;
+  source?: string;
+  element_knowledge_scan_enabled?: boolean;
+  base_url?: string;
+  headless?: boolean;
+  storage_state?: string;
+  storage_state_path?: string;
+  storage_state_exists?: boolean;
+  storage_state_updated_at?: string | null;
+  login_configured?: boolean;
+  page_count?: number;
+  pages?: Array<{ page_id?: string; id?: string; name?: string; path?: string; route?: string; url?: string }>;
+};
+
+export type ApiElementKnowledgeSnapshot = {
+  summary: ApiElementKnowledgeSummary;
+  elements: ApiElementKnowledgeElement[];
+  hotspots: ApiElementKnowledgeElement[];
+  report_paths: { markdown?: string; html?: string };
+  source_paths: { library?: string; summary?: string };
+  exists: { library: boolean; summary: boolean };
+};
+
+export type ApiElementKnowledgeRefreshProgress = {
+  kind?: string;
+  stage?: string;
+  current_page?: string;
+  page_index?: number;
+  page_total?: number;
+  scanned_page_count?: number;
+  observation_count?: number;
+  element_count?: number;
+  high_risk_count?: number;
+  library_element_count?: number;
+  healing_suggestion_count?: number;
+  duration_ms?: number;
+  report_path?: string;
+  error?: string;
+  updated_at?: string;
+};
+
+export type ApiElementKnowledgeRefreshTask = {
+  id: string;
+  mode: string;
+  status: "queued" | "running" | "done" | "failed" | "passed" | string;
+  command?: string;
+  created_at?: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  return_code?: number | null;
+  report_path?: string | null;
+  error?: string | null;
+  progress?: ApiElementKnowledgeRefreshProgress | null;
+  logs?: Array<{ id?: number; stream?: string; line: string; created_at?: string }>;
+  snapshot?: ApiElementKnowledgeSnapshot | null;
+};
+
 // 路线 C · T13：codegen 响应类型
 export type ApiCodegenResponse = {
   ok: boolean;
@@ -535,6 +639,51 @@ export type ApiCodegenResponse = {
   written?: boolean;
   backup_path?: string | null;
   message?: string;
+};
+
+export type RecorderStep = {
+  id: string;
+  sequence: number;
+  action: "goto" | "click" | "fill" | "select" | "check" | "press" | "download" | "popup" | string;
+  locator?: string | null;
+  value?: string | null;
+  url?: string | null;
+  status?: "recorded" | "warning" | "blocked" | string;
+  warning?: string | null;
+  created_at?: string | null;
+};
+
+export type RecorderCandidate = {
+  yaml?: string;
+  playwright_python?: string;
+  publishable?: boolean;
+  blocking_warnings?: string[];
+};
+
+export type RecorderSession = {
+  id: string;
+  status: "starting" | "recording" | "stopped" | "failed" | string;
+  start_url: string;
+  stream_url?: string;
+  current_url?: string | null;
+  steps: RecorderStep[];
+  candidate?: RecorderCandidate | null;
+  error?: string | null;
+};
+
+export type CodegenExperimentSession = {
+  id: string;
+  status: "recording" | "stopped" | "failed" | string;
+  start_url: string;
+  mode: "codegen-experiment";
+  script?: string | null;
+  warnings?: string[];
+  error?: string | null;
+  inputs?: Array<{ name: string; action: string; required: boolean }>;
+  run?: {
+    status: "queued" | "running" | "succeeded" | "failed" | string;
+    error?: string | null;
+  } | null;
 };
 
 export type ApiMergeObservedAssetResult = {
@@ -631,11 +780,14 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ title, document }),
     }),
-  analyzeRequirementSpec: (payload: { title: string; document: string; context_info?: ContextInfo; project_id?: string | null }) =>
+  analyzeRequirementSpec: (payload: { title: string; document: string; context_info?: ContextInfo; project_id?: string | null; generation_id?: string }, signal?: AbortSignal) =>
     request<RequirementDetail>("/requirements/analyze-spec", {
       method: "POST",
       body: JSON.stringify(payload),
+      signal,
     }),
+  stopRequirementGeneration: (generationId: string) =>
+    request<{ status: string; generation_id: string }>(`/requirements/generations/${encodeURIComponent(generationId)}/stop`, { method: "POST" }),
   updateTestPoint: (id: number, payload: Partial<Pick<TestPoint, "parent_id" | "name" | "category" | "priority" | "status" | "description" | "module" | "source" | "sort_order">>) =>
     request<RequirementDetail>(`/test-points/${id}`, {
       method: "PATCH",
@@ -649,6 +801,21 @@ export const api = {
       body: JSON.stringify({ test_points: testPoints }),
     }),
   reports: () => request<ApiReportListItem[]>("/reports"),
+  elementKnowledge: () => request<ApiElementKnowledgeSnapshot>("/element-knowledge"),
+  elementKnowledgeEnvironments: () => request<ApiElementKnowledgeEnvironment[]>("/element-knowledge/environments"),
+  elementKnowledgeEnvironmentPreview: () => request<ApiElementKnowledgeEnvironment[]>("/element-knowledge/environment-preview"),
+  refreshElementKnowledge: (payload?: { no_scan?: boolean; min_healing_failures?: number; base_url?: string; environment_id?: string; target_url?: string; target_page_id?: string; target_name?: string; include_states?: boolean; headless?: boolean }) =>
+    request<ApiElementKnowledgeRefreshTask>("/element-knowledge/refresh", {
+      method: "POST",
+      body: JSON.stringify(payload ?? { no_scan: true }),
+    }),
+  validateElementKnowledge: (environment_id: string) =>
+    request<ApiElementKnowledgeRefreshTask>("/element-knowledge/validation-tasks", {
+      method: "POST",
+      body: JSON.stringify({ environment_id }),
+    }),
+  elementKnowledgeRefreshTask: (taskId: string) => request<ApiElementKnowledgeRefreshTask>(`/element-knowledge/refresh-tasks/${taskId}`),
+  elementKnowledgeRefreshTasks: () => request<ApiElementKnowledgeRefreshTask[]>("/element-knowledge/refresh-tasks"),
   deleteReport: (runId: string) => request<ApiReportDeleteResult>(`/reports/${runId}`, { method: "DELETE" }),
   batchDeleteReports: (runIds: string[]) =>
     request<ApiReportBatchDeleteResult>("/reports/batch-delete", {
@@ -702,11 +869,12 @@ export const api = {
     }),
   exportRequirementCases: (requirementId: number, format: "xlsx" | "yaml") =>
     requestBlob(`/requirements/${requirementId}/export?format=${format}`, { method: "GET" }),
-  createRun: (mode: "run-case" | "run-batch" | "run-draft" | "agent-explore", caseId?: string, draftId?: number) =>
+  createRun: (mode: "run-case" | "run-batch" | "run-draft" | "agent-explore", caseId?: string, draftId?: number, caseIds?: string[]) =>
     request<{ id: string; mode: "run-case" | "run-batch" | "run-draft" | "agent-explore"; case_id: string | null; status: string }>("/runs", {
       method: "POST",
-      body: JSON.stringify({ mode, case_id: caseId, draft_id: draftId }),
+      body: JSON.stringify({ mode, case_id: caseId, draft_id: draftId, case_ids: caseIds }),
     }),
+  stopRun: (runId: string) => request<{ id: string; status: string }>(`/runs/${runId}/stop`, { method: "POST" }),
   runCaseDraft: (draftId: number) =>
     request<{ id: string; mode: "run-draft"; case_id: string | null; status: string }>(`/case-drafts/${draftId}/run`, {
       method: "POST",
@@ -788,6 +956,18 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ write, template }),
     }),
+  createRecorderSession: (payload: { start_url: string; case_id?: string; system_id?: string }) =>
+    request<RecorderSession>("/recordings", { method: "POST", body: JSON.stringify(payload) }),
+  recorderSession: (sessionId: string) => request<RecorderSession>(`/recordings/${encodeURIComponent(sessionId)}`),
+  stopRecorderSession: (sessionId: string) =>
+    request<RecorderSession>(`/recordings/${encodeURIComponent(sessionId)}/stop`, { method: "POST", body: JSON.stringify({}) }),
+  createCodegenExperiment: (payload: { start_url: string }) =>
+    request<CodegenExperimentSession>("/codegen-experiments", { method: "POST", body: JSON.stringify(payload) }),
+  codegenExperiment: (sessionId: string) => request<CodegenExperimentSession>(`/codegen-experiments/${encodeURIComponent(sessionId)}`),
+  stopCodegenExperiment: (sessionId: string) =>
+    request<CodegenExperimentSession>(`/codegen-experiments/${encodeURIComponent(sessionId)}/stop`, { method: "POST", body: JSON.stringify({}) }),
+  runCodegenExperiment: (sessionId: string, payload: { variables: Record<string, string> }) =>
+    request<CodegenExperimentSession>(`/codegen-experiments/${encodeURIComponent(sessionId)}/run`, { method: "POST", body: JSON.stringify(payload) }),
   // P0 · 所属项目下拉化（增量 2026-06-10）：4 包装
   listProjects: () => request<Project[]>("/projects"),
   createProject: (payload: { name: string; base_url?: string | null; description?: string | null }) =>

@@ -15,7 +15,6 @@ RUNNER_SETTINGS = {
     "browser_mode": "visible",
     "headless": False,
     "screenshot_policy": "always_archive",
-    "batch_range": "TC-ICM-001..TC-ICM-002",
 }
 
 
@@ -162,21 +161,8 @@ expected_results:
             with patch("icm_platform.worker.subprocess.Popen", FakeProcess):
                 RunnerWorker()._run("ui-agent")
 
-        self.assertEqual(
-            commands[0],
-            [
-                sys.executable,
-                "-m",
-                "runner.main",
-                "agent-explore",
-                "TC-ICM-013",
-                "ui-agent",
-                "--screenshot-policy",
-                "always_archive",
-                "--batch-range",
-                "TC-ICM-001..TC-ICM-002",
-            ],
-        )
+        self.assertEqual(commands[0][:6], [sys.executable, "-m", "runner.main", "agent-explore", "TC-ICM-013", "ui-agent"])
+        self.assertNotIn("--batch-range", commands[0])
 
     def test_run_agent_explore_prefers_prepared_draft_yaml_path(self) -> None:
         commands: list[list[str]] = []
@@ -222,6 +208,62 @@ expected_results:
 
         self.assertEqual(payload.mode, "agent-explore")
         self.assertEqual(payload.case_id, "TC-ICM-013")
+
+    def test_custom_batch_keeps_selected_case_order_in_runner_command(self) -> None:
+        commands: list[list[str]] = []
+
+        class FakeProcess:
+            stdout = []
+
+            def __init__(self, command: list[str], **_: object) -> None:
+                commands.append(command)
+
+            def wait(self) -> int:
+                return 0
+
+        with isolated_db():
+            worker = RunnerWorker()
+            task = worker.enqueue("run-batch", batch_case_ids=["TC-ICM-003", "TC-ICM-001"])
+            with db.connect() as conn:
+                row = conn.execute("select batch_case_ids from run_tasks where id = ?", (task["id"],)).fetchone()
+            self.assertEqual(row["batch_case_ids"], '["TC-ICM-003", "TC-ICM-001"]')
+            with patch("icm_platform.worker.subprocess.Popen", FakeProcess):
+                worker._run(task["id"])
+
+        command = commands[0]
+        marker = command.index("--batch-cases")
+        self.assertEqual(command[marker + 1 : marker + 3], ["TC-ICM-003", "TC-ICM-001"])
+
+    def test_api_run_request_accepts_custom_batch_cases(self) -> None:
+        payload = RunRequest(mode="run-batch", case_ids=["TC-ICM-004", "TC-ICM-002"])
+
+        self.assertEqual(payload.case_ids, ["TC-ICM-004", "TC-ICM-002"])
+
+    def test_stop_queued_custom_batch_marks_task_stopped(self) -> None:
+        with isolated_db():
+            worker = RunnerWorker()
+            task = worker.enqueue("run-batch", batch_case_ids=["TC-ICM-003"])
+            result = worker.stop(task["id"])
+            with db.connect() as conn:
+                row = conn.execute("select status, error, finished_at from run_tasks where id = ?", (task["id"],)).fetchone()
+
+        self.assertEqual(result, {"id": task["id"], "status": "stopped"})
+        self.assertEqual(row["status"], "stopped")
+        self.assertEqual(row["error"], "stopped by user")
+        self.assertTrue(row["finished_at"])
+
+    def test_stop_child_resolves_to_batch_parent(self) -> None:
+        with isolated_db():
+            with db.connect() as conn:
+                conn.execute("insert into run_tasks(id, mode, status, command, created_at) values ('ui-batch', 'run-batch', 'running', '', '2026-06-26T00:00:00Z')")
+                conn.execute("insert into run_tasks(id, mode, case_id, parent_run_id, status, command, created_at) values ('ui-child', 'run-case', 'TC-ICM-003', 'ui-batch', 'running', '', '2026-06-26T00:00:00Z')")
+            result = RunnerWorker().stop("ui-child")
+            with db.connect() as conn:
+                row = conn.execute("select status, error from run_tasks where id = 'ui-batch'").fetchone()
+
+        self.assertEqual(result, {"id": "ui-batch", "status": "stopping"})
+        self.assertEqual(row["status"], "stopping")
+        self.assertEqual(row["error"], "stopped by user")
 
     def test_batch_progress_events_create_child_run_tasks(self) -> None:
         with isolated_db():

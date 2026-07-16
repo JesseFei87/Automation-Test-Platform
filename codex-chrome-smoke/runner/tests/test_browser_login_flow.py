@@ -146,6 +146,31 @@ class BrowserLoginFlowTests(unittest.TestCase):
         assert logout_calls == ["logout"]
         assert fill_values == ["test", "123456"]
 
+    def test_perform_login_emits_ordered_checkpoints(self) -> None:
+        page = _FakePage()
+        system = {
+            "credentials": {"username": "admin", "password": "admin-pass"},
+            "account_fields": {"username_label": "账号", "password_label": "密码", "submit_button": "登录"},
+        }
+        checkpoints: list[str] = []
+        login_state = iter([None, "test"])
+
+        async def _current_logged_in_username(*_args, **_kwargs):
+            return next(login_state)
+
+        async def _checkpoint(name: str) -> None:
+            checkpoints.append(name)
+
+        with (
+            patch.object(browser_module, "open_login_page", _async_return(None)),
+            patch.object(browser_module, "current_logged_in_username", _current_logged_in_username),
+            patch.object(browser_module, "fill_first", _async_return(None)),
+            patch.object(browser_module, "click_first", _async_return(None)),
+        ):
+            asyncio.run(browser_module.perform_login(page, system, username="test", password="123456", checkpoint=_checkpoint))
+
+        assert checkpoints == ["login_page_opened", "credentials_filled", "login_completed"]
+
 
     def test_current_logged_in_username_prefers_visible_header_over_cookie_subject(self) -> None:
         page = _FakeHeaderPage("admin")

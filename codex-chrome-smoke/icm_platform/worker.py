@@ -26,6 +26,8 @@ class RunnerWorker:
     def __init__(self) -> None:
         self._queue: queue.Queue[str] = queue.Queue()
         self._thread: threading.Thread | None = None
+        self._processes: dict[str, subprocess.Popen] = {}
+        self._process_lock = threading.Lock()
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -33,9 +35,16 @@ class RunnerWorker:
         self._thread = threading.Thread(target=self._loop, name="icm-runner-worker", daemon=True)
         self._thread.start()
 
-    def enqueue(self, mode: str, case_id: str | None = None, draft_id: int | None = None) -> dict[str, str | None]:
+    def enqueue(
+        self,
+        mode: str,
+        case_id: str | None = None,
+        draft_id: int | None = None,
+        batch_case_ids: list[str] | None = None,
+    ) -> dict[str, str | None]:
         if mode not in {"run-case", "run-batch", "run-draft", "agent-explore"}:
             raise ValueError("mode must be run-case, run-batch, run-draft, or agent-explore")
+        selected_batch_case_ids = self._normalize_batch_case_ids(mode, batch_case_ids)
         task_id = f"ui-{uuid.uuid4().hex[:12]}"
         draft_yaml_path: Path | None = None
         if mode in {"run-draft", "agent-explore"} and draft_id and not case_id:
@@ -51,14 +60,59 @@ class RunnerWorker:
         settings = get_platform_settings()
         runner_settings = settings["runner"]
         command_parts = [sys.executable, "-m", "runner.main", mode, arg, *self._runner_args(runner_settings)]
+        if selected_batch_case_ids:
+            command_parts.extend(["--batch-cases", *selected_batch_case_ids])
         if mode == "agent-explore":
             command_parts = [sys.executable, "-m", "runner.main", mode, arg, task_id, *self._runner_args(runner_settings)]
         if mode in {"run-case", "run-draft"}:
             command_parts.append(platform_run_id)
         command = subprocess.list2cmdline(command_parts)
-        self._insert_task(task_id, mode, case_id, command)
+        self._insert_task(task_id, mode, case_id, command, batch_case_ids=selected_batch_case_ids)
         self._queue.put(task_id)
         return {"id": task_id, "mode": mode, "case_id": case_id, "status": "queued"}
+
+    def _normalize_batch_case_ids(self, mode: str, batch_case_ids: list[str] | None) -> list[str]:
+        if mode != "run-batch":
+            return []
+        normalized = [str(case_id).strip().upper() for case_id in batch_case_ids if str(case_id).strip()]
+        if not normalized:
+            raise ValueError("batch case_ids must contain at least one case")
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("batch case_ids must not contain duplicates")
+        return normalized
+
+    def stop(self, requested_run_id: str) -> dict[str, str]:
+        with connect() as conn:
+            requested = conn.execute("select * from run_tasks where id = ?", (requested_run_id,)).fetchone()
+            if not requested:
+                raise ValueError("run not found")
+            task_id = str(requested["parent_run_id"] or requested["id"])
+            task = conn.execute("select * from run_tasks where id = ?", (task_id,)).fetchone()
+            if not task:
+                raise ValueError("parent run not found")
+            status = str(task["status"] or "")
+            if status not in {"queued", "running", "stopping"}:
+                raise ValueError("run is not active")
+            next_status = "stopped" if status == "queued" else "stopping"
+            conn.execute(
+                "update run_tasks set status = ?, finished_at = case when ? = 'stopped' then ? else finished_at end, error = ? where id = ?",
+                (next_status, next_status, utc_now(), "stopped by user", task_id),
+            )
+        self._append_log(task_id, "system", "stop requested by user")
+        with self._process_lock:
+            process = self._processes.get(task_id)
+        if process:
+            self._terminate_process_tree(process)
+        return {"id": task_id, "status": next_status}
+
+    @staticmethod
+    def _terminate_process_tree(process: subprocess.Popen) -> None:
+        if process.poll() is not None:
+            return
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], check=False, capture_output=True, text=True)
+            return
+        process.terminate()
 
     def enqueue_agent_self_heal(self, parent_run_id: str, case_yaml: str, healing_context: dict, case_id: str | None = None) -> dict[str, str | None]:
         task_id = f"ui-{uuid.uuid4().hex[:12]}"
@@ -179,15 +233,16 @@ class RunnerWorker:
         parent_run_id: str | None = None,
         trigger: str | None = None,
         healing_context_path: str | None = None,
+        batch_case_ids: list[str] | None = None,
     ) -> None:
         now = utc_now()
         with connect() as conn:
             conn.execute(
                 """
-                insert into run_tasks(id, mode, case_id, parent_run_id, trigger, healing_context_path, status, command, created_at)
-                values (?, ?, ?, ?, ?, ?, 'queued', ?, ?)
+                insert into run_tasks(id, mode, case_id, batch_case_ids, parent_run_id, trigger, healing_context_path, status, command, created_at)
+                values (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
                 """,
-                (task_id, mode, case_id, parent_run_id, trigger, healing_context_path, command, now),
+                (task_id, mode, case_id, json.dumps(batch_case_ids or []), parent_run_id, trigger, healing_context_path, command, now),
             )
 
     def _loop(self) -> None:
@@ -203,6 +258,8 @@ class RunnerWorker:
             task = conn.execute("select * from run_tasks where id = ?", (task_id,)).fetchone()
             if not task:
                 return
+            if str(task["status"] or "") == "stopped":
+                return
             conn.execute("update run_tasks set status = 'running', started_at = ? where id = ?", (utc_now(), task_id))
 
         env = os.environ.copy()
@@ -217,7 +274,15 @@ class RunnerWorker:
             command.extend([str(DRAFT_RUN_DIR / task["id"] / "case.yaml"), task["id"]])
         else:
             command.append(task["id"])
+        batch_case_ids = json.loads(str(task["batch_case_ids"] or "[]")) if task["mode"] == "run-batch" else []
+        if batch_case_ids:
+            command.extend(["--batch-cases", *batch_case_ids])
         command.extend(self._runner_args(get_platform_settings()["runner"]))
+        with connect() as conn:
+            stop_requested = conn.execute("select status from run_tasks where id = ?", (task_id,)).fetchone()
+        if stop_requested and str(stop_requested["status"] or "") == "stopping":
+            self._finish_stopped_run(task_id, task, batch_case_ids)
+            return
         process = subprocess.Popen(
             command,
             cwd=str(ROOT),
@@ -228,18 +293,29 @@ class RunnerWorker:
             errors="replace",
             env=env,
         )
-        assert process.stdout is not None
-        for line in process.stdout:
-            clean_line = line.rstrip()
-            self._append_log(task_id, "stdout", clean_line)
-            if task["mode"] == "run-batch":
-                self._handle_batch_progress(task_id, clean_line)
-        return_code = process.wait()
+        with self._process_lock:
+            self._processes[task_id] = process
+        try:
+            assert process.stdout is not None
+            for line in process.stdout:
+                clean_line = line.rstrip()
+                self._append_log(task_id, "stdout", clean_line)
+                if task["mode"] == "run-batch":
+                    self._handle_batch_progress(task_id, clean_line)
+            return_code = process.wait()
+        finally:
+            with self._process_lock:
+                self._processes.pop(task_id, None)
 
-        status = "passed" if return_code == 0 else "failed"
+        with connect() as conn:
+            row = conn.execute("select status from run_tasks where id = ?", (task_id,)).fetchone()
+        stopped = bool(row and str(row["status"] or "") in {"stopping", "stopped"})
+        status = "stopped" if stopped else ("passed" if return_code == 0 else "failed")
         if task["mode"] == "run-batch":
-            self._sync_batch_children_from_reports(task_id)
-            report_path = self._write_batch_summary_report(task_id, status)
+            self._sync_batch_children_from_reports(task_id, batch_case_ids)
+            if stopped:
+                self._stop_batch_children(task_id)
+            report_path = self._write_batch_summary_report(task_id, status, batch_case_ids)
         else:
             report_path = self._resolve_report_path(task_id, task["mode"], task["case_id"])
         with connect() as conn:
@@ -254,9 +330,33 @@ class RunnerWorker:
                     utc_now(),
                     return_code,
                     str(report_path) if report_path else None,
-                    "" if return_code == 0 else f"runner exited with {return_code}",
+                    "stopped by user" if stopped else ("" if return_code == 0 else f"runner exited with {return_code}"),
                     task_id,
                 ),
+            )
+
+    def _finish_stopped_run(self, task_id: str, task: object, batch_case_ids: list[str]) -> None:
+        task_dict = dict(task)
+        if task_dict["mode"] == "run-batch":
+            self._stop_batch_children(task_id)
+            report_path = self._write_batch_summary_report(task_id, "stopped", batch_case_ids)
+        else:
+            report_path = None
+        with connect() as conn:
+            conn.execute(
+                "update run_tasks set status = 'stopped', finished_at = ?, return_code = ?, report_path = ?, error = ? where id = ?",
+                (utc_now(), 1, str(report_path) if report_path else None, "stopped by user", task_id),
+            )
+
+    def _stop_batch_children(self, parent_run_id: str) -> None:
+        with connect() as conn:
+            conn.execute(
+                """
+                update run_tasks
+                set status = 'stopped', finished_at = coalesce(finished_at, ?), error = 'stopped by user'
+                where parent_run_id = ? and status in ('queued', 'running')
+                """,
+                (utc_now(), parent_run_id),
             )
 
     def _append_log(self, task_id: str, stream: str, line: str) -> None:
@@ -317,16 +417,16 @@ class RunnerWorker:
                 ),
             )
 
-    def _sync_batch_children_from_reports(self, parent_run_id: str) -> None:
-        for child in list_batch_child_reports(parent_run_id):
+    def _sync_batch_children_from_reports(self, parent_run_id: str, case_ids: list[str] | None = None) -> None:
+        for child in list_batch_child_reports(parent_run_id, case_ids=case_ids):
             run_id = child.get("run_id")
             if not run_id:
                 continue
             status = str(child.get("status") or "failed")
             self._upsert_batch_child(parent_run_id, str(run_id), str(child.get("case_id") or ""), status)
 
-    def _write_batch_summary_report(self, parent_run_id: str, status: str) -> Path | None:
-        children = list_batch_child_reports(parent_run_id)
+    def _write_batch_summary_report(self, parent_run_id: str, status: str, case_ids: list[str] | None = None) -> Path | None:
+        children = list_batch_child_reports(parent_run_id, case_ids=case_ids)
         completed = [item for item in children if item.get("run_id")]
         if not completed:
             return None
@@ -338,7 +438,7 @@ class RunnerWorker:
         lines = [
             f"# {parent_run_id}",
             "",
-            "- case name: Batch 001-012",
+            f"- case name: {'Custom batch (' + str(len(children)) + ' cases)' if case_ids else 'Batch 001-012'}",
             "- environment: icm-internal",
             f"- status: {status}",
             f"- total: {len(completed)}",
@@ -371,6 +471,12 @@ class RunnerWorker:
             args.append("--headless")
         screenshot_policy = settings.get("screenshot_policy") or "latest_plus_failed_archive"
         args.extend(["--screenshot-policy", str(screenshot_policy)])
-        batch_range = settings.get("batch_range") or "TC-ICM-001..TC-ICM-012"
-        args.extend(["--batch-range", str(batch_range)])
+        viewport_mode = settings.get("viewport_mode") or "fixed"
+        args.extend(["--viewport-mode", str(viewport_mode)])
+        args.extend(["--viewport-width", str(settings.get("viewport_width") or 1600)])
+        args.extend(["--viewport-height", str(settings.get("viewport_height") or 1100)])
+        if settings.get("maximize_window"):
+            args.append("--maximize-window")
+        if settings.get("ignore_https_errors", True):
+            args.append("--ignore-https-errors")
         return args

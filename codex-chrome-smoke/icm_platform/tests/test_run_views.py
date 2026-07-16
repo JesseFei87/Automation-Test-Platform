@@ -58,7 +58,7 @@ class RunViewTests(unittest.TestCase):
 
         self.assertIn("--headless", args)
         self.assertEqual(args[args.index("--screenshot-policy") + 1], "always_archive")
-        self.assertEqual(args[args.index("--batch-range") + 1], "TC-ICM-006..TC-ICM-011")
+        self.assertNotIn("--batch-range", args)
 
     def test_worker_browser_mode_overrides_legacy_headless_flag(self) -> None:
         args = RunnerWorker()._runner_args(

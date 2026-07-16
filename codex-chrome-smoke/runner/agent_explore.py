@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlparse
@@ -11,6 +13,9 @@ from runner.agent_codegen import generate_candidate_flow
 from runner.case_expectations import case_expected_results
 from runner.agent_stage_router import build_stage_goal, execute_stage_strategy, normalize_stage_history, now_iso, plan_agent_execution, stage_view
 from runner.browser import attach_case_runtime, ensure_logged_out, first_visible, load_case, load_case_file, load_system, open_login_page, screenshot
+from runner.element_ref_matcher import format_agent_ref_guidance, resolve_recovery_ref
+from runner.element_feedback import feedback_enabled, record_element_feedback
+from runner.element_retry_strategy import retry_once_with_healing
 from runner.evidence_recorder import attach_evidence_recorder, evidence_summary
 from runner.operation_knowledge import load_trusted_plan, write_pending_agent_asset
 from icm_platform.paths import DB_PATH, TEST_CASE_DIR
@@ -140,6 +145,12 @@ OBSERVE_PAGE_SCRIPT = """() => {
               const href = anchor.getAttribute('href');
               if (href) return `a[href="${esc(href)}"]`;
             }
+            const popupMenu = el.closest('ul[id]');
+            if (popupMenu && popupMenu.id) {
+              const siblings = Array.from(popupMenu.children).filter((child) => child.tagName === el.tagName);
+              const index = siblings.indexOf(el) + 1;
+              if (index > 0) return `#${esc(popupMenu.id)} > ${el.tagName.toLowerCase()}:nth-of-type(${index})`;
+            }
             if (el.id) return `#${esc(el.id)}`;
             const testId = el.getAttribute('data-testid') || el.getAttribute('data-test');
             if (testId) return `[data-testid="${esc(testId)}"],[data-test="${esc(testId)}"]`;
@@ -147,6 +158,11 @@ OBSERVE_PAGE_SCRIPT = """() => {
             if (name) return `${el.tagName.toLowerCase()}[name="${esc(name)}"]`;
             const placeholder = el.getAttribute('placeholder');
             if (placeholder) return `${el.tagName.toLowerCase()}[placeholder="${esc(placeholder)}"]`;
+            if (el.matches && el.matches('img.el-tooltip.button') && el.parentElement && el.parentElement.classList.contains('top_button')) {
+              const icons = Array.from(el.parentElement.children).filter((child) => child.tagName === 'IMG');
+              const iconIndex = icons.indexOf(el) + 1;
+              if (iconIndex > 0) return `.top_button > img.el-tooltip.button:nth-of-type(${iconIndex})`;
+            }
 
             const parts = [];
             let current = el;
@@ -177,6 +193,8 @@ OBSERVE_PAGE_SCRIPT = """() => {
             return result;
           };
           const textOf = (el) => {
+            const tooltipId = el.getAttribute('aria-describedby');
+            const tooltip = tooltipId ? document.getElementById(tooltipId) : null;
             const descendants = Array.from(el.querySelectorAll('span,[title],svg + span'))
               .map((node) => node.textContent || node.getAttribute('title') || '');
             const closestMenu = el.closest('.el-submenu__title,.el-menu-item,[role="menuitem"],a,li');
@@ -192,6 +210,7 @@ OBSERVE_PAGE_SCRIPT = """() => {
               el.getAttribute('title'),
               el.getAttribute('placeholder'),
               el.getAttribute('alt'),
+              tooltip && (tooltip.innerText || tooltip.textContent),
               descendants.join(' '),
               closestMenu && (closestMenu.innerText || closestMenu.textContent || closestMenu.getAttribute('title')),
               hrefLabel,
@@ -199,13 +218,23 @@ OBSERVE_PAGE_SCRIPT = """() => {
               .join(' | ')
               .slice(0, 160);
           };
+          const routeOf = (el) => {
+            const anchor = el.closest && el.closest('a[href]');
+            return (anchor && anchor.getAttribute('href'))
+              || el.getAttribute('href')
+              || el.getAttribute('data-index')
+              || el.getAttribute('index')
+              || el.getAttribute('data-route')
+              || el.getAttribute('to')
+              || '';
+          };
           const interactives = Array.from(
             document.querySelectorAll(
-              'a,button,input,textarea,select,[role="button"],[role="link"],[role="menuitem"],[contenteditable="true"],.el-submenu__title,.el-menu-item,.el-dropdown-menu__item'
+              'a,button,input,textarea,select,[role="button"],[role="link"],[role="menuitem"],[contenteditable="true"],img[tabindex]:not([tabindex="-1"]),.screen-top-head[tabindex],.el-slider__button-wrapper[tabindex],.el-submenu__title,.el-menu-item,.el-dropdown-menu__item'
             )
           )
             .filter(visible)
-            .slice(0, 45)
+            .slice(0, 180)
             .map((el, index) => ({
               ref: `e${index + 1}`,
               tag: el.tagName.toLowerCase(),
@@ -214,20 +243,90 @@ OBSERVE_PAGE_SCRIPT = """() => {
               text: textOf(el),
               ariaLabel: el.getAttribute('aria-label') || '',
               placeholder: el.getAttribute('placeholder') || '',
+              name: el.getAttribute('name') || '',
+              testId: el.getAttribute('data-testid') || el.getAttribute('data-test') || '',
+              testIdAttribute: el.hasAttribute('data-testid') ? 'data-testid' : (el.hasAttribute('data-test') ? 'data-test' : ''),
               selector: selectorFor(el),
+              href: routeOf(el),
+              disabled: Boolean(el.disabled || el.getAttribute('aria-disabled') === 'true'),
             }));
           const visibleText = (document.body && document.body.innerText || '')
             .split(/\\n+/)
             .map((line) => line.replace(/\\s+/g, ' ').trim())
             .filter(Boolean)
             .slice(0, 35);
-          return { url: location.href, title: document.title, visibleText, interactives };
+          const navigationLinks = Array.from(document.querySelectorAll('a[href],[data-index],[index],[data-route],[to],.el-menu-item,.el-submenu__title'))
+            .filter(visible)
+            .map((node) => ({
+              href: routeOf(node),
+              text: textOf(node),
+              ariaLabel: node.getAttribute('aria-label') || '',
+              selector: selectorFor(node),
+            }))
+            .filter((item) => item.href)
+            .slice(0, 120);
+          const dialogs = Array.from(document.querySelectorAll('[role="dialog"],.el-dialog,.el-message-box'))
+            .filter(visible)
+            .map((node) => ({ text: normalizeText(node.innerText || node.textContent || ''), selector: selectorFor(node) }))
+            .slice(0, 6);
+          return { url: location.href, title: document.title, visibleText, interactives, navigationLinks, dialogs };
         }"""
 
 
 def _is_network_provider_error(exc: Exception) -> bool:
     """判断异常是否为 AI provider 网络错误（值得重试），而非 JSON 解析或配置错误。"""
     return type(exc).__name__ == "AIProviderError"
+
+
+def _is_pre_action_locator_error(error: str) -> bool:
+    return error.startswith("unknown ref:") or error.startswith("Agent target is not visible:")
+
+
+def _pre_action_locator_category(error: str) -> str:
+    return "unknown_ref" if error.startswith("unknown ref:") else "target_not_visible"
+
+
+async def _execute_once(execute, decision, observation: dict[str, Any]) -> dict[str, Any]:
+    try:
+        maybe_execution = execute(decision, observation)
+        execution = await maybe_execution if hasattr(maybe_execution, "__await__") else maybe_execution
+    except Exception as exc:
+        return {"result": "error", "action": decision.action, "ref": decision.ref, "error": str(exc)}
+    return execution if isinstance(execution, dict) else {"result": "ok"}
+
+
+async def _recover_pre_action_locator(
+    *,
+    goal: str,
+    decision,
+    error: str,
+    observe,
+    execute,
+    allowed_hosts: set[str],
+) -> tuple[dict[str, Any] | None, dict[str, Any], Any | None]:
+    if decision.action not in {"click", "fill", "hover"} or not _is_pre_action_locator_error(error):
+        return None, {"status": "not_eligible"}, None
+
+    from runner.agent_actions import validate_decision
+
+    refreshed_observation = await observe()
+    recovery = resolve_recovery_ref(
+        f"{goal}\n{decision.reason}",
+        str(refreshed_observation.get("url") or ""),
+        refreshed_observation,
+        decision.action,
+    )
+    recovery["failure_category"] = _pre_action_locator_category(error)
+    if recovery.get("status") != "resolved":
+        return None, recovery, None
+    recovered_decision = replace(decision, ref=str(recovery["ref"]))
+    observed_refs = {item.get("ref", "") for item in refreshed_observation.get("interactives") or []}
+    errors = validate_decision(recovered_decision, observed_refs=observed_refs, allowed_hosts=allowed_hosts)
+    if errors:
+        return None, {"status": "invalid_rebound_ref", "error": "; ".join(errors)}, None
+    execution = await _execute_once(execute, recovered_decision, refreshed_observation)
+    recovery["observation"] = refreshed_observation
+    return execution, recovery, recovered_decision
 
 
 async def run_agent_loop(
@@ -359,15 +458,42 @@ async def run_agent_loop(
                 "summary": "success signal observed; ignored trailing empty-ref action",
             }
         if errors:
+            error = "; ".join(errors)
+            recovered_execution, recovery, recovered_decision = await _recover_pre_action_locator(
+                goal=goal,
+                decision=decision,
+                error=error,
+                observe=observe,
+                execute=execute,
+                allowed_hosts=allowed_hosts,
+            )
+            if recovered_decision is not None and recovered_execution and recovered_execution.get("result") != "error":
+                refreshed_observation = recovery.pop("observation", observation)
+                history.append(
+                    {
+                        "step": step_index + 1,
+                        "decision": {
+                            "action": recovered_decision.action,
+                            "ref": recovered_decision.ref,
+                            "url": recovered_decision.url,
+                            "value": recovered_decision.value,
+                            "key": recovered_decision.key,
+                            "reason": recovered_decision.reason,
+                        },
+                        "observation": refreshed_observation,
+                        "execution": {**recovered_execution, "recovery": {"original_ref": decision.ref, "error": error, **recovery}},
+                    }
+                )
+                continue
             history.append(
                 {
                     "step": step_index + 1,
                     "decision": decision_dict,
                     "observation": observation,
-                    "execution": {"result": "error", "error": "; ".join(errors)},
+                    "execution": {"result": "error", "error": error, "recovery": recovery},
                 }
             )
-            return {"ok": False, "status": "failed", "goal": goal, "history": history, "error": "; ".join(errors)}
+            return {"ok": False, "status": "failed", "goal": goal, "history": history, "error": error}
 
         previous = history[-1] if history else {}
         previous_decision = previous.get("decision") or {}
@@ -392,15 +518,41 @@ async def run_agent_loop(
             )
             continue
 
-        maybe_execution = execute(decision, observation)
-        execution = await maybe_execution if hasattr(maybe_execution, "__await__") else maybe_execution
-        if isinstance(execution, dict) and execution.get("result") == "error":
+        execution = await _execute_once(execute, decision, observation)
+        if execution.get("result") == "error":
+            error = str(execution.get("error") or "agent action failed")
+            recovered_execution, recovery, recovered_decision = await _recover_pre_action_locator(
+                goal=goal,
+                decision=decision,
+                error=error,
+                observe=observe,
+                execute=execute,
+                allowed_hosts=allowed_hosts,
+            )
+            if recovered_decision is not None and recovered_execution and recovered_execution.get("result") != "error":
+                refreshed_observation = recovery.pop("observation", observation)
+                history.append(
+                    {
+                        "step": step_index + 1,
+                        "decision": {
+                            "action": recovered_decision.action,
+                            "ref": recovered_decision.ref,
+                            "url": recovered_decision.url,
+                            "value": recovered_decision.value,
+                            "key": recovered_decision.key,
+                            "reason": recovered_decision.reason,
+                        },
+                        "observation": refreshed_observation,
+                        "execution": {**recovered_execution, "recovery": {"original_ref": decision.ref, "error": error, **recovery}},
+                    }
+                )
+                continue
             history.append(
                 {
                     "step": step_index + 1,
                     "decision": decision_dict,
                     "observation": observation,
-                    "execution": execution,
+                    "execution": {**execution, "recovery": recovery},
                 }
             )
             return {
@@ -408,7 +560,7 @@ async def run_agent_loop(
                 "status": "failed",
                 "goal": goal,
                 "history": history,
-                "error": str(execution.get("error") or "agent action failed"),
+                "error": error,
             }
         history.append(
             {
@@ -536,6 +688,32 @@ def build_agent_prompt(goal: str, observation: dict[str, Any], history: list[dic
         }
         for item in history[-6:]
     ]
+    visible_text = observation.get("visibleText") or []
+    if isinstance(visible_text, list):
+        visible_excerpt = " ".join(str(item) for item in visible_text[:20])
+    else:
+        visible_excerpt = str(visible_text)
+    route = str(observation.get("url") or "")
+    intent = "\n".join(
+        item
+        for item in [
+            goal,
+            route,
+            str(observation.get("title") or ""),
+            visible_excerpt,
+        ]
+        if item
+    )
+    candidate_elements = format_agent_ref_guidance(intent, route, observation, top_k=6)
+    shared_element_knowledge = ""
+    if candidate_elements:
+        shared_element_knowledge = (
+            "\n\nShared element knowledge (advisory only):\n"
+            f"{candidate_elements}\n"
+            "Important: shared element knowledge is advisory only. "
+            "To execute click/fill/hover/press, choose a current ref from observation.interactives. "
+            "Do not invent selectors from the shared library."
+        )
     return (
         "You are a bounded browser automation Agent for ICM regression exploration.\n"
         "Return exactly one JSON object. Do not return Markdown or explanations.\n\n"
@@ -558,6 +736,7 @@ def build_agent_prompt(goal: str, observation: dict[str, Any], history: list[dic
         "{\"action\":\"hover\",\"ref\":\"e3\",\"reason\":\"reveal hover menu\"}\n"
         "{\"action\":\"assert_text\",\"value\":\"Home\",\"reason\":\"verify homepage\"}\n\n"
         f"Recent history:\n{json.dumps(compact_history, ensure_ascii=False, indent=2)}\n\n"
+        f"{shared_element_knowledge}\n\n"
         f"Current observation:\n{json.dumps(observation, ensure_ascii=False, indent=2)}"
     )
 
@@ -719,7 +898,47 @@ async def decide_next_action(goal: str, observation: dict[str, Any], history: li
     raise ValueError(f"AI 决策返回的 JSON 不完整或格式错误，请重新执行本用例。原始错误：{parse_error}")
 
 
+def _feedback_page_id(observation: dict[str, Any]) -> str:
+    route = str(observation.get("url") or "")
+    parsed = urlparse(route)
+    fragment = parsed.fragment or parsed.path or route
+    value = re.sub(r"[^0-9a-zA-Z]+", "_", fragment).strip("_").lower()
+    return value or "unknown_page"
+
+
+def _record_agent_action_feedback(
+    *,
+    decision,
+    observation: dict[str, Any],
+    target: dict[str, Any] | None,
+    selector: str,
+    success: bool,
+    duration_ms: int,
+    error: str | None = None,
+) -> None:
+    if str(getattr(decision, "action", "")) not in {"click", "fill", "hover", "press"}:
+        return
+    if not feedback_enabled():
+        return
+    try:
+        record_element_feedback(
+            element_id=str((target or {}).get("element_id") or (target or {}).get("matched_element_id") or ""),
+            page_id=str((target or {}).get("page_id") or observation.get("page_id") or _feedback_page_id(observation)),
+            state=str((target or {}).get("state") or observation.get("state") or "default"),
+            action=str(getattr(decision, "action", "")),
+            selector=selector or str((target or {}).get("selector") or ""),
+            success=success,
+            duration_ms=duration_ms,
+            url=str(observation.get("url") or ""),
+            error=error,
+        )
+    except Exception:
+        # Feedback must never break the bounded Agent execution path.
+        return
+
+
 async def execute_agent_decision(page, decision, observation: dict[str, Any]) -> dict[str, Any]:
+    started_at = time.perf_counter()
     if decision.action == "goto":
         await page.goto(decision.url, wait_until="domcontentloaded", timeout=15000)
         return {"result": "navigated", "url": page.url}
@@ -738,40 +957,265 @@ async def execute_agent_decision(page, decision, observation: dict[str, Any]) ->
     target = next((item for item in observation.get("interactives") or [] if item.get("ref") == decision.ref), None)
     if decision.action == "press" and not target and not decision.ref:
         await page.keyboard.press(decision.key or "Enter")
+        duration_ms = int((time.perf_counter() - started_at) * 1000)
+        _record_agent_action_feedback(
+            decision=decision,
+            observation=observation,
+            target=None,
+            selector="",
+            success=True,
+            duration_ms=duration_ms,
+        )
         return {"result": "pressed", "ref": "", "key": decision.key or "Enter", "selector": ""}
     if not target:
-        raise RuntimeError(f"Agent selected unknown ref: {decision.ref}")
+        duration_ms = int((time.perf_counter() - started_at) * 1000)
+        error = f"Agent selected unknown ref: {decision.ref}"
+        _record_agent_action_feedback(
+            decision=decision,
+            observation=observation,
+            target=None,
+            selector="",
+            success=False,
+            duration_ms=duration_ms,
+            error=error,
+        )
+        raise RuntimeError(error)
     selector_candidates = _target_selector_candidates(target, decision.action)
     locator = await first_visible(page, selector_candidates)
     if locator is None:
-        raise RuntimeError(f"Agent target is not visible: {selector_candidates}")
+        duration_ms = int((time.perf_counter() - started_at) * 1000)
+        error = f"Agent target is not visible: {selector_candidates}"
+        _record_agent_action_feedback(
+            decision=decision,
+            observation=observation,
+            target=target,
+            selector=selector_candidates[0] if selector_candidates else "",
+            success=False,
+            duration_ms=duration_ms,
+            error=error,
+        )
+        raise RuntimeError(error)
     selector = selector_candidates[0] if selector_candidates else ""
     if decision.action == "fill":
-        await locator.fill(decision.value, timeout=8000)
-        return {"result": "filled", "ref": decision.ref, "selector": selector}
-    if decision.action == "click":
+        retried_steps: list[str] = []
+
+        async def fill_operation():
+            await locator.fill(decision.value, timeout=8000)
+
         try:
+            await fill_operation()
+        except Exception as exc:
+            try:
+                retried, retried_steps = await retry_once_with_healing(
+                    page=page,
+                    action=decision.action,
+                    target=target,
+                    locator=locator,
+                    error=exc,
+                    operation=fill_operation,
+                )
+            except Exception as retry_exc:
+                duration_ms = int((time.perf_counter() - started_at) * 1000)
+                _record_agent_action_feedback(
+                    decision=decision,
+                    observation=observation,
+                    target=target,
+                    selector=selector,
+                    success=False,
+                    duration_ms=duration_ms,
+                    error=str(retry_exc),
+                )
+                raise
+            if not retried:
+                duration_ms = int((time.perf_counter() - started_at) * 1000)
+                _record_agent_action_feedback(
+                    decision=decision,
+                    observation=observation,
+                    target=target,
+                    selector=selector,
+                    success=False,
+                    duration_ms=duration_ms,
+                    error=str(exc),
+                )
+                raise
+        duration_ms = int((time.perf_counter() - started_at) * 1000)
+        _record_agent_action_feedback(
+            decision=decision,
+            observation=observation,
+            target=target,
+            selector=selector,
+            success=True,
+            duration_ms=duration_ms,
+        )
+        result = {"result": "filled", "ref": decision.ref, "selector": selector}
+        if retried_steps:
+            result["healing_retry"] = retried_steps
+        return result
+    if decision.action == "click":
+        retried_steps: list[str] = []
+
+        async def click_operation():
             await locator.click(timeout=8000)
-            return {"result": "clicked", "ref": decision.ref, "selector": selector}
+
+        try:
+            await click_operation()
+            duration_ms = int((time.perf_counter() - started_at) * 1000)
+            _record_agent_action_feedback(
+                decision=decision,
+                observation=observation,
+                target=target,
+                selector=selector,
+                success=True,
+                duration_ms=duration_ms,
+            )
+            result = {"result": "clicked", "ref": decision.ref, "selector": selector}
+            if retried_steps:
+                result["healing_retry"] = retried_steps
+            return result
         except Exception as exc:
             if not _is_pointer_intercept_error(exc):
+                try:
+                    retried, retried_steps = await retry_once_with_healing(
+                        page=page,
+                        action=decision.action,
+                        target=target,
+                        locator=locator,
+                        error=exc,
+                        operation=click_operation,
+                    )
+                except Exception as retry_exc:
+                    duration_ms = int((time.perf_counter() - started_at) * 1000)
+                    _record_agent_action_feedback(
+                        decision=decision,
+                        observation=observation,
+                        target=target,
+                        selector=selector,
+                        success=False,
+                        duration_ms=duration_ms,
+                        error=str(retry_exc),
+                    )
+                    raise
+                if retried:
+                    duration_ms = int((time.perf_counter() - started_at) * 1000)
+                    _record_agent_action_feedback(
+                        decision=decision,
+                        observation=observation,
+                        target=target,
+                        selector=selector,
+                        success=True,
+                        duration_ms=duration_ms,
+                    )
+                    return {"result": "clicked", "ref": decision.ref, "selector": selector, "healing_retry": retried_steps}
+                duration_ms = int((time.perf_counter() - started_at) * 1000)
+                _record_agent_action_feedback(
+                    decision=decision,
+                    observation=observation,
+                    target=target,
+                    selector=selector,
+                    success=False,
+                    duration_ms=duration_ms,
+                    error=str(exc),
+                )
                 raise
             if not _target_looks_like_dropdown_trigger(target):
+                duration_ms = int((time.perf_counter() - started_at) * 1000)
+                _record_agent_action_feedback(
+                    decision=decision,
+                    observation=observation,
+                    target=target,
+                    selector=selector,
+                    success=False,
+                    duration_ms=duration_ms,
+                    error=str(exc),
+                )
                 raise
             if await _visible_dropdown_menu_item_count(page) <= 0:
+                duration_ms = int((time.perf_counter() - started_at) * 1000)
+                _record_agent_action_feedback(
+                    decision=decision,
+                    observation=observation,
+                    target=target,
+                    selector=selector,
+                    success=False,
+                    duration_ms=duration_ms,
+                    error=str(exc),
+                )
                 raise
+            duration_ms = int((time.perf_counter() - started_at) * 1000)
+            _record_agent_action_feedback(
+                decision=decision,
+                observation=observation,
+                target=target,
+                selector=selector,
+                success=True,
+                duration_ms=duration_ms,
+            )
             return {"result": "dropdown_opened", "ref": decision.ref, "selector": selector}
     if decision.action == "hover":
         try:
             await locator.hover(timeout=8000)
         except Exception as exc:
             if not _is_pointer_intercept_error(exc):
+                duration_ms = int((time.perf_counter() - started_at) * 1000)
+                _record_agent_action_feedback(
+                    decision=decision,
+                    observation=observation,
+                    target=target,
+                    selector=selector,
+                    success=False,
+                    duration_ms=duration_ms,
+                    error=str(exc),
+                )
                 raise
-            await _dismiss_stale_hover_overlay(page)
-            await locator.hover(timeout=8000)
+            try:
+                await _dismiss_stale_hover_overlay(page)
+                await locator.hover(timeout=8000)
+            except Exception as retry_exc:
+                duration_ms = int((time.perf_counter() - started_at) * 1000)
+                _record_agent_action_feedback(
+                    decision=decision,
+                    observation=observation,
+                    target=target,
+                    selector=selector,
+                    success=False,
+                    duration_ms=duration_ms,
+                    error=str(retry_exc),
+                )
+                raise
+        duration_ms = int((time.perf_counter() - started_at) * 1000)
+        _record_agent_action_feedback(
+            decision=decision,
+            observation=observation,
+            target=target,
+            selector=selector,
+            success=True,
+            duration_ms=duration_ms,
+        )
         return {"result": "hovered", "ref": decision.ref, "selector": selector}
     if decision.action == "press":
-        await locator.press(decision.key or "Enter", timeout=8000)
+        try:
+            await locator.press(decision.key or "Enter", timeout=8000)
+        except Exception as exc:
+            duration_ms = int((time.perf_counter() - started_at) * 1000)
+            _record_agent_action_feedback(
+                decision=decision,
+                observation=observation,
+                target=target,
+                selector=selector,
+                success=False,
+                duration_ms=duration_ms,
+                error=str(exc),
+            )
+            raise
+        duration_ms = int((time.perf_counter() - started_at) * 1000)
+        _record_agent_action_feedback(
+            decision=decision,
+            observation=observation,
+            target=target,
+            selector=selector,
+            success=True,
+            duration_ms=duration_ms,
+        )
         return {"result": "pressed", "ref": decision.ref, "key": decision.key or "Enter", "selector": selector}
     raise RuntimeError(f"Unsupported agent action: {decision.action}")
 

@@ -25,6 +25,10 @@ function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : "unknown error";
 }
 
+function createGenerationId() {
+  return `generation-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
 function downloadBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
@@ -50,7 +54,7 @@ function formatSecondTime(value?: string | null) {
 
 function initialWorkspaceState() {
   return {
-    title: "远程报修流程需求",
+    title: "",
     document: "",
   };
 }
@@ -276,6 +280,8 @@ async function buildMindPngBlob(drafts: CaseDraft[], requirementTitle: string, m
 }
 
 export function RequirementsWorkspace() {
+  const generationControllerRef = useRef<AbortController | null>(null);
+  const generationIdRef = useRef<string | null>(null);
   const [title, setTitle] = useState(initialWorkspaceState().title);
   const [document, setDocument] = useState(initialWorkspaceState().document);
   const [projectName, setProjectName] = useState("");
@@ -465,6 +471,10 @@ export function RequirementsWorkspace() {
       setStatus("请先填写需求标题和需求正文。");
       return;
     }
+    const controller = new AbortController();
+    const generationId = createGenerationId();
+    generationControllerRef.current = controller;
+    generationIdRef.current = generationId;
     setBusy(true);
     setStatus("正在按规范生成测试用例...");
     try {
@@ -473,17 +483,40 @@ export function RequirementsWorkspace() {
         document: document,
         context_info: contextFields,
         project_id: projectId,
+        generation_id: generationId,
       };
-      const result = await api.analyzeRequirementSpec(payload);
+      const result = await api.analyzeRequirementSpec(payload, controller.signal);
       setDetail(result);
       setLinkedRequirementId(result.requirement.id);
       setRequirements(await api.requirements());
       setSelectedDraftId(result.drafts[0]?.id ?? null);
       setStatus(`已生成 ${result.drafts.length} 条测试用例草稿。`);
     } catch (error) {
-      setStatus(`分析失败：${errorMessage(error)}`);
+      setStatus(controller.signal.aborted ? "已停止生成，未保存用例草稿。" : `分析失败：${errorMessage(error)}`);
     } finally {
-      setBusy(false);
+      if (generationControllerRef.current === controller) {
+        generationControllerRef.current = null;
+        generationIdRef.current = null;
+        setBusy(false);
+      }
+    }
+  }
+
+  async function stopGeneration() {
+    const controller = generationControllerRef.current;
+    const generationId = generationIdRef.current;
+    if (!controller || !generationId) return;
+
+    try {
+      const result = await api.stopRequirementGeneration(generationId);
+      if (result.status !== "cancellation_requested") {
+        setStatus("生成已进入保存阶段，正在加载结果。");
+        return;
+      }
+      controller.abort();
+      setStatus("已停止生成，未保存用例草稿。");
+    } catch (error) {
+      setStatus(`停止失败：${errorMessage(error)}`);
     }
   }
 
@@ -959,6 +992,7 @@ export function RequirementsWorkspace() {
             <input
               className="text-input"
               id="requirement-title"
+              placeholder="请输入需求标题"
               value={title}
               onChange={(event) => setTitle(event.target.value)}
             />
@@ -1116,8 +1150,8 @@ export function RequirementsWorkspace() {
               </button>
               <button
                 className="btn btn--outline"
-                disabled
-                title="流式中断即将支持"
+                disabled={!busy || !generationControllerRef.current}
+                onClick={() => void stopGeneration()}
                 type="button"
               >
                 停止

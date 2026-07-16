@@ -1,3 +1,6 @@
+import json
+
+from runner import element_knowledge
 from runner.agent_explore import allowed_hosts_for_system, build_agent_goal, build_agent_prompt, build_self_heal_goal
 
 
@@ -59,6 +62,95 @@ def test_agent_prompt_forbids_default_admin_fallback_when_case_data_exists():
     assert "Do not substitute default admin/test accounts unless the case goal explicitly says so." in prompt
     assert '"value":"test"' in prompt
     assert '"value":"admin"' not in prompt
+
+
+def test_agent_prompt_omits_library_candidates_without_current_ref(tmp_path, monkeypatch):
+    library_path = tmp_path / "library.json"
+    library_path.write_text(
+        json.dumps(
+            {
+                "elements": [
+                    {
+                        "name": "user_create_button",
+                        "human_en": "user create button",
+                        "human_zh": ["新增用户按钮"],
+                        "context_keys": ["user", "list_page"],
+                        "selectors": ["button:has-text(新增用户)"],
+                        "coverage": 1,
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ELEMENT_LIBRARY_PATH", str(library_path))
+    element_knowledge.clear_library_cache()
+
+    prompt = build_agent_prompt(
+        "Create a user account",
+        {"url": "https://example.test/#/system/user", "title": "用户管理", "visibleText": ["新增用户"], "interactives": []},
+        [],
+        0,
+        3,
+    )
+
+    assert "Shared element knowledge" not in prompt
+    assert "user_create_button" not in prompt
+    assert "must use a ref from observation.interactives" in prompt
+    assert "Do not invent selectors" in prompt
+
+
+def test_agent_prompt_injects_recommended_current_ref(tmp_path, monkeypatch):
+    library_path = tmp_path / "library.json"
+    library_path.write_text(
+        json.dumps(
+            {
+                "elements": [
+                    {
+                        "name": "user_create_button",
+                        "human_en": "user create button",
+                        "human_zh": ["新增用户按钮"],
+                        "context_keys": ["user", "list_page"],
+                        "selectors": ["button.add"],
+                        "tag": "button",
+                        "text": "新增用户",
+                        "coverage": 1,
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ELEMENT_LIBRARY_PATH", str(library_path))
+    element_knowledge.clear_library_cache()
+
+    prompt = build_agent_prompt(
+        "Create a user account",
+        {
+            "url": "https://example.test/#/system/user",
+            "title": "用户管理",
+            "visibleText": ["新增用户"],
+            "interactives": [{"ref": "e3", "selector": "button.add", "tag": "button", "text": "新增用户"}],
+        },
+        [],
+        0,
+        3,
+    )
+
+    assert "recommended current ref: `e3`" in prompt
+    assert "Use recommended refs only if they appear in current observation.interactives" in prompt
+    assert "Do not invent selectors" in prompt
+
+
+def test_agent_prompt_omits_shared_element_knowledge_when_library_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("ELEMENT_LIBRARY_PATH", str(tmp_path / "missing.json"))
+    element_knowledge.clear_library_cache()
+
+    prompt = build_agent_prompt("Create a user account", {"interactives": []}, [], 0, 3)
+
+    assert "Shared element knowledge" not in prompt
 
 
 def test_build_self_heal_goal_includes_failure_hint_and_tail_history():

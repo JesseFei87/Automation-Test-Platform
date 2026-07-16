@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 from runner.agent_actions import normalize_decision
 from runner.agent_explore import OBSERVE_PAGE_SCRIPT, _agent_decision_payload, build_agent_prompt, execute_agent_decision, extract_json_object, run_agent_loop
@@ -60,6 +61,95 @@ def test_agent_loop_stops_on_execution_error():
         assert result["ok"] is False
         assert result["error"] == "click failed"
         assert len(result["history"]) == 1
+
+    asyncio.run(scenario())
+
+
+def test_agent_loop_recovers_unknown_ref_with_fresh_bound_ref(monkeypatch):
+    async def scenario():
+        observations = [
+            {"url": "https://example.test/#/users", "interactives": [{"ref": "e1", "selector": "button.old"}]},
+            {"url": "https://example.test/#/users", "interactives": [{"ref": "e2", "selector": "button.add", "text": "新增"}]},
+        ]
+        observed = {"count": 0}
+        executed = []
+
+        async def observe():
+            index = min(observed["count"], len(observations) - 1)
+            observed["count"] += 1
+            return observations[index]
+
+        async def decide(goal, observation, history, step_index, max_steps):
+            return {"action": "click", "ref": "missing" if step_index == 0 else "", "reason": "新增用户"} if step_index == 0 else {"action": "finish", "reason": "done"}
+
+        async def execute(decision, observation):
+            executed.append(decision.ref)
+            return {"result": "clicked", "ref": decision.ref}
+
+        monkeypatch.setattr(
+            "runner.agent_explore.resolve_recovery_ref",
+            lambda *args, **kwargs: {"status": "resolved", "ref": "e2", "score": 40.0, "element_name": "user_create_button"},
+        )
+        result = await run_agent_loop("新增用户", observe, decide, execute, {"example.test"}, max_steps=2)
+
+        assert result["ok"] is True
+        assert executed == ["e2"]
+        assert result["history"][0]["execution"]["recovery"]["original_ref"] == "missing"
+        assert result["history"][0]["decision"]["ref"] == "e2"
+
+    asyncio.run(scenario())
+
+
+def test_agent_loop_does_not_retry_after_action_timeout(monkeypatch):
+    async def scenario():
+        calls = {"resolver": 0, "execute": 0}
+
+        async def observe():
+            return {"url": "https://example.test/#/users", "interactives": [{"ref": "e1", "selector": "button.add"}]}
+
+        async def decide(goal, observation, history, step_index, max_steps):
+            return {"action": "click", "ref": "e1", "reason": "新增用户"}
+
+        async def execute(decision, observation):
+            calls["execute"] += 1
+            return {"result": "error", "error": "timeout after click dispatched"}
+
+        def resolve(*args, **kwargs):
+            calls["resolver"] += 1
+            return {"status": "resolved", "ref": "e2", "score": 40.0}
+
+        monkeypatch.setattr("runner.agent_explore.resolve_recovery_ref", resolve)
+        result = await run_agent_loop("新增用户", observe, decide, execute, {"example.test"}, max_steps=2)
+
+        assert result["ok"] is False
+        assert calls == {"resolver": 0, "execute": 1}
+
+    asyncio.run(scenario())
+
+
+def test_agent_loop_rejects_rebound_ref_outside_fresh_observation(monkeypatch):
+    async def scenario():
+        executed = []
+
+        async def observe():
+            return {"url": "https://example.test/#/users", "interactives": [{"ref": "e2", "selector": "button.add"}]}
+
+        async def decide(goal, observation, history, step_index, max_steps):
+            return {"action": "click", "ref": "missing", "reason": "新增用户"}
+
+        async def execute(decision, observation):
+            executed.append(decision.ref)
+            return {"result": "clicked"}
+
+        monkeypatch.setattr(
+            "runner.agent_explore.resolve_recovery_ref",
+            lambda *args, **kwargs: {"status": "resolved", "ref": "e9", "score": 40.0},
+        )
+        result = await run_agent_loop("新增用户", observe, decide, execute, {"example.test"}, max_steps=1)
+
+        assert result["ok"] is False
+        assert executed == []
+        assert result["history"][0]["execution"]["recovery"]["status"] == "invalid_rebound_ref"
 
     asyncio.run(scenario())
 
@@ -258,6 +348,9 @@ def test_execute_agent_decision_retries_hover_after_dismissing_stale_dropdown(mo
 
 def test_observe_page_script_collects_dropdown_menu_items():
     assert ".el-dropdown-menu__item" in OBSERVE_PAGE_SCRIPT
+    assert 'img[tabindex]:not([tabindex="-1"])' in OBSERVE_PAGE_SCRIPT
+    assert "aria-describedby" in OBSERVE_PAGE_SCRIPT
+    assert ".top_button > img.el-tooltip.button:nth-of-type" in OBSERVE_PAGE_SCRIPT
 
 
 def test_execute_agent_decision_treats_visible_dropdown_intercept_as_open_menu(monkeypatch):

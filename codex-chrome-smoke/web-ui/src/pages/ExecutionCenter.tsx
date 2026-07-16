@@ -13,6 +13,7 @@ function statusTone(status: string): "green" | "red" | "amber" | "blue" {
   if (status === "completed" || status === "passed" || status === "success") return "green";
   if (status === "failed") return "red";
   if (status === "running") return "blue";
+  if (status === "stopping") return "amber";
   return "amber";
 }
 
@@ -20,6 +21,7 @@ function statusText(status: string) {
   if (status === "completed" || status === "passed" || status === "success") return "已通过";
   if (status === "failed") return "失败";
   if (status === "running") return "运行中";
+  if (status === "stopping") return "停止中";
   if (status === "queued") return "排队中";
   return status || "未知";
 }
@@ -39,7 +41,7 @@ function assertionText(status: string) {
 }
 
 function isLiveStatus(status: string) {
-  return status === "running" || status === "queued" || status === "pending";
+  return status === "running" || status === "queued" || status === "pending" || status === "stopping";
 }
 
 function formatLogTimestamp(value: string) {
@@ -101,7 +103,7 @@ export function ExecutionCenter({
 }) {
   const [cases, setCases] = useState<ApiCase[]>([]);
   const [runs, setRuns] = useState<ExecutionListItem[]>([]);
-  const [selectedCaseId, setSelectedCaseId] = useState("");
+  const [selectedCaseIds, setSelectedCaseIds] = useState<string[]>([]);
   const [message, setMessage] = useState("正在连接本地执行服务...");
   const [selectedRunId, setSelectedRunId] = useState("");
   const [runDetail, setRunDetail] = useState<ApiRunDetailView | null>(null);
@@ -110,13 +112,14 @@ export function ExecutionCenter({
   const [selectedStepKey, setSelectedStepKey] = useState("");
   const [promoting, setPromoting] = useState(false);
   const [selfHealing, setSelfHealing] = useState(false);
+  const [stopping, setStopping] = useState(false);
   const [deletingRunId, setDeletingRunId] = useState("");
   const [lastPromotedCaseId, setLastPromotedCaseId] = useState("");
   const [previewShot, setPreviewShot] = useState<ApiScreenshot | null>(null);
   const [overviewExpanded, setOverviewExpanded] = useState(true);
   const pendingAutoSelectRunIdRef = useRef("");
 
-  const workerRuns = useMemo(() => runs.filter((item) => item.mode === "worker"), [runs]);
+  const workerRuns = useMemo(() => runs.filter((item) => item.mode === "worker" && item.source.mode !== "run-batch"), [runs]);
   const agentRuns = useMemo(() => runs.filter((item) => item.mode === "agent"), [runs]);
   const visibleRuns = useMemo(() => (activeExecutionTab === "agent" ? agentRuns : workerRuns), [activeExecutionTab, agentRuns, workerRuns]);
   const selectedRun = useMemo(() => runs.find((item) => item.runId === selectedRunId) || null, [runs, selectedRunId]);
@@ -149,7 +152,7 @@ export function ExecutionCenter({
     try {
       const result = await api.cases();
       setCases(result);
-      setSelectedCaseId((current) => (result.some((item) => item.id === current) ? current : result[0]?.id || ""));
+      setSelectedCaseIds((current) => current.filter((caseId) => result.some((item) => item.id === caseId)));
     } catch {
       setMessage("无法读取正式用例。");
     }
@@ -161,7 +164,7 @@ export function ExecutionCenter({
       setRuns(result);
       const pendingAutoSelectRunId = pendingAutoSelectRunIdRef.current;
       const forcedSelection = pendingAutoSelectRunId ? result.find((item) => item.runId === pendingAutoSelectRunId) : undefined;
-      const preferredVisibleRuns = activeExecutionTab === "agent" ? result.filter((item) => item.mode === "agent") : result.filter((item) => item.mode === "worker");
+      const preferredVisibleRuns = activeExecutionTab === "agent" ? result.filter((item) => item.mode === "agent") : result.filter((item) => item.mode === "worker" && item.source.mode !== "run-batch");
       const preferred =
         preferredVisibleRuns.find((item) => item.status === "running") ||
         preferredVisibleRuns.find((item) => item.status === "failed") ||
@@ -182,11 +185,34 @@ export function ExecutionCenter({
     }
   }
 
-  async function startRun(mode: "run-case" | "run-batch") {
-    if (mode === "run-case" && !selectedCaseId) return;
+  function toggleCase(caseId: string) {
+    setSelectedCaseIds((current) => (current.includes(caseId) ? current.filter((item) => item !== caseId) : [...current, caseId]));
+  }
+
+  function selectAllCases() {
+    setSelectedCaseIds(cases.map((item) => item.id));
+  }
+
+  function invertSelectedCases() {
+    setSelectedCaseIds((current) => cases.filter((item) => !current.includes(item.id)).map((item) => item.id));
+  }
+
+  function moveSelectedCase(caseId: string, offset: number) {
+    setSelectedCaseIds((current) => {
+      const index = current.indexOf(caseId);
+      const target = index + offset;
+      if (index < 0 || target < 0 || target >= current.length) return current;
+      const next = [...current];
+      [next[index], next[target]] = [next[target], next[index]];
+      return next;
+    });
+  }
+
+  async function startRun() {
+    if (!selectedCaseIds.length) return;
     setSubmitting(true);
     try {
-      const task = await api.createRun(mode, mode === "run-case" ? selectedCaseId : undefined);
+      const task = await api.createRun("run-batch", undefined, undefined, selectedCaseIds);
       setActiveExecutionTab("worker");
       pendingAutoSelectRunIdRef.current = task.id;
       setSelectedRunId(task.id);
@@ -196,6 +222,20 @@ export function ExecutionCenter({
       setMessage(error instanceof Error ? error.message : "提交失败");
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function stopRun() {
+    if (!selectedRunId) return;
+    setStopping(true);
+    try {
+      const result = await api.stopRun(selectedRunId);
+      setMessage(`停止请求已发送：${result.id}`);
+      await refreshRuns();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "停止任务失败");
+    } finally {
+      setStopping(false);
     }
   }
 
@@ -210,7 +250,7 @@ export function ExecutionCenter({
       const result = await api.promoteRegression(runId);
       setLastPromotedCaseId(result.case_id);
       await loadCases();
-      setSelectedCaseId(result.case_id);
+      setSelectedCaseIds([result.case_id]);
       setMessage(`已沉淀为正式回归用例：${result.case_id}`);
     } catch (error) {
       setLastPromotedCaseId("");
@@ -348,22 +388,48 @@ export function ExecutionCenter({
           <div className="execution-cluster__body">
             <div className="execution-cluster__grid">
           <Card className="execution-entry-card" title="执行入口" subtitle="常规执行与智能探索共用同一调度台">
-            <label className="field-label" htmlFor="case-select">
+            <span className="field-label">
               选择正式用例
-            </label>
-            <select className="case-select" id="case-select" onChange={(event) => setSelectedCaseId(event.target.value)} value={selectedCaseId}>
-              {cases.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.id} {item.title ? `- ${item.title}` : ""}
-                </option>
-              ))}
-            </select>
+            </span>
+            <div className="case-selection__actions">
+              <span>已选 {selectedCaseIds.length} 条</span>
+              <button disabled={!cases.length} onClick={selectAllCases} type="button">全选</button>
+              <button disabled={!cases.length} onClick={invertSelectedCases} type="button">反选</button>
+            </div>
+            <div className="case-picker">
+              <div className="case-picker__menu">
+                  {cases.map((item) => {
+                    const selectedIndex = selectedCaseIds.indexOf(item.id);
+                    const selected = selectedIndex >= 0;
+                    return (
+                      <div className="case-picker__option" key={item.id}>
+                        <label className="case-picker__choice">
+                          <input checked={selected} onChange={() => toggleCase(item.id)} type="checkbox" />
+                          <span>{item.id} {item.title ? `- ${item.title}` : ""}</span>
+                        </label>
+                        {selected ? (
+                          <span className="case-picker__order">
+                            <b>{selectedIndex + 1}</b>
+                            <button aria-label={`上移 ${item.id}`} disabled={selectedIndex === 0} onClick={() => moveSelectedCase(item.id, -1)} type="button">上移</button>
+                            <button aria-label={`下移 ${item.id}`} disabled={selectedIndex === selectedCaseIds.length - 1} onClick={() => moveSelectedCase(item.id, 1)} type="button">下移</button>
+                          </span>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+              </div>
+            </div>
             <div className="button-row">
-              <button className="btn btn--primary" disabled={submitting || !selectedCaseId} onClick={() => startRun("run-case")} type="button">
-                执行单条
+              <button className="btn btn--green" disabled={submitting || !selectedCaseIds.length} onClick={startRun} type="button">
+                执行选中 {selectedCaseIds.length}
               </button>
-              <button className="btn btn--green" disabled={submitting} onClick={() => startRun("run-batch")} type="button">
-                批量执行
+              <button
+                className="btn btn-danger"
+                disabled={stopping || !isLiveStatus(selectedRun?.status || detailModel.status)}
+                onClick={() => void stopRun()}
+                type="button"
+              >
+                {stopping ? "停止中..." : "停止执行"}
               </button>
             </div>
             <p className="muted">

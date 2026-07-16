@@ -64,7 +64,7 @@ def read_report(run_id: str) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def list_batch_child_reports(parent_run_id: str) -> list[dict[str, Any]]:
+def list_batch_child_reports(parent_run_id: str, case_ids: list[str] | None = None) -> list[dict[str, Any]]:
     existing: dict[str, dict[str, Any]] = {}
     for path in REPORT_DIR.glob(f"{parent_run_id}-tc-icm-*.md"):
         text = path.read_text(encoding="utf-8")
@@ -81,7 +81,8 @@ def list_batch_child_reports(parent_run_id: str) -> list[dict[str, Any]]:
             }
 
     children: list[dict[str, Any]] = []
-    for index, case_id in enumerate(BATCH_CASE_ORDER, start=1):
+    ordered_case_ids = case_ids or BATCH_CASE_ORDER
+    for index, case_id in enumerate(ordered_case_ids, start=1):
         children.append(
             existing.get(
                 case_id,

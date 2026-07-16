@@ -296,30 +296,6 @@ export function CaseToolbox({ onRunCreated }: { onRunCreated?: (runId: string) =
     }
   }
 
-  async function validateDraft(target?: CaseDraft) {
-    const draft = target || selectedDraft;
-    if (!draft) {
-      setStatus("请先选择一条用例");
-      return null;
-    }
-    setBusy(true);
-    try {
-      const result = await api.validateCaseDraft(draft.id, {
-        yaml: draft.id === selectedDraftId ? yaml : draft.yaml,
-        case_id: draft.id === selectedDraftId ? caseId : defaultCaseId(draft),
-      });
-      if (draft.id === selectedDraftId) setValidation(result);
-      setStatus(result.valid ? "YAML 校验通过，可以转正式 case" : `YAML 校验失败：${result.errors.join("；")}`);
-      return result;
-    } catch (error) {
-      if (draft.id === selectedDraftId) setValidation(null);
-      setStatus(`YAML 校验失败：${errorMessage(error)}`);
-      return null;
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function promoteDraft() {
     if (!selectedDraft) {
       setStatus("请先选择一条用例");
@@ -669,9 +645,6 @@ export function CaseToolbox({ onRunCreated }: { onRunCreated?: (runId: string) =
             <div className="button-row">
               <button className="btn btn--outline" type="button" disabled={!selectedDraft || busy || detailMode === "formal"} onClick={saveDraft}>
                 保存草稿
-              </button>
-              <button className="btn btn--outline" type="button" disabled={!selectedDraft || busy || detailMode === "formal"} onClick={() => void validateDraft()}>
-                校验
               </button>
               <button className="btn btn--primary" type="button" disabled={!selectedDraft || busy || detailMode === "formal"} onClick={promoteDraft}>
                 转正式

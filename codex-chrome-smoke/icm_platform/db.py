@@ -54,6 +54,7 @@ def init_db() -> None:
               id text primary key,
               mode text not null,
               case_id text,
+              batch_case_ids text,
               parent_run_id text,
               trigger text,
               healing_context_path text,
@@ -209,6 +210,7 @@ def init_db() -> None:
         ensure_column(conn, "case_drafts", "promoted_path", "text")
         ensure_column(conn, "case_drafts", "error", "text")
         ensure_column(conn, "run_tasks", "parent_run_id", "text")
+        ensure_column(conn, "run_tasks", "batch_case_ids", "text")
         ensure_column(conn, "run_tasks", "trigger", "text")
         ensure_column(conn, "run_tasks", "healing_context_path", "text")
         ensure_column(conn, "run_tasks", "report_deleted_at", "text")
@@ -414,9 +416,13 @@ def default_platform_settings() -> dict[str, Any]:
         "runner": {
             "browser_mode": "background",
             "queue_mode": "serial",
-            "batch_range": "TC-ICM-001..TC-ICM-012",
             "screenshot_policy": "latest_plus_failed_archive",
             "headless": True,
+            "maximize_window": False,
+            "viewport_mode": "fixed",
+            "viewport_width": 1600,
+            "viewport_height": 1100,
+            "ignore_https_errors": True,
         },
         "asset_policy": {
             "observed_asset_enabled": True,
@@ -512,7 +518,17 @@ def save_platform_settings(payload: dict[str, Any]) -> dict[str, Any]:
 
 def normalize_runner_settings(settings: dict[str, Any]) -> dict[str, Any]:
     browser_mode = settings.get("browser_mode") or "background"
-    normalized = {**settings, "browser_mode": browser_mode}
+    viewport_mode = settings.get("viewport_mode") if settings.get("viewport_mode") in {"fixed", "window"} else "fixed"
+    normalized = {
+        **settings,
+        "browser_mode": browser_mode,
+        "viewport_mode": viewport_mode,
+        "viewport_width": max(320, min(7680, int(settings.get("viewport_width") or 1600))),
+        "viewport_height": max(240, min(4320, int(settings.get("viewport_height") or 1100))),
+        "maximize_window": bool(settings.get("maximize_window", False)),
+        "ignore_https_errors": bool(settings.get("ignore_https_errors", True)),
+    }
+    normalized.pop("batch_range", None)
     normalized["headless"] = browser_mode == "background"
     return normalized
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 import importlib.util
@@ -7,13 +8,17 @@ import re
 import subprocess
 import sys
 import threading
+import time
 import uuid
 import shutil
+from contextlib import asynccontextmanager
 from datetime import datetime
 from hashlib import sha256
 from pathlib import Path
-from typing import Literal
-from urllib.parse import quote
+from typing import Any, Iterator, Literal
+from urllib.parse import quote, urlparse
+from urllib.error import URLError
+from urllib.request import urlopen
 
 import io
 from openpyxl import Workbook
@@ -21,10 +26,11 @@ from openpyxl.styles import Alignment, Font, PatternFill
 import yaml
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
-from pydantic import BaseModel
+from fastapi.responses import FileResponse, Response, StreamingResponse
+from pydantic import AliasChoices, BaseModel, Field, SecretStr
 
 from icm_platform.ai_service import AIConfigurationError, AIProviderError, AIService
+from icm_platform.generation_control import GenerationCancellationRegistry
 from icm_platform.assets import latest_screenshots, list_batch_child_reports, list_cases, list_reports, parse_report, read_report
 from icm_platform.db import (
     connect,
@@ -43,11 +49,48 @@ from icm_platform.db import (
 )
 from icm_platform.paths import DB_PATH, DRAFT_RUN_DIR, OBSERVED_ASSET_DIR, REPORT_DIR, ROOT, SCREENSHOTS_LATEST_DIR, SCREENSHOTS_RUNS_DIR, SPEC_FILE, TEST_CASE_DIR
 from icm_platform.run_views import summarize_run_task
+from icm_platform import recorder
+from icm_platform.recorder_runtime import RecorderRuntime
+from icm_platform.codegen_experiment_runtime import CodegenExperimentError, CodegenExperimentRuntime
 from icm_platform.worker import RunnerWorker
 from runner.evidence_recorder import EVIDENCE_ROOT, TRACE_ROOT, evidence_summary, read_jsonl
+from runner.element_knowledge_refresh import refresh_element_knowledge, refresh_library_file
+from runner.element_library_validator import validate_element_library
+from runner.element_route_discovery import discover_routes
+from runner.element_knowledge_report import DEFAULT_LIBRARY_PATH as ELEMENT_LIBRARY_PATH, DEFAULT_SUMMARY_PATH as ELEMENT_SUMMARY_PATH, build_report_model, load_json_file
+from runner.element_scanner import is_login_url
+from runner.browser import attach_browser_over_cdp, close_browser, launch_browser
+from runner.environment_config import build_scan_targets_from_profile, list_environment_profiles, resolve_scan_settings, with_account_credentials
+from runner.login_manager import ensure_storage_state_for_profile, existing_storage_state_for_profile, is_login_state_valid, resolve_storage_state_path
 from runner.step_details import load_step_details
 
-app = FastAPI(title="ICM AI Automation Platform", version="0.2.0")
+ai_service = AIService()
+worker = RunnerWorker()
+generation_control = GenerationCancellationRegistry()
+recorder_runtime = RecorderRuntime()
+codegen_experiment_runtime = CodegenExperimentRuntime()
+
+_DEDICATED_CDP_DEFAULT_PORT = 9222
+_DEDICATED_CDP_PROFILE_ROOT = ROOT / "platform-data" / "chrome-element-scan"
+
+# AI测试任务队列只允许展示测试执行类任务。
+# 其他平台维护任务（例如元素知识库刷新）必须进入自己的业务模块。
+AI_TEST_TASK_MODES = {
+    "run-case",
+    "run-batch",
+    "run-draft",
+    "agent-explore",
+}
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    init_db()
+    worker.start()
+    yield
+
+
+app = FastAPI(title="ICM AI Automation Platform", version="0.2.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://127.0.0.1:5175", "http://127.0.0.1:5176", "http://localhost:5175"],
@@ -57,9 +100,6 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["Content-Disposition"],
 )
-
-ai_service = AIService()
-worker = RunnerWorker()
 
 
 class AISettingsRequest(BaseModel):
@@ -81,6 +121,7 @@ class RequirementRequest(BaseModel):
     document: str
     context_info: dict | None = None
     project_id: str | None = None
+    generation_id: str | None = None
 
 
 class RequirementPatchRequest(BaseModel):
@@ -178,10 +219,255 @@ class ReportBatchDeleteRequest(BaseModel):
     run_ids: list[str]
 
 
+class ElementKnowledgeRefreshRequest(BaseModel):
+    no_scan: bool = True
+    min_healing_failures: int = 1
+    base_url: str | None = None
+    environment_id: str | None = None
+    target_url: str | None = None
+    target_page_id: str | None = None
+    target_name: str | None = None
+    include_states: bool = False
+    headless: bool = True
+
+
+class ElementKnowledgeRefreshTaskRequest(BaseModel):
+    no_scan: bool = True
+    min_healing_failures: int = 1
+    base_url: str | None = None
+    environment_id: str | None = None
+    target_url: str | None = None
+    target_page_id: str | None = None
+    target_name: str | None = None
+    include_states: bool = False
+    headless: bool = True
+
+
+class ElementKnowledgeValidationTaskRequest(BaseModel):
+    environment_id: str
+
+
 class RunRequest(BaseModel):
     mode: Literal["run-case", "run-batch", "run-draft", "agent-explore"]
     case_id: str | None = None
+    case_ids: list[str] = Field(default_factory=list)
     draft_id: int | None = None
+
+
+class RecorderStartRequest(BaseModel):
+    start_url: str = Field(validation_alias=AliasChoices("start_url", "entry_url"))
+
+
+class CodegenExperimentStartRequest(BaseModel):
+    start_url: str = Field(validation_alias=AliasChoices("start_url", "entry_url"))
+
+
+class CodegenExperimentRunRequest(BaseModel):
+    variables: dict[str, SecretStr] = Field(default_factory=dict)
+
+
+def _recorder_allowed_origins() -> list[str]:
+    environment = get_platform_settings(mask_secrets=False).get("environment") or {}
+    origins: set[str] = set()
+    for value in environment.values():
+        parsed = urlparse(str(value or ""))
+        if parsed.scheme in {"http", "https"} and parsed.netloc and not parsed.username and not parsed.password:
+            origins.add(f"{parsed.scheme}://{parsed.netloc}")
+    return sorted(origins)
+
+
+def _codegen_experiment_view(session_id: str) -> dict[str, Any]:
+    state = codegen_experiment_runtime.get(session_id)
+    running = bool(state.process and state.process.poll() is None and not state.stopped)
+    script = codegen_experiment_runtime.read_script(session_id)
+    status = "failed" if state.error else "recording" if running else "stopped" if state.stopped else "failed"
+    warnings = ["仅用于比较 Playwright Codegen 输出；不会写入 Recorder、候选脚本或回归集。"]
+    if script:
+        warnings.append("敏感字段在预览中已脱敏；原始临时脚本不会被发布。")
+    return {
+        "id": session_id,
+        "mode": "codegen-experiment",
+        "status": status,
+        "start_url": state.start_url,
+        "script": script,
+        "inputs": getattr(state, "input_variables", []),
+        "error": state.error,
+        "run": {
+            "status": getattr(state, "run_status", "not_started"),
+            "error": getattr(state, "run_error", None),
+        },
+        "warnings": warnings,
+    }
+
+
+@app.post("/api/codegen-experiments")
+def create_codegen_experiment(payload: CodegenExperimentStartRequest) -> dict:
+    if urlparse(payload.start_url).scheme + "://" + urlparse(payload.start_url).netloc not in _recorder_allowed_origins():
+        raise HTTPException(status_code=400, detail="Codegen experiment entry URL is not allowlisted")
+    try:
+        state = codegen_experiment_runtime.start(payload.start_url)
+        return _codegen_experiment_view(state.session_id)
+    except CodegenExperimentError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/api/codegen-experiments/{session_id}")
+def get_codegen_experiment(session_id: str) -> dict:
+    try:
+        return _codegen_experiment_view(session_id)
+    except CodegenExperimentError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/codegen-experiments/{session_id}/stop")
+def stop_codegen_experiment(session_id: str) -> dict:
+    try:
+        codegen_experiment_runtime.stop(session_id)
+        return _codegen_experiment_view(session_id)
+    except CodegenExperimentError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/codegen-experiments/{session_id}/run")
+def run_codegen_experiment(session_id: str, payload: CodegenExperimentRunRequest) -> dict:
+    try:
+        codegen_experiment_runtime.run(session_id, {name: value.get_secret_value() for name, value in payload.variables.items()})
+        return _codegen_experiment_view(session_id)
+    except CodegenExperimentError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+def _recorder_step(session_id: str, event: dict[str, Any]) -> dict[str, Any]:
+    action = event["action"]
+    selector = action.get("selector") or {}
+    return {
+        "id": f"{session_id}-{event['sequence']}",
+        "sequence": event["sequence"],
+        "action": action.get("type", "unknown"),
+        "locator": selector.get("value") or None,
+        "url": action.get("url") or None,
+        "value": "[redacted]" if action.get("redacted") else action.get("value") or None,
+        "status": "blocked" if action.get("review_required") else "recorded",
+        "warning": selector.get("reason") or None,
+        "created_at": event.get("created_at"),
+    }
+
+
+def _recorder_session_view(session_id: str) -> dict[str, Any]:
+    with connect() as conn:
+        session = recorder.get_session(conn, session_id)
+        events = recorder.list_events(conn, session_id)
+    state = recorder_runtime.get(session_id)
+    candidate = None
+    warnings = [str(event["action"].get("selector", {}).get("reason")) for event in events if event["action"].get("selector", {}).get("reason")]
+    if session.get("candidate_yaml") and session.get("candidate_python"):
+        try:
+            dsl = yaml.safe_load(session["candidate_yaml"]) or {}
+        except yaml.YAMLError:
+            dsl = {}
+        warnings.append("Candidate scripts require manual assertions and approval before publication.")
+        candidate = {
+            "yaml": session["candidate_yaml"],
+            "playwright_python": session["candidate_python"],
+            "publishable": bool(dsl.get("publishable")),
+            "blocking_warnings": list(dict.fromkeys(warnings)),
+        }
+    return {
+        "id": session_id,
+        "status": session["status"],
+        "start_url": session["start_url"],
+        "current_url": state.current_url if state else session["start_url"],
+        "stream_url": f"/api/recordings/{session_id}/events",
+        "steps": [_recorder_step(session_id, event) for event in events],
+        "candidate": candidate,
+        "error": state.error if state and state.error else session.get("failure_reason"),
+    }
+
+
+@app.post("/api/recordings")
+@app.post("/api/recorder/sessions", include_in_schema=False)
+def create_recorder_session(payload: RecorderStartRequest) -> dict:
+    allowed_origins = _recorder_allowed_origins()
+    try:
+        with connect() as conn:
+            session = recorder.create_session(conn, start_url=payload.start_url, allowed_origins=allowed_origins)
+        recorder_runtime.start(session["id"], session["start_url"])
+    except recorder.RecorderError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"unable to start isolated recorder browser: {exc}") from exc
+    return _recorder_session_view(session["id"])
+
+
+@app.get("/api/recordings/{session_id}")
+@app.get("/api/recorder/sessions/{session_id}", include_in_schema=False)
+def get_recorder_session(session_id: str) -> dict:
+    try:
+        return _recorder_session_view(session_id)
+    except recorder.RecorderError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/recordings/{session_id}/stop")
+@app.post("/api/recorder/sessions/{session_id}/stop", include_in_schema=False)
+def stop_recorder_session(session_id: str) -> dict:
+    try:
+        with connect() as conn:
+            recorder.get_session(conn, session_id)
+        recorder_runtime.stop(session_id)
+        with connect() as conn:
+            recorder.stop_session(conn, session_id)
+        return _recorder_session_view(session_id)
+    except recorder.RecorderError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/recordings/{session_id}/candidate")
+@app.post("/api/recorder/sessions/{session_id}/candidate", include_in_schema=False)
+def create_recorder_candidate(session_id: str) -> dict:
+    try:
+        with connect() as conn:
+            session = recorder.get_session(conn, session_id)
+            if session["status"] != "stopped":
+                raise HTTPException(status_code=409, detail="stop recording before generating a candidate")
+            if not session.get("candidate_yaml"):
+                recorder.stop_session(conn, session_id)
+        return _recorder_session_view(session_id)
+    except recorder.RecorderError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/recordings/{session_id}/events")
+@app.get("/api/recordings/{session_id}/stream", include_in_schema=False)
+@app.get("/api/recorder/sessions/{session_id}/events", include_in_schema=False)
+def recorder_events_stream(session_id: str) -> StreamingResponse:
+    try:
+        with connect() as conn:
+            recorder.get_session(conn, session_id)
+    except recorder.RecorderError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    def stream() -> Iterator[str]:
+        after = 0
+        while True:
+            with connect() as conn:
+                events = recorder.list_events(conn, session_id, after=after)
+                session = recorder.get_session(conn, session_id)
+            for event in events:
+                after = event["sequence"]
+                state = recorder_runtime.get(session_id)
+                payload = {
+                    "id": session_id,
+                    "status": session["status"],
+                    "current_url": state.current_url if state else session["start_url"],
+                    "step": _recorder_step(session_id, event),
+                }
+                yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+            if session["status"] != "recording":
+                break
+            time.sleep(0.4)
+
+    return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 # -----------------------------------------------------------------------------
@@ -249,12 +535,6 @@ def delete_project(project_id: str) -> dict:
     if not ok:
         raise HTTPException(status_code=404, detail="project not found")
     return {"ok": True}
-
-
-@app.on_event("startup")
-def startup() -> None:
-    init_db()
-    worker.start()
 
 
 @app.get("/api/health")
@@ -765,6 +1045,10 @@ def _load_spec_text() -> str:
 
 @app.post("/api/requirements/analyze-spec")
 def analyze_requirement_spec(payload: RequirementRequest) -> dict:
+    generation_id = (payload.generation_id or "").strip()
+    if generation_id and not generation_control.begin(generation_id):
+        generation_control.finish(generation_id)
+        raise HTTPException(status_code=409, detail="generation stopped before completion")
     standard_text = _load_spec_text()
     # P0 · 增量：按 project_id 查 project_profiles（已有函数 db.get_project_profile），拿不到用空 dict
     project_id = resolve_requirement_project_id(payload.project_id)
@@ -772,49 +1056,65 @@ def analyze_requirement_spec(payload: RequirementRequest) -> dict:
     project_for_prompt: dict = project or {}
     context_info = payload.context_info or None
     try:
-        result = ai_service.generate_test_cases_spec(
-            payload.document,
-            standard_text,
-            get_ai_settings(mask_key=False),
-            project=project_for_prompt or None,
-            context_info=context_info,
-        )
-    except AIConfigurationError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except AIProviderError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-    cases = result.get("cases") or []
-    analysis_summary, risk_summary = _spec_case_summary(cases)
-    now = utc_now()
-    with connect() as conn:
-        cur = conn.execute(
-            """
-            insert into requirements(title, document, status, analysis_summary, risk_summary, case_count, project_id, created_at, updated_at)
-            values (?, ?, 'analyzed', ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                payload.title,
+        try:
+            result = ai_service.generate_test_cases_spec(
                 payload.document,
-                analysis_summary,
-                risk_summary,
-                len(cases),
-                project_id,
-                now,
-                now,
-            ),
-        )
-        requirement_id = cur.lastrowid
-    _save_spec_case_drafts(requirement_id, cases, context_info=context_info)
-    detail = load_requirement_detail(requirement_id)
-    if not detail:
-        raise HTTPException(status_code=500, detail="failed to load generated requirement")
-    detail["provider"] = get_ai_settings(mask_key=False).get("provider")
-    detail["requirement"]["analysis_summary"] = analysis_summary
-    detail["requirement"]["risk_summary"] = risk_summary
-    detail["requirement"]["case_count"] = len(cases)
-    detail["generated_cases"] = len(cases)
-    return detail
+                standard_text,
+                get_ai_settings(mask_key=False),
+                project=project_for_prompt or None,
+                context_info=context_info,
+            )
+        except AIConfigurationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except AIProviderError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+        if generation_id and not generation_control.claim_persistence(generation_id):
+            raise HTTPException(status_code=409, detail="generation stopped before completion")
+
+        cases = result.get("cases") or []
+        analysis_summary, risk_summary = _spec_case_summary(cases)
+        now = utc_now()
+        with connect() as conn:
+            cur = conn.execute(
+                """
+                insert into requirements(title, document, status, analysis_summary, risk_summary, case_count, project_id, created_at, updated_at)
+                values (?, ?, 'analyzed', ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    payload.title,
+                    payload.document,
+                    analysis_summary,
+                    risk_summary,
+                    len(cases),
+                    project_id,
+                    now,
+                    now,
+                ),
+            )
+            requirement_id = cur.lastrowid
+        _save_spec_case_drafts(requirement_id, cases, context_info=context_info)
+        detail = load_requirement_detail(requirement_id)
+        if not detail:
+            raise HTTPException(status_code=500, detail="failed to load generated requirement")
+        detail["provider"] = get_ai_settings(mask_key=False).get("provider")
+        detail["requirement"]["analysis_summary"] = analysis_summary
+        detail["requirement"]["risk_summary"] = risk_summary
+        detail["requirement"]["case_count"] = len(cases)
+        detail["generated_cases"] = len(cases)
+        return detail
+    finally:
+        if generation_id:
+            generation_control.finish(generation_id)
+
+
+@app.post("/api/requirements/generations/{generation_id}/stop")
+def stop_requirement_generation(generation_id: str) -> dict:
+    cancelled = generation_control.request_stop(generation_id)
+    return {
+        "status": "cancellation_requested" if cancelled else "persistence_started",
+        "generation_id": generation_id,
+    }
 
 
 @app.post("/api/requirements/{requirement_id}/generate-spec-cases")
@@ -1198,7 +1498,7 @@ def run_case_draft(draft_id: int) -> dict[str, str | None]:
 @app.post("/api/runs")
 def create_run(payload: RunRequest) -> dict[str, str | None]:
     try:
-        return worker.enqueue(payload.mode, payload.case_id, payload.draft_id)
+        return worker.enqueue(payload.mode, payload.case_id, payload.draft_id, payload.case_ids)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1206,9 +1506,30 @@ def create_run(payload: RunRequest) -> dict[str, str | None]:
 @app.get("/api/runs")
 def runs() -> list[dict]:
     with connect() as conn:
-        rows = conn.execute("select * from run_tasks order by created_at desc limit 50").fetchall()
+        # AI测试任务队列只展示测试执行类任务。
+        # 元素知识库刷新属于平台维护任务，走独立的
+        # /api/element-knowledge/refresh-tasks 接口，不应该污染测试队列。
+        placeholders = ",".join("?" for _ in AI_TEST_TASK_MODES)
+        rows = conn.execute(
+            f"""
+            select *
+            from run_tasks
+            where mode in ({placeholders})
+            order by created_at desc
+            limit 50
+            """,
+            tuple(AI_TEST_TASK_MODES),
+        ).fetchall()
     tasks = rows_to_dicts(rows)
     return [{**task, "summary": summarize_run_task(task)} for task in tasks]
+
+
+@app.post("/api/runs/{run_id}/stop")
+def stop_run(run_id: str) -> dict[str, str]:
+    try:
+        return worker.stop(run_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _delete_run_artifacts(run_id: str, task_dict: dict) -> dict[str, int]:
@@ -1263,7 +1584,7 @@ def run_detail(run_id: str) -> dict:
     report = ""
     screenshots: list[dict[str, str]] = []
     task_dict = dict(task)
-    children = list_batch_child_reports(run_id) if task_dict.get("mode") == "run-batch" else []
+    children = list_batch_child_reports(run_id, case_ids=_batch_case_ids(task_dict)) if task_dict.get("mode") == "run-batch" else []
     if task_dict.get("report_path"):
         try:
             report = read_report(run_id)
@@ -1318,14 +1639,25 @@ def _report_screenshots(task_dict: dict, report_text: str) -> list[dict[str, str
     return screenshots
 
 
-def _batch_summary_report(run_id: str, children: list[dict[str, Any]]) -> str:
+def _batch_case_ids(task_dict: dict[str, Any]) -> list[str] | None:
+    raw = task_dict.get("batch_case_ids")
+    if not raw:
+        return None
+    try:
+        values = json.loads(str(raw))
+    except json.JSONDecodeError:
+        return None
+    return values if isinstance(values, list) else None
+
+
+def _batch_summary_report(run_id: str, children: list[dict[str, Any]], case_ids: list[str] | None = None) -> str:
     completed = [child for child in children if child.get("run_id")]
     passed = sum(1 for child in completed if child.get("status") == "passed")
     failed = sum(1 for child in completed if child.get("status") == "failed")
     lines = [
         f"# {run_id}",
         "",
-        "- case name: Batch 001-012",
+        f"- case name: {'Custom batch (' + str(len(children)) + ' cases)' if case_ids else 'Batch 001-012'}",
         "- environment: icm-internal",
         f"- status: {'failed' if failed else ('passed' if completed else 'running')}",
         f"- total: {len(completed)}",
@@ -2618,9 +2950,9 @@ def _build_unified_run_detail(run_id: str) -> dict:
             report_text = read_report(run_id)
         except FileNotFoundError:
             report_text = ""
-    batch_children = list_batch_child_reports(run_id) if task_dict.get("mode") == "run-batch" else []
+    batch_children = list_batch_child_reports(run_id, case_ids=_batch_case_ids(task_dict)) if task_dict.get("mode") == "run-batch" else []
     if task_dict.get("mode") == "run-batch" and not report_text and batch_children:
-        report_text = _batch_summary_report(run_id, batch_children)
+        report_text = _batch_summary_report(run_id, batch_children, _batch_case_ids(task_dict))
     screenshots = _report_screenshots(task_dict, report_text)
     analysis = ai_service.analyze_run_report(report_text, screenshots, [row["line"] for row in log_dicts] + evidence_log_lines(run_id)) if report_text else None
     agent_explore = load_agent_explore_artifacts(run_id) if task_dict.get("mode") == "agent-explore" else None
@@ -2633,7 +2965,7 @@ def _build_unified_run_detail(run_id: str) -> dict:
         steps = _build_batch_steps(batch_children)
         final_url = ""
         summary = {
-            "title": "Batch 001-012",
+            "title": f"Custom batch ({len(batch_children)} cases)" if _batch_case_ids(task_dict) else "Batch 001-012",
             "conclusion": f"Batch 已执行 {sum(1 for child in batch_children if child.get('run_id'))} 条用例。",
             "failure_reason": task_dict.get("error") or "",
             "ai_analysis": "",
@@ -4067,6 +4399,484 @@ def get_stability_scan(scan_id: str) -> dict:
     if not row:
         raise HTTPException(status_code=404, detail="scan not found")
     return dict(row)
+
+
+def _element_knowledge_payload(refresh_summary: dict | None = None) -> dict:
+    library = load_json_file(ELEMENT_LIBRARY_PATH)
+    summary = refresh_summary or load_json_file(ELEMENT_SUMMARY_PATH)
+    model = build_report_model(library, summary)
+    return {
+        "summary": model,
+        "elements": library.get("elements") or [],
+        "hotspots": model.get("hotspots") or [],
+        "report_paths": {
+            "markdown": summary.get("markdown_report_path") or str(ROOT / "reports" / "element-library" / "refresh-report.md"),
+            "html": summary.get("html_report_path") or str(ROOT / "reports" / "element-library" / "refresh-report.html"),
+        },
+        "source_paths": {
+            "library": str(ELEMENT_LIBRARY_PATH),
+            "summary": str(ELEMENT_SUMMARY_PATH),
+        },
+        "exists": {
+            "library": ELEMENT_LIBRARY_PATH.exists(),
+            "summary": ELEMENT_SUMMARY_PATH.exists(),
+        },
+    }
+
+
+@app.get("/api/element-knowledge")
+def get_element_knowledge() -> dict:
+    return _element_knowledge_payload()
+
+
+def _append_element_refresh_log(task_id: str, message: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            "insert into run_logs(run_id, stream, line, created_at) values (?, ?, ?, ?)",
+            (task_id, "element-knowledge", message, utc_now()),
+        )
+
+
+def _append_element_refresh_progress(task_id: str, progress: dict) -> None:
+    payload = {"kind": "progress", **progress, "updated_at": utc_now()}
+    _append_element_refresh_log(task_id, "progress " + json.dumps(payload, ensure_ascii=False, sort_keys=True))
+
+
+def _latest_element_refresh_progress(logs: list[dict]) -> dict | None:
+    for log in reversed(logs):
+        line = str(log.get("line") or "")
+        if not line.startswith("progress "):
+            continue
+        try:
+            payload = json.loads(line[len("progress ") :])
+        except Exception:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    return None
+
+
+def _element_refresh_task_payload(task_id: str) -> dict:
+    with connect() as conn:
+        task = conn.execute("select * from run_tasks where id = ?", (task_id,)).fetchone()
+        logs = conn.execute("select * from run_logs where run_id = ? order by id", (task_id,)).fetchall()
+    if not task:
+        raise HTTPException(status_code=404, detail="element knowledge refresh task not found")
+    task_dict = dict(task)
+    log_dicts = rows_to_dicts(logs)
+    return {
+        **task_dict,
+        "logs": log_dicts,
+        "progress": _latest_element_refresh_progress(log_dicts),
+        "snapshot": _element_knowledge_payload() if task_dict.get("status") in {"done", "passed"} else None,
+    }
+
+
+def _cdp_version_url(endpoint: str) -> str:
+    parsed = urlparse(str(endpoint or "").strip())
+    if parsed.scheme not in {"http", "https"} or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
+        raise ValueError("cdp_endpoint must use a loopback host such as http://127.0.0.1:9222")
+    try:
+        port = parsed.port or _DEDICATED_CDP_DEFAULT_PORT
+    except ValueError as exc:
+        raise ValueError("cdp_endpoint has an invalid port") from exc
+    return f"{parsed.scheme}://{parsed.hostname}:{port}/json/version"
+
+
+def _cdp_browser_ready(endpoint: str) -> bool:
+    try:
+        with urlopen(_cdp_version_url(endpoint), timeout=0.8) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        return bool(payload.get("webSocketDebuggerUrl"))
+    except (OSError, URLError, ValueError, json.JSONDecodeError):
+        return False
+
+
+def _find_chrome_executable() -> Path | None:
+    candidates = [
+        Path("C:/Program Files/Google/Chrome/Application/chrome.exe"),
+        Path("C:/Program Files (x86)/Google/Chrome/Application/chrome.exe"),
+    ]
+    return next((path for path in candidates if path.exists()), None)
+
+
+def _ensure_dedicated_cdp_browser(endpoint: str) -> str:
+    """Start the element-library Chrome only when its local CDP endpoint is absent."""
+    if _cdp_browser_ready(endpoint):
+        return "reused"
+    version_url = _cdp_version_url(endpoint)
+    port = urlparse(version_url).port or _DEDICATED_CDP_DEFAULT_PORT
+    chrome_path = _find_chrome_executable()
+    if not chrome_path:
+        raise RuntimeError("Google Chrome was not found; install Chrome before starting the dedicated CDP browser")
+    profile_path = _DEDICATED_CDP_PROFILE_ROOT if port == _DEDICATED_CDP_DEFAULT_PORT else ROOT / "platform-data" / f"chrome-element-scan-{port}"
+    profile_path.mkdir(parents=True, exist_ok=True)
+    subprocess.Popen(
+        [
+            str(chrome_path),
+            "--remote-debugging-address=127.0.0.1",
+            f"--remote-debugging-port={port}",
+            f"--user-data-dir={profile_path}",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    for _ in range(40):
+        if _cdp_browser_ready(endpoint):
+            return "started"
+        time.sleep(0.25)
+    raise RuntimeError(f"Dedicated CDP Chrome did not become ready at {version_url}; close stale dedicated Chrome windows and retry")
+
+
+async def _scan_element_knowledge_async(
+    *,
+    base_url: str,
+    include_states: bool,
+    headless: bool,
+    min_healing_failures: int,
+    environment_id: str | None = None,
+    target_url: str | None = None,
+    target_page_id: str | None = None,
+    target_name: str | None = None,
+    progress_callback=None,
+) -> dict:
+    system_profile = None
+    state_scan_max_states = 8
+    state_scan_max_per_kind = 2
+    if environment_id:
+        system_profile = resolve_scan_settings(environment_id)
+        system_profile = with_account_credentials(system_profile)
+        base_url = str(system_profile.get("base_url") or base_url)
+        headless = bool(system_profile.get("headless", headless))
+        state_scan_max_states = max(1, int(system_profile.get("state_scan_max_states") or state_scan_max_states))
+        state_scan_max_per_kind = max(1, int(system_profile.get("state_scan_max_per_kind") or state_scan_max_per_kind))
+        if progress_callback:
+            progress_callback({"stage": "environment_loaded", "environment_id": environment_id, "base_url": base_url, "storage_state": system_profile.get("storage_state", "")})
+    auth_mode = str((system_profile or {}).get("auth_mode") or "auto_login")
+    if auth_mode == "cdp_attach":
+        cdp_endpoint = str((system_profile or {}).get("cdp_endpoint") or "")
+        if progress_callback:
+            progress_callback({"stage": "starting_cdp_browser", "base_url": base_url, "environment_id": environment_id, "cdp_endpoint": cdp_endpoint})
+        cdp_browser_status = await asyncio.to_thread(_ensure_dedicated_cdp_browser, cdp_endpoint)
+        if progress_callback:
+            progress_callback({"stage": "cdp_browser_ready", "cdp_endpoint": cdp_endpoint, "browser_status": cdp_browser_status})
+            progress_callback({"stage": "attaching_cdp_browser", "base_url": base_url, "environment_id": environment_id, "cdp_endpoint": cdp_endpoint})
+        session = await attach_browser_over_cdp(cdp_endpoint)
+    else:
+        if progress_callback:
+            progress_callback({"stage": "launching_browser", "base_url": base_url, "headless": headless, "environment_id": environment_id})
+        session = await launch_browser(headless=headless, system=system_profile, reuse_storage_state=True)
+    try:
+        if progress_callback:
+            progress_callback({"stage": "browser_attached" if auth_mode == "cdp_attach" else "browser_launched", "base_url": base_url, "headless": False if auth_mode == "cdp_attach" else headless})
+        if auth_mode == "cdp_attach":
+            if not await is_login_state_valid(session.page, system_profile or {}):
+                raise RuntimeError("CDP Chrome is not authenticated; log in to the dedicated Chrome profile and retry the refresh")
+            if progress_callback:
+                progress_callback({"stage": "cdp_login_verified", "cdp_endpoint": str((system_profile or {}).get("cdp_endpoint") or "")})
+        elif system_profile and (not target_url or not is_login_url(str(target_url))):
+            await ensure_storage_state_for_profile(session, system_profile, progress_callback=progress_callback)
+        targets = None
+        if target_url:
+            targets = [
+                {
+                    "page_id": str(target_page_id or "login").strip() or "login",
+                    "name": str(target_name or target_page_id or "被测系统页面").strip() or "被测系统页面",
+                    "route": str(target_url).strip(),
+                    "url": str(target_url).strip(),
+                }
+            ]
+            if progress_callback:
+                progress_callback({"stage": "explicit_target_loaded", "target_url": str(target_url).strip(), "target_page_id": targets[0]["page_id"], "target_name": targets[0]["name"]})
+        elif system_profile:
+            targets = build_scan_targets_from_profile(system_profile)
+            if not targets:
+                raise ValueError("environment page list is empty; configure tested-system pages in configs/environments/*.json before scanning")
+            if system_profile.get("auto_discover_routes"):
+                await session.page.goto(str(targets[0]["url"]), wait_until="domcontentloaded", timeout=8000)
+                discovered = await discover_routes(
+                    session.page,
+                    base_url=base_url,
+                    max_actions=max(1, int(system_profile.get("route_discovery_max_actions") or 24)),
+                    max_pages=max(1, int(system_profile.get("route_discovery_max_pages") or 20)),
+                    progress_callback=progress_callback,
+                )
+                known_urls = {item.get("url") for item in targets}
+                targets.extend(item for item in discovered if item.get("url") not in known_urls)
+                if progress_callback:
+                    progress_callback({"stage": "route_discovery_completed", "discovered_page_count": len(discovered), "page_total": len(targets)})
+        return await refresh_element_knowledge(
+            page=session.page,
+            base_url=base_url,
+            targets=targets,
+            include_states=include_states,
+            state_scan_max_states=state_scan_max_states,
+            state_scan_max_per_kind=state_scan_max_per_kind,
+            scan=True,
+            min_healing_failures=max(1, int(min_healing_failures or 1)),
+            preserve_unscanned_pages=bool(target_url or system_profile),
+            progress_callback=progress_callback,
+        )
+    finally:
+        if progress_callback:
+            progress_callback({"stage": "closing_browser"})
+        await close_browser(session)
+
+
+def _run_element_refresh_task(task_id: str, *, no_scan: bool, min_healing_failures: int, base_url: str = "", environment_id: str | None = None, target_url: str | None = None, target_page_id: str | None = None, target_name: str | None = None, include_states: bool = False, headless: bool = True) -> None:
+    try:
+        with connect() as conn:
+            conn.execute("update run_tasks set status = 'running', started_at = ? where id = ?", (utc_now(), task_id))
+        started_monotonic = time.perf_counter()
+        _append_element_refresh_log(task_id, "refresh started")
+        _append_element_refresh_progress(task_id, {"stage": "refresh_started", "no_scan": no_scan, "include_states": include_states, "headless": headless})
+        if no_scan:
+            _append_element_refresh_log(task_id, "loading existing library and feedback")
+            _append_element_refresh_progress(task_id, {"stage": "loading_existing_library"})
+            summary = refresh_library_file(min_healing_failures=max(1, int(min_healing_failures or 1)))
+        else:
+            safe_base_url = str(base_url or "").strip()
+            safe_target_url = str(target_url or "").strip()
+            if not safe_base_url and not environment_id and not safe_target_url:
+                raise ValueError("base_url, environment_id or target_url is required for browser scan refresh")
+            _append_element_refresh_log(task_id, f"browser scan started: base_url={safe_base_url or '[environment]'} environment_id={environment_id or ''} target_url={safe_target_url} include_states={include_states} headless={headless}")
+            summary = asyncio.run(
+                _scan_element_knowledge_async(
+                    base_url=safe_base_url,
+                    include_states=include_states,
+                    headless=headless,
+                    min_healing_failures=min_healing_failures,
+                    environment_id=environment_id,
+                    target_url=safe_target_url or None,
+                    target_page_id=target_page_id,
+                    target_name=target_name,
+                    progress_callback=lambda progress: _append_element_refresh_progress(task_id, progress),
+                )
+            )
+        duration_ms = int((time.perf_counter() - started_monotonic) * 1000)
+        report_path = str(summary.get("html_report_path") or summary.get("output_path") or "")
+        page_count = int(summary.get("page_count") or 0)
+        _append_element_refresh_progress(
+            task_id,
+            {
+                "stage": "refresh_completed",
+                "duration_ms": duration_ms,
+                "page_index": page_count,
+                "page_total": page_count,
+                "scanned_page_count": page_count,
+                "element_count": summary.get("element_count", 0),
+                "healing_suggestion_count": summary.get("healing_suggestion_count", 0),
+                "report_path": report_path,
+            },
+        )
+        _append_element_refresh_log(task_id, f"refresh completed: elements={summary.get('element_count', 0)} healing={summary.get('healing_suggestion_count', 0)} duration_ms={duration_ms}")
+        with connect() as conn:
+            conn.execute(
+                """
+                update run_tasks
+                set status = 'done', finished_at = ?, return_code = 0, report_path = ?, error = null
+                where id = ?
+                """,
+                (utc_now(), report_path, task_id),
+            )
+    except Exception as exc:
+        try:
+            _append_element_refresh_log(task_id, f"refresh failed: {exc}")
+            with connect() as conn:
+                conn.execute(
+                    """
+                    update run_tasks
+                    set status = 'failed', finished_at = ?, return_code = 1, error = ?
+                    where id = ?
+                    """,
+                    (utc_now(), str(exc), task_id),
+                )
+        except Exception:
+            pass
+
+
+def _start_element_refresh_task(*, no_scan: bool = True, min_healing_failures: int = 1, base_url: str = "", environment_id: str | None = None, target_url: str | None = None, target_page_id: str | None = None, target_name: str | None = None, include_states: bool = False, headless: bool = True) -> dict:
+    task_id = f"ekr-{uuid.uuid4().hex[:12]}"
+    if no_scan:
+        mode_text = "--no-scan"
+    elif target_url:
+        mode_text = f"--scan --target-url {target_url} --target-page-id {target_page_id or 'login'} --target-name {target_name or ''} --include-states={include_states} --headless={headless}"
+    else:
+        mode_text = f"--scan --base-url {base_url} --include-states={include_states} --headless={headless}"
+    command = f"internal:element-knowledge-refresh {mode_text} --min-healing-failures {max(1, int(min_healing_failures or 1))}"
+    with connect() as conn:
+        conn.execute(
+            """
+            insert into run_tasks(id, mode, case_id, status, command, created_at)
+            values (?, 'element-knowledge-refresh', null, 'queued', ?, ?)
+            """,
+            (task_id, command, utc_now()),
+        )
+    _append_element_refresh_log(task_id, "refresh queued")
+    thread = threading.Thread(
+        target=_run_element_refresh_task,
+        kwargs={
+            "task_id": task_id,
+            "no_scan": no_scan,
+            "min_healing_failures": max(1, int(min_healing_failures or 1)),
+            "base_url": str(base_url or "").strip(),
+            "environment_id": environment_id,
+            "target_url": str(target_url or "").strip() or None,
+            "target_page_id": str(target_page_id or "").strip() or None,
+            "target_name": str(target_name or "").strip() or None,
+            "include_states": bool(include_states),
+            "headless": bool(headless),
+        },
+        name=f"element-knowledge-refresh-{task_id}",
+        daemon=True,
+    )
+    thread.start()
+    return _element_refresh_task_payload(task_id)
+
+
+async def _validate_element_library_async(task_id: str, environment_id: str) -> dict:
+    profile = with_account_credentials(resolve_scan_settings(environment_id))
+    auth_mode = str(profile.get("auth_mode") or "auto_login")
+    if auth_mode == "cdp_attach":
+        cdp_endpoint = str(profile.get("cdp_endpoint") or "")
+        _append_element_refresh_progress(task_id, {"stage": "starting_cdp_browser", "environment_id": environment_id, "cdp_endpoint": cdp_endpoint})
+        cdp_browser_status = await asyncio.to_thread(_ensure_dedicated_cdp_browser, cdp_endpoint)
+        _append_element_refresh_progress(task_id, {"stage": "cdp_browser_ready", "environment_id": environment_id, "cdp_endpoint": cdp_endpoint, "browser_status": cdp_browser_status})
+        _append_element_refresh_progress(task_id, {"stage": "attaching_cdp_browser", "environment_id": environment_id})
+        session = await attach_browser_over_cdp(cdp_endpoint)
+    else:
+        headless = bool(profile.get("headless", True))
+        _append_element_refresh_progress(task_id, {"stage": "launching_browser", "environment_id": environment_id, "headless": headless})
+        session = await launch_browser(headless=headless, system=profile, reuse_storage_state=True)
+    try:
+        if auth_mode == "cdp_attach":
+            if not await is_login_state_valid(session.page, profile):
+                raise RuntimeError("CDP Chrome is not authenticated; log in to the dedicated Chrome profile and retry validation")
+            _append_element_refresh_progress(task_id, {"stage": "cdp_login_verified", "environment_id": environment_id})
+        else:
+            await ensure_storage_state_for_profile(session, profile, progress_callback=lambda progress: _append_element_refresh_progress(task_id, progress))
+        library = load_json_file(ELEMENT_LIBRARY_PATH)
+        if not library.get("elements"):
+            raise ValueError("element library is empty; refresh it before validation")
+        readiness = {str(target.get("page_id") or ""): target for target in build_scan_targets_from_profile(profile)}
+        return await validate_element_library(session.page, library, page_readiness=readiness, progress_callback=lambda progress: _append_element_refresh_progress(task_id, progress))
+    finally:
+        await close_browser(session)
+
+
+def _run_element_validation_task(task_id: str, environment_id: str) -> None:
+    try:
+        with connect() as conn:
+            conn.execute("update run_tasks set status = 'running', started_at = ? where id = ?", (utc_now(), task_id))
+        report = asyncio.run(_validate_element_library_async(task_id, environment_id))
+        _append_element_refresh_progress(task_id, {"stage": "validation_completed", "page_total": report["page_count"], "page_index": report["page_count"], "element_count": report["element_count"], "valid_count": report["summary"]["valid"], "invalid_count": report["summary"]["invalid"], "needs_review_count": report["summary"]["needs_review"], "report_path": report["output_path"]})
+        with connect() as conn:
+            conn.execute("update run_tasks set status = 'done', finished_at = ?, return_code = 0, report_path = ?, error = null where id = ?", (utc_now(), report["output_path"], task_id))
+    except Exception as exc:
+        _append_element_refresh_log(task_id, f"validation failed: {exc}")
+        with connect() as conn:
+            conn.execute("update run_tasks set status = 'failed', finished_at = ?, return_code = 1, error = ? where id = ?", (utc_now(), str(exc), task_id))
+
+
+def _start_element_validation_task(environment_id: str) -> dict:
+    task_id = f"ekv-{uuid.uuid4().hex[:12]}"
+    with connect() as conn:
+        conn.execute("insert into run_tasks(id, mode, case_id, status, command, created_at) values (?, 'element-knowledge-validation', null, 'queued', ?, ?)", (task_id, f"internal:element-knowledge-validate --environment-id {environment_id}", utc_now()))
+    _append_element_refresh_log(task_id, "validation queued")
+    threading.Thread(target=_run_element_validation_task, args=(task_id, environment_id), name=f"element-knowledge-validation-{task_id}", daemon=True).start()
+    return _element_refresh_task_payload(task_id)
+
+
+@app.post("/api/element-knowledge/refresh")
+def post_element_knowledge_refresh(payload: ElementKnowledgeRefreshRequest | None = None) -> dict:
+    request_payload = payload or ElementKnowledgeRefreshRequest()
+    return _start_element_refresh_task(
+        no_scan=bool(request_payload.no_scan),
+        min_healing_failures=max(1, int(request_payload.min_healing_failures or 1)),
+        base_url=str(request_payload.base_url or ""),
+        environment_id=request_payload.environment_id,
+        target_url=str(request_payload.target_url or ""),
+        target_page_id=str(request_payload.target_page_id or ""),
+        target_name=str(request_payload.target_name or ""),
+        include_states=bool(request_payload.include_states),
+        headless=bool(request_payload.headless),
+    )
+
+
+@app.post("/api/element-knowledge/validation-tasks")
+def post_element_knowledge_validation_task(payload: ElementKnowledgeValidationTaskRequest) -> dict:
+    return _start_element_validation_task(payload.environment_id)
+
+
+def _element_environment_preview(profile: dict) -> dict:
+    storage_path = resolve_storage_state_path(profile)
+    existing_path = existing_storage_state_for_profile(profile)
+    visible_path = existing_path or storage_path
+    return {
+        **profile,
+        "login_configured": bool((profile.get("login") or {}).get("url")),
+        "page_count": len(profile.get("pages") or []),
+        "storage_state_path": str(visible_path) if visible_path else "",
+        "storage_state_exists": bool(existing_path and existing_path.exists()),
+        "storage_state_updated_at": datetime.fromtimestamp(existing_path.stat().st_mtime).isoformat() if existing_path and existing_path.exists() else None,
+    }
+
+
+@app.get("/api/element-knowledge/environments")
+def get_element_knowledge_environments() -> list[dict]:
+    return [
+        profile
+        for profile in list_environment_profiles()
+        if profile.get("element_knowledge_scan_enabled") and profile.get("pages")
+    ]
+
+
+@app.get("/api/element-knowledge/environment-preview")
+def get_element_knowledge_environment_preview() -> list[dict]:
+    return [_element_environment_preview(profile) for profile in list_environment_profiles()]
+
+
+@app.get("/api/element-knowledge/environments/{environment_id}")
+def get_element_knowledge_environment(environment_id: str) -> dict:
+    try:
+        return resolve_scan_settings(environment_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/element-knowledge/refresh-tasks")
+def post_element_knowledge_refresh_task(payload: ElementKnowledgeRefreshTaskRequest | None = None) -> dict:
+    request_payload = payload or ElementKnowledgeRefreshTaskRequest()
+    return _start_element_refresh_task(
+        no_scan=bool(request_payload.no_scan),
+        min_healing_failures=max(1, int(request_payload.min_healing_failures or 1)),
+        base_url=str(request_payload.base_url or ""),
+        environment_id=request_payload.environment_id,
+        target_url=str(request_payload.target_url or ""),
+        target_page_id=str(request_payload.target_page_id or ""),
+        target_name=str(request_payload.target_name or ""),
+        include_states=bool(request_payload.include_states),
+        headless=bool(request_payload.headless),
+    )
+
+
+@app.get("/api/element-knowledge/refresh-tasks/{task_id}")
+def get_element_knowledge_refresh_task(task_id: str) -> dict:
+    return _element_refresh_task_payload(task_id)
+
+
+@app.get("/api/element-knowledge/refresh-tasks")
+def list_element_knowledge_refresh_tasks() -> list[dict]:
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            select * from run_tasks
+            where mode = 'element-knowledge-refresh'
+            order by created_at desc
+            limit 20
+            """
+        ).fetchall()
+    return rows_to_dicts(rows)
 
 
 @app.get("/api/reports")

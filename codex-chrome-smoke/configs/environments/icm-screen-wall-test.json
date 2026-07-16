@@ -1,0 +1,83 @@
+{
+  "id": "icm-screen-wall-test",
+  "name": "ICM Screen Wall / test",
+  "element_knowledge_scan_enabled": true,
+  "auth_mode": "auto_login",
+  "base_url": "https://192.168.16.203:49187",
+  "headless": false,
+  "auto_discover_routes": false,
+  "account_id": "tester",
+  "state_scan_max_states": 4,
+  "state_scan_max_per_kind": 1,
+  "storage_state": "platform-data/auth/icm-screen-wall-test.json",
+  "login": {
+    "url": "https://192.168.16.203:49187/#/login?redirect=%2Fredirect",
+    "username_selector": "form input[type=\"text\"]",
+    "password_selector": "form input[type=\"password\"]",
+    "submit_selector": "form button.el-button--primary",
+    "check_url": "https://192.168.16.203:49187/#/icm",
+    "success_url_contains": "#/icm"
+  },
+  "pages": [
+    {
+      "page_id": "screen_wall",
+      "name": "Screen wall",
+      "path": "/#/icm",
+      "ready_selector": ".screen-top-head",
+      "minimum_interactive_count": 10,
+      "surface_hints": [
+        {
+          "selector": ".top-button",
+          "label": "应用设置"
+        },
+        {
+          "selector": ".screen-mode",
+          "label": "屏幕模式"
+        },
+        {
+          "selector": ".window-mode",
+          "label": "窗口模式"
+        },
+        {
+          "selector": ".order-mode-select",
+          "label": "排列方式"
+        },
+        {
+          "selector": ".handel-div:has(.handel-label:has-text(\"列数\")) [role=\"slider\"]",
+          "label": "列数",
+          "role": "slider"
+        },
+        {
+          "selector": ".handel-div:has(.handel-label:has-text(\"行数\")) [role=\"slider\"]",
+          "label": "行数",
+          "role": "slider"
+        },
+        {
+          "selector": ".handel-div:has(.handel-label:has-text(\"紧密度\")) [role=\"slider\"]",
+          "label": "紧密度",
+          "role": "slider"
+        }
+      ],
+      "state_triggers": [
+        {
+          "state": "tooltip:logout",
+          "selector": ".top_button > img.el-tooltip.button:nth-of-type(1)",
+          "action": "hover",
+          "label": "退出"
+        },
+        {
+          "state": "tooltip:sidebar",
+          "selector": ".top_button > img.el-tooltip.button:nth-of-type(2)",
+          "action": "hover",
+          "label": "隐藏侧边栏"
+        },
+        {
+          "state": "tooltip:fullscreen",
+          "selector": ".top_button > img.el-tooltip.button:nth-of-type(3)",
+          "action": "hover",
+          "label": "全屏"
+        }
+      ]
+    }
+  ]
+}
