@@ -119,6 +119,47 @@ def test_route_context_outranks_placeholder_elements(tmp_path, monkeypatch):
     assert [row["name"] for row in rows] == ["user_list_url"]
 
 
+def test_exact_page_route_excludes_elements_from_other_pages(tmp_path, monkeypatch):
+    library_path = tmp_path / "library.json"
+    library_path.write_text(
+        json.dumps(
+            {
+                "pages": [
+                    {"page_id": "login", "url_pattern": "#/login"},
+                    {"page_id": "users", "url_pattern": "#/system/user"},
+                ],
+                "elements": [
+                    {"page_id": "login", "name": "username_input", "human_en": "username input", "context_keys": ["login"], "selectors": ["input.username"]},
+                    {"page_id": "users", "name": "user_input", "human_en": "username input", "context_keys": ["user"], "selectors": ["input.user"]},
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ELEMENT_LIBRARY_PATH", str(library_path))
+    element_knowledge.clear_library_cache()
+
+    rows = element_knowledge.rank_for_intent("fill username", "https://example.test/#/login", top_k=5)
+
+    assert [row["name"] for row in rows] == ["username_input"]
+
+
+def test_validation_record_supplies_newer_selector_for_live_ref_binding(tmp_path, monkeypatch):
+    library_path = tmp_path / "library.json"
+    validation_path = tmp_path / "validation-report.json"
+    element = {"page_id": "login", "element_id": "login.login_button", "name": "login_button", "human_en": "login button", "selectors": ["button.old"]}
+    library_path.write_text(json.dumps({"pages": [{"page_id": "login", "url_pattern": "#/login"}], "elements": [element]}), encoding="utf-8")
+    validation_path.write_text(json.dumps({"records": [{**element, "selectors": ["button.current"], "status": "needs_review"}]}), encoding="utf-8")
+    monkeypatch.setenv("ELEMENT_LIBRARY_PATH", str(library_path))
+    monkeypatch.setenv("ICM_ELEMENT_VALIDATION_REPORT_PATH", str(validation_path))
+    element_knowledge.clear_library_cache()
+
+    rows = element_knowledge.rank_for_intent("click login", "https://example.test/#/login", include_needs_review=True)
+
+    assert rows[0]["selectors"] == ["button.current"]
+
+
 def test_validation_report_filters_invalid_elements(tmp_path, monkeypatch):
     library_path = tmp_path / "library.json"
     validation_path = tmp_path / "validation-report.json"

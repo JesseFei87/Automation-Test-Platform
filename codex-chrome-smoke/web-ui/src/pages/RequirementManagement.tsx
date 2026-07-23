@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { Card } from "../components/Card";
+import { useConfirm } from "../components/ConfirmDialog";
+import { parseRequirementFile, RequirementDocumentInput } from "../components/RequirementDocumentInput";
 import { StatusPill } from "../components/StatusPill";
+import { useToast } from "../components/Toast";
 import { api, type Requirement, type RequirementDetail } from "../data/api";
 import type { PageId, PlatformNavKey } from "../types";
 
@@ -46,15 +49,19 @@ export function RequirementManagement({
 }: {
   onNavigate: (page: PageId, navKey?: PlatformNavKey) => void;
 }) {
+  const confirm = useConfirm();
+  const toast = useToast();
   const [requirements, setRequirements] = useState<Requirement[]>([]);
   const [detail, setDetail] = useState<RequirementDetail | null>(null);
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [selectedRequirementIds, setSelectedRequirementIds] = useState<number[]>([]);
   const [keyword, setKeyword] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [form, setForm] = useState<RequirementForm>({ title: "", document: "", status: "draft" });
   const [creating, setCreating] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [parsingDocument, setParsingDocument] = useState(false);
   const [message, setMessage] = useState("正在读取需求列表...");
 
   const selectedRequirement = detail?.requirement ?? null;
@@ -74,6 +81,9 @@ export function RequirementManagement({
       return `${item.title} ${item.document} ${item.status}`.toLowerCase().includes(q);
     });
   }, [keyword, requirements, statusFilter]);
+
+  const selectedRequirementIdSet = useMemo(() => new Set(selectedRequirementIds), [selectedRequirementIds]);
+  const allVisibleSelected = filteredRequirements.length > 0 && filteredRequirements.every((item) => selectedRequirementIdSet.has(item.id));
 
   const metrics = useMemo(() => {
     const draftTotal = requirements.reduce((sum, item) => sum + (item.draft_count || item.case_count || 0), 0);
@@ -150,10 +160,29 @@ export function RequirementManagement({
         items.map((item) => (item.id === next.requirement.id ? { ...item, ...next.requirement } : item)),
       );
       setMessage("需求已保存。需求内容如有变化，可前往 AI生成 重新生成用例。");
+      toast.show({ kind: "success", message: "需求保存成功" });
     } catch (error) {
       setMessage(`需求保存失败：${errorMessage(error)}`);
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function handleUpload(file: File) {
+    setParsingDocument(true);
+    setMessage(`正在解析文档：${file.name}`);
+    try {
+      const parsed = await parseRequirementFile(file);
+      setForm((prev) => ({
+        ...prev,
+        document: parsed.text,
+        title: prev.title.trim() ? prev.title : parsed.title,
+      }));
+      setMessage(`已解析 ${file.name}，请确认正文后保存需求。`);
+    } catch (error) {
+      setMessage(`文档解析失败：${errorMessage(error)}`);
+    } finally {
+      setParsingDocument(false);
     }
   }
 
@@ -165,15 +194,33 @@ export function RequirementManagement({
     setMessage("正在新增需求，请填写标题和正文后保存。");
   }
 
+  function toggleRequirementSelection(requirementId: number) {
+    setSelectedRequirementIds((prev) => (prev.includes(requirementId) ? prev.filter((id) => id !== requirementId) : [...prev, requirementId]));
+  }
+
+  function toggleSelectAllVisible() {
+    setSelectedRequirementIds((prev) => {
+      if (allVisibleSelected) return prev.filter((id) => !filteredRequirements.some((item) => item.id === id));
+      return Array.from(new Set([...prev, ...filteredRequirements.map((item) => item.id)]));
+    });
+  }
+
   async function deleteRequirement() {
     if (!selectedRequirement) return;
-    const ok = window.confirm(`确认删除"${selectedRequirement.title}"？关联测试点和草稿也会被清理。`);
+    const draftCount = detail?.drafts.length ?? selectedRequirement.case_count ?? 0;
+    const ok = await confirm({
+      title: `确认删除需求“${selectedRequirement.title}”？`,
+      description: `关联的 ${draftCount} 个用例草稿也会被清理。删除后无法恢复。`,
+      danger: true,
+      confirmText: "确认删除",
+    });
     if (!ok) return;
     setBusy(true);
     try {
       const deleted = await api.deleteRequirement(selectedRequirement.id);
       const remaining = requirements.filter((item) => item.id !== selectedRequirement.id);
       setRequirements(remaining);
+      setSelectedRequirementIds((ids) => ids.filter((id) => id !== selectedRequirement.id));
       const next = remaining[0] || null;
       if (next) {
         await openRequirement(next.id);
@@ -182,7 +229,8 @@ export function RequirementManagement({
         setDetail(null);
         setForm({ title: "", document: "", status: "draft" });
       }
-      setMessage(`已删除"${deleted.title}"：清理 ${deleted.deleted_test_points} 个测试点、${deleted.deleted_case_drafts} 个草稿。`);
+      setMessage(`已删除"${deleted.title}"：清理 ${deleted.deleted_case_drafts} 个用例草稿。`);
+      toast.show({ kind: "success", message: "需求删除成功" });
     } catch (error) {
       setMessage(`需求删除失败：${errorMessage(error)}`);
     } finally {
@@ -205,12 +253,6 @@ export function RequirementManagement({
 
       <div className="requirement-management-layout">
         <Card className="requirement-list-card" title="需求列表" subtitle="筛选、选择并追踪需求资产状态。">
-          <div className="requirement-list-toolbar">
-            <button className="btn btn--primary" type="button" onClick={startCreateRequirement} disabled={busy}>
-              新增需求
-            </button>
-            <span className="muted">新增后先进入草稿状态，不会自动调用 AI。</span>
-          </div>
           <div className="requirement-filter-grid">
             <label className="case-filter-field">
               <span>关键词</span>
@@ -231,42 +273,68 @@ export function RequirementManagement({
               </select>
             </label>
             <div className="case-filter-actions">
-              <button className="btn btn--primary" type="button" onClick={() => void refresh()} disabled={loading || busy}>
+              <button className="btn btn--primary requirement-button requirement-button--refresh" type="button" onClick={() => void refresh()} disabled={loading || busy}>
                 刷新
               </button>
-              <button className="btn btn--outline" type="button" onClick={() => { setKeyword(""); setStatusFilter("all"); }}>
+              <button className="btn btn--outline requirement-button requirement-button--reset" type="button" onClick={() => { setKeyword(""); setStatusFilter("all"); }}>
                 重置
               </button>
             </div>
+          </div>
+
+          <div className="case-batch-bar requirement-batch-bar">
+            <label className="case-batch-check">
+              <input type="checkbox" checked={allVisibleSelected} onChange={toggleSelectAllVisible} disabled={!filteredRequirements.length} />
+              <span>全选当前结果</span>
+            </label>
+            <span className="case-batch-count">已选 {selectedRequirementIds.length} 条</span>
+            <button className="btn btn--primary requirement-button requirement-button--new" type="button" onClick={startCreateRequirement} disabled={busy}>
+              新增需求
+            </button>
           </div>
 
           <div className="requirement-table-shell">
             <table className="table requirement-table">
               <thead>
                 <tr>
+                  <th>#</th>
                   <th>标题</th>
                   <th>状态</th>
                   <th>草稿</th>
-                  <th>测试点</th>
                   <th>更新时间</th>
                 </tr>
               </thead>
               <tbody>
-                {filteredRequirements.map((item) => {
+                {filteredRequirements.map((item, index) => {
                   const meta = statusMeta(item.status);
                   return (
                     <tr
                       key={item.id}
                       className={item.id === selectedId ? "is-active" : ""}
                       onClick={() => void openRequirement(item.id)}
+                      onKeyDown={(event) => {
+                        if (event.target !== event.currentTarget) return;
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          void openRequirement(item.id);
+                        }
+                      }}
+                      aria-selected={item.id === selectedId}
+                      role="button"
+                      tabIndex={0}
                     >
+                      <td onClick={(event) => event.stopPropagation()}>
+                        <label className="case-row-check requirement-row-check">
+                          <input type="checkbox" checked={selectedRequirementIdSet.has(item.id)} onChange={() => toggleRequirementSelection(item.id)} />
+                          <span>{index + 1}</span>
+                        </label>
+                      </td>
                       <td>
                         <strong>{item.title}</strong>
                         <span>#{item.id} · 创建 {formatTime(item.created_at)}</span>
                       </td>
                       <td><StatusPill tone={meta.tone}>{meta.label}</StatusPill></td>
                       <td>{item.draft_count ?? item.case_count ?? 0}</td>
-                      <td>{item.test_point_count ?? 0}</td>
                       <td>{formatTime(item.updated_at)}</td>
                     </tr>
                   );
@@ -285,16 +353,16 @@ export function RequirementManagement({
           {selectedRequirement || creating ? (
             <>
               <div className="requirement-detail-actions">
-                <button className="btn btn--primary" type="button" onClick={saveRequirement} disabled={busy || !dirty}>
+                <button className="btn btn--primary requirement-button requirement-button--save" type="button" onClick={saveRequirement} disabled={busy || parsingDocument || !dirty}>
                   {creating ? "创建需求" : "保存需求"}
                 </button>
-                <button className="btn btn--outline" type="button" onClick={() => onNavigate("ai-generate", "ai-generate")} disabled={creating}>
+                <button className="btn btn--outline requirement-button requirement-button--ai" type="button" onClick={() => onNavigate("ai-generate", "ai-generate")} disabled={creating}>
                   去 AI生成
                 </button>
-                <button className="btn btn--outline" type="button" onClick={() => onNavigate("cases", "cases")} disabled={creating}>
+                <button className="btn btn--outline requirement-button requirement-button--cases" type="button" onClick={() => onNavigate("cases", "cases")} disabled={creating}>
                   查看用例
                 </button>
-                <button className="btn btn--outline link-button--danger" type="button" onClick={deleteRequirement} disabled={busy || creating}>
+                <button className="btn btn--outline link-button--danger requirement-button requirement-button--delete" type="button" onClick={deleteRequirement} disabled={busy || creating}>
                   删除
                 </button>
               </div>
@@ -309,11 +377,13 @@ export function RequirementManagement({
                 ))}
               </select>
 
-              <label className="field-label">需求正文</label>
-              <textarea
-                className="textarea-mock textarea-real requirement-management-document"
+              <RequirementDocumentInput
+                id="requirement-management-document"
+                className="requirement-management-document"
                 value={form.document}
-                onChange={(event) => setForm((prev) => ({ ...prev, document: event.target.value }))}
+                onChange={(document) => setForm((prev) => ({ ...prev, document }))}
+                onFile={(file) => void handleUpload(file)}
+                parsing={parsingDocument}
               />
 
               {!creating && selectedRequirement ? (

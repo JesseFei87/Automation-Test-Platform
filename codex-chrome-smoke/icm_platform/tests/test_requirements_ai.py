@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,6 +9,7 @@ from unittest.mock import patch
 
 from icm_platform import db
 from icm_platform.api import (
+    _parse_requirement_document,
     app,
     load_cached_assertion_analysis,
     load_cached_report_analysis,
@@ -19,6 +21,37 @@ from icm_platform.ai_service import AIConfigurationError, AIProviderError, AISer
 
 
 class RequirementAITests(unittest.TestCase):
+    def test_parse_requirement_docx_extracts_heading_and_table(self) -> None:
+        from docx import Document
+
+        document = Document()
+        document.add_heading("用户登录需求", level=1)
+        document.add_paragraph("用户输入账号密码后登录。")
+        table = document.add_table(rows=1, cols=2)
+        table.rows[0].cells[0].text = "角色"
+        table.rows[0].cells[1].text = "管理员"
+        buffer = io.BytesIO()
+        document.save(buffer)
+
+        parsed = _parse_requirement_document("login.docx", buffer.getvalue())
+
+        self.assertEqual(parsed["title"], "用户登录需求")
+        self.assertIn("角色 | 管理员", parsed["text"])
+
+    def test_spec_generation_payload_uses_requested_count_and_focus(self) -> None:
+        payload = AIService()._spec_generation_payload(
+            "MiniMax-M3",
+            "登录需求",
+            "标准",
+            case_count=7,
+            coverage_focus="abnormal_boundary",
+        )
+        user_content = json.loads(payload["messages"][1]["content"])
+
+        self.assertIn("exactly 7", user_content["output_limits"])
+        self.assertIn("异常输入", user_content["coverage_focus"])
+        self.assertEqual(payload["max_completion_tokens"], 8192)
+
     def test_masks_saved_api_key(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             db_path = Path(folder) / "test.sqlite3"

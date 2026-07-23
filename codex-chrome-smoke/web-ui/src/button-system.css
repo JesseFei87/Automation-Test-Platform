@@ -1,0 +1,751 @@
+﻿/*
+ * QA Platform Button Design System
+ * Source: deliverables/product/button-design-system-v1.html
+ *
+ * Scope:
+ * - Normalizes action buttons, compact table actions, icon controls and tabs.
+ * - Keeps navigation, card triggers and media triggers in their native patterns.
+ * - Intentionally excludes CaseToolbox .case-row-action buttons by product decision.
+ */
+
+:root {
+  --button-primary: #2164f3;
+  --button-primary-hover: #1955d4;
+  --button-primary-soft: #e7efff;
+  --button-success: #078558;
+  --button-success-hover: #066b49;
+  --button-success-soft: #dcf8ea;
+  --button-danger: #d7374b;
+  --button-danger-hover: #b9273a;
+  --button-danger-soft: #ffe7eb;
+  --button-surface: #ffffff;
+  --button-surface-hover: #f5f8fc;
+  --button-text: #111a2b;
+  --button-muted: #64748b;
+  --button-border: #d7e1ed;
+  --button-focus: rgba(33, 100, 243, 0.28);
+  --button-shadow: 0 8px 22px rgba(24, 53, 88, 0.11);
+  --button-radius-sm: 9px;
+  --button-radius-md: 11px;
+  --button-height-sm: 36px;
+  --button-height-md: 44px;
+  --button-height-lg: 48px;
+}
+
+:root[data-theme="dark"] {
+  --button-primary: #5a8df8;
+  --button-primary-hover: #75a1ff;
+  --button-primary-soft: #1d3154;
+  --button-success: #39d49a;
+  --button-success-hover: #63e3b2;
+  --button-success-soft: #14392d;
+  --button-danger: #ff6d7e;
+  --button-danger-hover: #ff8d99;
+  --button-danger-soft: #421e27;
+  --button-surface: #151f31;
+  --button-surface-hover: #202c40;
+  --button-text: #ecf2fb;
+  --button-muted: #94a3b8;
+  --button-border: #2b3850;
+  --button-focus: rgba(90, 141, 248, 0.42);
+  --button-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+}
+
+/* Shared interaction contract. Card, row and media triggers retain their layout. */
+:is(button, a.btn, label.btn):not(.case-row-action) {
+  touch-action: manipulation;
+}
+
+:is(button, a.btn, label.btn):not(.case-row-action):focus-visible {
+  outline: 3px solid var(--button-focus);
+  outline-offset: 2px;
+}
+
+:is(button, a.btn, label.btn):not(.case-row-action):disabled,
+:is(a.btn, label.btn).is-disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+  pointer-events: none;
+}
+
+/*
+ * Core action button.
+ * Legacy classes are mapped here so every existing page can migrate without
+ * changing its API calls, event handlers or component structure.
+ */
+:is(
+  .btn,
+  .btn-primary,
+  .btn-secondary,
+  .btn-danger,
+  .requirement-button,
+  .element-knowledge-detail-button
+) {
+  --button-bg: var(--button-surface-hover);
+  --button-fg: var(--button-text);
+  --button-line: transparent;
+  position: relative;
+  display: inline-flex;
+  min-height: var(--button-height-md);
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 18px;
+  color: var(--button-fg);
+  border: 1px solid var(--button-line);
+  border-radius: var(--button-radius-md);
+  background: var(--button-bg);
+  box-shadow: none;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1;
+  text-decoration: none;
+  white-space: nowrap;
+  transition:
+    color 160ms ease,
+    background-color 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms ease;
+}
+
+:is(
+  .btn,
+  .btn-primary,
+  .btn-secondary,
+  .btn-danger,
+  .requirement-button,
+  .element-knowledge-detail-button
+):hover:not(:disabled, .is-disabled) {
+  transform: translateY(-1px);
+  box-shadow: var(--button-shadow);
+}
+
+:is(
+  .btn,
+  .btn-primary,
+  .btn-secondary,
+  .btn-danger,
+  .requirement-button,
+  .element-knowledge-detail-button
+):active:not(:disabled, .is-disabled) {
+  transform: translateY(0);
+  box-shadow: none;
+}
+
+:is(.btn--primary, .btn-primary, .requirement-button--new, .requirement-button--save, .requirement-button--refresh) {
+  --button-bg: var(--button-primary);
+  --button-fg: #ffffff;
+  --button-line: var(--button-primary);
+}
+
+:is(.btn--primary, .btn-primary, .requirement-button--new, .requirement-button--save, .requirement-button--refresh):hover:not(:disabled) {
+  --button-bg: var(--button-primary-hover);
+  --button-line: var(--button-primary-hover);
+}
+
+:is(.btn--green) {
+  --button-bg: var(--button-success);
+  --button-fg: #ffffff;
+  --button-line: var(--button-success);
+}
+
+:is(.btn--green):hover:not(:disabled) {
+  --button-bg: var(--button-success-hover);
+  --button-line: var(--button-success-hover);
+}
+
+:is(.btn--outline, .btn-secondary, .requirement-button--ai, .requirement-button--cases, .requirement-button--reset) {
+  --button-bg: var(--button-surface);
+  --button-fg: var(--button-text);
+  --button-line: var(--button-border);
+}
+
+:is(.btn--outline, .btn-secondary, .requirement-button--ai, .requirement-button--cases, .requirement-button--reset):hover:not(:disabled) {
+  --button-fg: var(--button-primary);
+  --button-line: var(--button-primary);
+}
+
+:is(.btn--soft) {
+  --button-bg: var(--button-primary-soft);
+  --button-fg: var(--button-primary);
+  --button-line: transparent;
+}
+
+:is(.btn--soft):hover:not(:disabled) {
+  --button-line: color-mix(in srgb, var(--button-primary) 30%, transparent);
+}
+
+:is(.btn--cyan) {
+  --button-bg: var(--button-primary);
+  --button-fg: #ffffff;
+  --button-line: var(--button-primary);
+}
+
+:is(.btn--cyan):hover:not(:disabled) {
+  --button-bg: var(--button-primary-hover);
+  --button-line: var(--button-primary-hover);
+}
+
+:is(.btn--dark) {
+  --button-bg: var(--button-surface);
+  --button-fg: var(--button-text);
+  --button-line: var(--button-border);
+}
+
+:is(.btn--dark):hover:not(:disabled) {
+  --button-fg: var(--button-primary);
+  --button-line: var(--button-primary);
+}
+
+:is(.btn-danger, .btn--danger) {
+  --button-bg: var(--button-danger);
+  --button-fg: #ffffff;
+  --button-line: var(--button-danger);
+}
+
+:is(.btn-danger, .btn--danger):hover:not(:disabled) {
+  --button-bg: var(--button-danger-hover);
+  --button-line: var(--button-danger-hover);
+}
+
+:is(.btn--danger-soft, .requirement-button--delete) {
+  --button-bg: var(--button-danger-soft);
+  --button-fg: var(--button-danger);
+  --button-line: color-mix(in srgb, var(--button-danger) 28%, var(--button-border));
+}
+
+:is(.btn--danger-soft, .requirement-button--delete):hover:not(:disabled) {
+  --button-bg: var(--button-danger);
+  --button-fg: #ffffff;
+  --button-line: var(--button-danger);
+}
+
+.btn--wide {
+  width: 100%;
+}
+
+/* Remove page-local decorative sweeps so the same action behaves consistently. */
+.requirement-button {
+  overflow: visible;
+  filter: none;
+}
+
+.requirement-button::after {
+  display: none;
+}
+
+.requirement-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  filter: none;
+  box-shadow: var(--button-shadow);
+}
+
+/* Evidence actions: hierarchy replaces type-based rainbow colors. */
+.evidence-action {
+  --button-bg: var(--button-surface);
+  --button-fg: var(--button-text);
+  --button-line: var(--button-border);
+  min-height: var(--button-height-md);
+  color: var(--button-fg) !important;
+  border: 1px solid var(--button-line) !important;
+  border-radius: var(--button-radius-md);
+  background: var(--button-bg) !important;
+  box-shadow: none;
+  font-size: 13px;
+  font-weight: 800;
+  transition:
+    color 160ms ease,
+    background-color 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms ease;
+}
+
+.evidence-action::after {
+  display: none;
+}
+
+.evidence-action:hover:not(:disabled) {
+  color: var(--button-primary) !important;
+  border-color: var(--button-primary) !important;
+  background: var(--button-surface) !important;
+  box-shadow: var(--button-shadow);
+  transform: translateY(-1px);
+}
+
+.evidence-action--diagnose {
+  --button-bg: var(--button-primary);
+  --button-fg: #ffffff;
+  --button-line: var(--button-primary);
+}
+
+.evidence-action--diagnose:hover:not(:disabled) {
+  color: #ffffff !important;
+  border-color: var(--button-primary-hover) !important;
+  background: var(--button-primary-hover) !important;
+}
+
+.evidence-action--candidate,
+.evidence-action--patch {
+  --button-bg: var(--button-primary-soft);
+  --button-fg: var(--button-primary);
+  --button-line: transparent;
+}
+
+.evidence-action--promote {
+  --button-bg: var(--button-success);
+  --button-fg: #ffffff;
+  --button-line: var(--button-success);
+}
+
+.evidence-action--promote:hover:not(:disabled) {
+  color: #ffffff !important;
+  border-color: var(--button-success-hover) !important;
+  background: var(--button-success-hover) !important;
+}
+
+/* Compact table actions. */
+.report-row-action,
+.project-row-action,
+.element-knowledge-detail-button {
+  display: inline-flex;
+  min-height: var(--button-height-sm);
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 12px;
+  border: 1px solid var(--button-border);
+  border-radius: var(--button-radius-sm);
+  background: var(--button-surface);
+  box-shadow: none;
+  font-size: 12px;
+  font-weight: 800;
+  transition:
+    color 150ms ease,
+    background-color 150ms ease,
+    border-color 150ms ease,
+    box-shadow 150ms ease,
+    transform 150ms ease;
+}
+
+.report-row-action--detail,
+.project-row-action--edit,
+.element-knowledge-detail-button {
+  color: var(--button-primary);
+  border-color: color-mix(in srgb, var(--button-primary) 26%, var(--button-border));
+  background: var(--button-primary-soft);
+}
+
+.report-row-action--delete,
+.project-row-action--delete {
+  color: var(--button-danger);
+  border-color: color-mix(in srgb, var(--button-danger) 26%, var(--button-border));
+  background: var(--button-danger-soft);
+}
+
+:is(.report-row-action, .project-row-action, .element-knowledge-detail-button):hover:not(:disabled) {
+  color: #ffffff;
+  border-color: var(--button-primary);
+  background: var(--button-primary);
+  box-shadow: var(--button-shadow);
+  transform: translateY(-1px);
+}
+
+:is(.report-row-action--delete, .project-row-action--delete):hover:not(:disabled) {
+  border-color: var(--button-danger);
+  background: var(--button-danger);
+}
+
+/* Text actions remain low emphasis but gain a predictable target and focus state. */
+.link-button:not(.link-button--danger) {
+  display: inline-flex;
+  min-height: var(--button-height-sm);
+  align-items: center;
+  justify-content: center;
+  padding: 0 10px;
+  color: var(--button-primary);
+  border: 1px solid transparent;
+  border-radius: var(--button-radius-sm);
+  background: transparent;
+  font-size: 12px;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.link-button:not(.link-button--danger):hover {
+  border-color: color-mix(in srgb, var(--button-primary) 18%, transparent);
+  background: var(--button-primary-soft);
+}
+
+.link-button--danger {
+  color: var(--button-danger);
+}
+
+/* Generic icon controls. Case row actions are deliberately not included. */
+.icon-button,
+.modal__close,
+.lightbox__close,
+.theme-toggle,
+.toast__close,
+.form-field__toggle {
+  display: inline-grid;
+  width: var(--button-height-sm);
+  min-width: var(--button-height-sm);
+  height: var(--button-height-sm);
+  min-height: var(--button-height-sm);
+  place-items: center;
+  padding: 0;
+  color: var(--button-muted);
+  border: 1px solid var(--button-border);
+  border-radius: var(--button-radius-sm);
+  background: var(--button-surface);
+  box-shadow: none;
+  transition:
+    color 150ms ease,
+    background-color 150ms ease,
+    border-color 150ms ease,
+    box-shadow 150ms ease;
+}
+
+:is(.icon-button, .modal__close, .lightbox__close, .theme-toggle, .toast__close, .form-field__toggle):hover:not(:disabled) {
+  color: var(--button-primary);
+  border-color: var(--button-primary);
+  background: var(--button-primary-soft);
+  box-shadow: var(--button-shadow);
+}
+
+.icon-button--danger {
+  color: var(--button-danger);
+  border-color: color-mix(in srgb, var(--button-danger) 26%, var(--button-border));
+  background: var(--button-danger-soft);
+}
+
+.icon-button--danger:hover:not(:disabled) {
+  color: #ffffff;
+  border-color: var(--button-danger);
+  background: var(--button-danger);
+}
+
+/* Small utilities used by execution selection and ordering. */
+.case-selection__actions button,
+.case-picker__order button {
+  min-height: var(--button-height-sm);
+  padding: 0 12px;
+  color: var(--button-primary);
+  border: 1px solid var(--button-border);
+  border-radius: var(--button-radius-sm);
+  background: var(--button-surface);
+  font-size: 12px;
+  font-weight: 800;
+  transition:
+    color 150ms ease,
+    background-color 150ms ease,
+    border-color 150ms ease,
+    box-shadow 150ms ease;
+}
+
+:is(.case-selection__actions button, .case-picker__order button):hover:not(:disabled) {
+  color: var(--button-primary);
+  border-color: var(--button-primary);
+  background: var(--button-primary-soft);
+  box-shadow: var(--button-shadow);
+}
+
+/* Segmented controls and page filters share the same selected-state language. */
+:is(
+  .bottom-tabs button,
+  .execution-tabs button,
+  .report-filters button,
+  .element-knowledge-view-toggle button
+) {
+  min-height: var(--button-height-sm);
+  padding: 0 14px;
+  color: var(--button-muted);
+  border: 1px solid transparent;
+  border-radius: var(--button-radius-sm);
+  background: transparent;
+  font-size: 12px;
+  font-weight: 800;
+  transition:
+    color 150ms ease,
+    background-color 150ms ease,
+    border-color 150ms ease,
+    box-shadow 150ms ease;
+}
+
+:is(
+  .bottom-tabs button,
+  .execution-tabs button,
+  .report-filters button,
+  .element-knowledge-view-toggle button
+):hover {
+  color: var(--button-primary);
+  background: var(--button-primary-soft);
+}
+
+:is(
+  .bottom-tabs button.is-selected,
+  .execution-tabs button.is-active,
+  .report-filters button.is-active,
+  .element-knowledge-view-toggle button.is-active
+) {
+  color: #ffffff;
+  border-color: var(--button-primary);
+  background: var(--button-primary);
+  box-shadow: 0 7px 18px color-mix(in srgb, var(--button-primary) 24%, transparent);
+}
+
+/* Upload labels and certificate links behave like buttons without changing inputs. */
+.upload-button,
+.login-certificate a {
+  min-height: var(--button-height-md);
+  border-radius: var(--button-radius-md);
+  font-size: 13px;
+  font-weight: 800;
+  transition:
+    color 160ms ease,
+    background-color 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms ease;
+}
+
+.login-certificate a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 16px;
+  color: var(--button-primary);
+  border: 1px solid color-mix(in srgb, var(--button-primary) 28%, var(--button-border));
+  background: var(--button-primary-soft);
+  text-decoration: none;
+}
+
+.upload-button:hover:not(.is-disabled),
+.login-certificate a:hover {
+  border-color: var(--button-primary);
+  box-shadow: var(--button-shadow);
+  transform: translateY(-1px);
+}
+
+/* Menu actions use the same hover and danger tokens while preserving menu layout. */
+.user-menu__item {
+  border-radius: var(--button-radius-sm);
+  transition: color 150ms ease, background-color 150ms ease;
+}
+
+.user-menu__item:hover,
+.user-menu__item:focus-visible {
+  color: var(--button-primary);
+  background: var(--button-primary-soft);
+}
+
+.user-menu__item--danger {
+  color: var(--button-danger);
+}
+
+.user-menu__item--danger:hover,
+.user-menu__item--danger:focus-visible {
+  color: var(--button-danger);
+  background: var(--button-danger-soft);
+}
+
+.dropdown__item {
+  min-height: var(--button-height-sm);
+  color: var(--button-text);
+  border-radius: var(--button-radius-sm);
+  transition: color 150ms ease, background-color 150ms ease;
+}
+
+.dropdown__item:hover,
+.dropdown__item:focus-visible {
+  color: var(--button-primary);
+  background: var(--button-primary-soft);
+}
+
+.execution-cluster__toggle {
+  min-height: var(--button-height-sm);
+  padding: 0 4px;
+  color: var(--button-muted);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.execution-cluster__toggle:hover {
+  color: var(--button-primary);
+  background: transparent;
+  box-shadow: none;
+}
+
+.lightbox__backdrop:focus-visible {
+  outline: none;
+}
+
+/* Navigation and card-like buttons retain their component geometry. */
+:is(.platform-nav__item, .platform-brand, .user-menu-trigger, .qa-hero-card, .requirements-draft-row, .point-chip-button, .report-step-item__trigger, .step-shot) {
+  transition:
+    color 150ms ease,
+    background-color 150ms ease,
+    border-color 150ms ease,
+    box-shadow 150ms ease;
+}
+
+/* Explicit product exception: keep all CaseToolbox action colors and geometry. */
+.case-row-action {
+  /* Intentionally empty. The declaration documents the protected boundary. */
+}
+
+/*
+ * Compatibility overrides for page rules with deliberately higher specificity.
+ * These keep the semantic tokens authoritative without touching page markup.
+ */
+.report-center-redesign .btn {
+  min-height: var(--button-height-md);
+  border-radius: var(--button-radius-md);
+}
+
+.case-filter-actions .btn {
+  min-height: var(--button-height-md);
+  border-radius: var(--button-radius-md);
+}
+
+.execution-entry-card .btn-danger {
+  min-height: var(--button-height-md);
+  padding: 0 18px;
+  border-radius: var(--button-radius-md);
+}
+
+.report-center-redesign .btn--danger-soft {
+  color: var(--button-danger);
+  border-color: color-mix(in srgb, var(--button-danger) 28%, var(--button-border));
+  background: var(--button-danger-soft);
+}
+
+.report-center-redesign .report-analysis-toolbar .btn {
+  color: #ffffff;
+  border-color: var(--button-primary);
+  background: var(--button-primary);
+}
+
+.report-center-redesign .report-analysis-toolbar .btn:hover:not(:disabled) {
+  border-color: var(--button-primary-hover);
+  background: var(--button-primary-hover);
+}
+
+.report-center-redesign .report-filters button {
+  color: var(--button-muted);
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+.report-center-redesign .report-filters button:hover,
+.report-center-redesign .report-filters button.is-active {
+  color: var(--button-primary);
+  border-color: transparent;
+  background: var(--button-primary-soft);
+  box-shadow: none;
+}
+
+:root[data-theme="dark"] :is(
+  .btn,
+  .btn-primary,
+  .btn-secondary,
+  .btn-danger,
+  .requirement-button,
+  .element-knowledge-detail-button
+) {
+  /* Overrides the legacy high-specificity dark-theme compatibility selectors. */
+  color: var(--button-fg) !important;
+  border-color: var(--button-line) !important;
+  background: var(--button-bg) !important;
+}
+
+:root[data-theme="dark"] :is(.btn--primary, .btn-primary, .requirement-button--new, .requirement-button--save, .requirement-button--refresh) {
+  --button-bg: var(--button-primary);
+  --button-fg: #ffffff;
+  --button-line: var(--button-primary);
+}
+
+:root[data-theme="dark"] :is(.btn--green) {
+  --button-bg: var(--button-success);
+  --button-fg: #ffffff;
+  --button-line: var(--button-success);
+}
+
+:root[data-theme="dark"] :is(.btn-danger, .btn--danger) {
+  --button-bg: var(--button-danger);
+  --button-fg: #ffffff;
+  --button-line: var(--button-danger);
+}
+
+:root[data-theme="dark"] :is(.btn--outline, .btn-secondary, .requirement-button--ai, .requirement-button--cases, .requirement-button--reset) {
+  --button-bg: var(--button-surface);
+  --button-fg: var(--button-text);
+  --button-line: var(--button-border);
+}
+
+:root[data-theme="dark"] :is(.btn--soft) {
+  --button-bg: var(--button-primary-soft);
+  --button-fg: var(--button-primary);
+  --button-line: transparent;
+}
+
+:root[data-theme="dark"] :is(.btn--danger-soft, .requirement-button--delete) {
+  --button-bg: var(--button-danger-soft);
+  --button-fg: var(--button-danger);
+  --button-line: color-mix(in srgb, var(--button-danger) 28%, var(--button-border));
+}
+
+/* Header theme control stays visually icon-only; keyboard focus remains visible via the global outline. */
+.theme-toggle,
+.theme-toggle:hover:not(:disabled),
+.theme-toggle:focus-visible {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.theme-toggle:hover:not(:disabled) {
+  color: var(--button-primary);
+}
+
+/* Keep destructive text readable when the soft action changes to a filled hover state. */
+.requirement-button--delete:hover:not(:disabled) {
+  color: #ffffff;
+}
+
+/* Execution queue delete is an icon-only action, without a surrounding button container. */
+.execution-list__actions .icon-button--danger,
+.execution-list__actions .icon-button--danger:hover:not(:disabled),
+.execution-list__actions .icon-button--danger:focus-visible {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.execution-list__actions .icon-button--danger:hover:not(:disabled) {
+  color: var(--button-danger-hover);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :is(
+    .btn,
+    .btn-primary,
+    .btn-secondary,
+    .btn-danger,
+    .requirement-button,
+    .evidence-action,
+    .report-row-action,
+    .project-row-action,
+    .element-knowledge-detail-button,
+    .icon-button
+  ) {
+    transition-duration: 0.01ms !important;
+  }
+}

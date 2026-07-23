@@ -149,7 +149,7 @@ class AnalyzeSpecE2ETests(unittest.TestCase):
     # ---- 端到端 #1：项目 + 上下文双注入 LLM prompt（覆盖 P0-6 + P1-3 端到端） ----
 
     def test_e2e_project_and_context_both_injected_into_llm_prompt(self):
-        """POST /api/requirements/analyze-spec 同时传 project_id=icm + context_info=env_url，
+        """POST /api/requirements/analyze-spec 同时传项目与业务前置条件，
         断言 LLM 收到的 user prompt 文本同时含 'Base URL: https://icm.example.com' 和
         '环境URL: https://staging'。"""
         captured: dict = {}
@@ -161,10 +161,8 @@ class AnalyzeSpecE2ETests(unittest.TestCase):
                     "document": "需求：登录页 + 退出。",
                     "project_id": self.icm["id"],
                     "context_info": {
-                        "env_url": "https://staging",
-                        "test_account": "",
+                        "business_preconditions": "使用管理员角色",
                         "excluded": "",
-                        "refs": "",
                     },
                 },
             )
@@ -177,9 +175,9 @@ class AnalyzeSpecE2ETests(unittest.TestCase):
         # P0-6 端到端：项目段含 Base URL
         self.assertIn("项目信息", prompt_json_str)
         self.assertIn("Base URL: https://icm.example.com", prompt_json_str)
-        # P1-3 端到端：上下文段含 环境URL
+        # P1-3 端到端：上下文段含业务前置条件
         self.assertIn("上下文信息", prompt_json_str)
-        self.assertIn("环境URL: https://staging", prompt_json_str)
+        self.assertIn("业务前置条件: 使用管理员角色", prompt_json_str)
         # 空字段不污染
         self.assertNotIn("测试账号", prompt_json_str)
         self.assertNotIn("排除范围", prompt_json_str)
@@ -196,10 +194,8 @@ class AnalyzeSpecE2ETests(unittest.TestCase):
                     "document": "需求：登录页 + 退出。",
                     "project_id": self.icm["id"],
                     "context_info": {
-                        "env_url": "https://staging",
-                        "test_account": "qa/123",
+                        "business_preconditions": "已准备待审核数据",
                         "excluded": "",
-                        "refs": "",
                     },
                 },
             )
@@ -222,22 +218,19 @@ class AnalyzeSpecE2ETests(unittest.TestCase):
         self.assertTrue(any("Base URL: https://icm.example.com" in r for r in proj_rows))
 
         ctx_rows = ctx["rows"]
-        self.assertTrue(any("环境URL: https://staging" in r for r in ctx_rows))
-        self.assertTrue(any("测试账号: qa/123" in r for r in ctx_rows))
-        # 留空的 2 个不出现
+        self.assertTrue(any("业务前置条件: 已准备待审核数据" in r for r in ctx_rows))
+        # 留空字段不出现
         self.assertFalse(any("排除范围" in r for r in ctx_rows))
         self.assertFalse(any("参考文档" in r for r in ctx_rows))
 
     # ---- 端到端 #2：context_info 持久化到 case_drafts.yaml 顶层（覆盖 P1-2 端到端） ----
 
     def test_e2e_context_info_persisted_to_case_drafts_yaml_top_level(self):
-        """POST /api/requirements/analyze-spec 传 context_info={'env_url': 'x', ...}，
+        """POST /api/requirements/analyze-spec 传精简后的 context_info，
         断言写出的 case_drafts.yaml 顶层含 context_info 键。"""
         ctx = {
-            "env_url": "https://x.example.com",
-            "test_account": "qa/x",
+            "business_preconditions": "已准备待审核数据",
             "excluded": "登录页",
-            "refs": "https://wiki/x",
         }
         captured: dict = {}
         with patch.object(AIService, "_post_json", _make_fake_post_json(captured)):
@@ -266,6 +259,25 @@ class AnalyzeSpecE2ETests(unittest.TestCase):
         # 顶层必须含 context_info 键
         self.assertIn("context_info", parsed, f"yaml 顶层缺 context_info:\n{yaml_text}")
         self.assertEqual(parsed["context_info"], ctx)
+
+    def test_empty_or_deprecated_context_is_not_persisted(self):
+        with patch.object(AIService, "_post_json", _make_fake_post_json({})):
+            resp = self.client.post(
+                "/api/requirements/analyze-spec",
+                json={
+                    "title": "登录页冒烟",
+                    "document": "需求：登录页。",
+                    "project_id": self.icm["id"],
+                    "context_info": {"business_preconditions": " ", "excluded": "", "test_account": "qa/secret"},
+                },
+            )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        draft_id = resp.json()["drafts"][0]["id"]
+        with db.connect() as conn:
+            yaml_text = conn.execute("select yaml from case_drafts where id = ?", (draft_id,)).fetchone()["yaml"]
+
+        self.assertNotIn("context_info", yaml.safe_load(yaml_text))
+        self.assertNotIn("secret", yaml_text)
 
 
 if __name__ == "__main__":

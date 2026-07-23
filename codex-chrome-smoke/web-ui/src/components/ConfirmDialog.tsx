@@ -1,25 +1,19 @@
-/**
- * 通用确认弹窗（ConfirmDialog）
- *
- * 复用 Modal + sm 档；危险操作走 danger 变体按钮。
- * 用于退出登录、危险删除等确认场景。
- */
-
-import { useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useState, type ReactNode, type RefObject } from "react";
 import { Modal } from "./Modal";
 
-export type ConfirmDialogProps = {
-  open: boolean;
+export type ConfirmDialogOptions = {
   title: string;
-  description?: string;
-  /** 危险操作 → 红色确认按钮 */
+  description: string;
   danger?: boolean;
   confirmText?: string;
   cancelText?: string;
+};
+
+export type ConfirmDialogProps = ConfirmDialogOptions & {
+  open: boolean;
   onConfirm: () => void | Promise<void>;
   onClose: () => void;
-  /** 触发器 ref，关闭时焦点回退 */
-  triggerRef?: React.RefObject<HTMLElement | null>;
+  triggerRef?: RefObject<HTMLElement | null>;
 };
 
 export function ConfirmDialog({
@@ -35,14 +29,16 @@ export function ConfirmDialog({
 }: ConfirmDialogProps) {
   const [busy, setBusy] = useState(false);
 
+  useEffect(() => {
+    if (!open) setBusy(false);
+  }, [open]);
+
   async function handleConfirm() {
     if (busy) return;
     setBusy(true);
     try {
       await onConfirm();
-      // 成功后再让父级关弹窗
     } catch {
-      // 失败时父级通常会展示错误，保持弹窗打开
       setBusy(false);
     }
   }
@@ -56,6 +52,7 @@ export function ConfirmDialog({
       title={title}
       size="sm"
       triggerRef={triggerRef}
+      dismissOnMask={!busy}
       footer={
         <>
           <button type="button" className="btn-secondary" onClick={onClose} disabled={busy}>
@@ -73,7 +70,60 @@ export function ConfirmDialog({
         </>
       }
     >
-      {description ? <p style={{ margin: 0, color: "var(--text)", fontSize: 14, lineHeight: 1.6 }}>{description}</p> : null}
+      <div className={`confirm-dialog__content ${danger ? "is-danger" : ""}`}>
+        <span className="confirm-dialog__icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 3 2.8 20h18.4z" />
+            <path d="M12 9v4M12 17h.01" />
+          </svg>
+        </span>
+        <p>{description}</p>
+      </div>
     </Modal>
   );
+}
+
+type PendingConfirmation = ConfirmDialogOptions & {
+  resolve: (confirmed: boolean) => void;
+};
+
+const ConfirmContext = createContext<((options: ConfirmDialogOptions) => Promise<boolean>) | null>(null);
+
+export function ConfirmProvider({ children }: { children: ReactNode }) {
+  const [pending, setPending] = useState<PendingConfirmation | null>(null);
+
+  const confirm = useCallback((options: ConfirmDialogOptions) => {
+    return new Promise<boolean>((resolve) => {
+      setPending({ ...options, resolve });
+    });
+  }, []);
+
+  function finish(confirmed: boolean) {
+    if (!pending) return;
+    const current = pending;
+    setPending(null);
+    current.resolve(confirmed);
+  }
+
+  return (
+    <ConfirmContext.Provider value={confirm}>
+      {children}
+      <ConfirmDialog
+        open={Boolean(pending)}
+        title={pending?.title || ""}
+        description={pending?.description || ""}
+        danger={pending?.danger}
+        confirmText={pending?.confirmText}
+        cancelText={pending?.cancelText}
+        onClose={() => finish(false)}
+        onConfirm={() => finish(true)}
+      />
+    </ConfirmContext.Provider>
+  );
+}
+
+export function useConfirm() {
+  const confirm = useContext(ConfirmContext);
+  if (!confirm) throw new Error("useConfirm must be used within ConfirmProvider");
+  return confirm;
 }

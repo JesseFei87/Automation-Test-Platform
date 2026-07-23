@@ -69,6 +69,7 @@ def build_context_info_block(context_info: dict[str, Any] | None) -> dict[str, A
         return None
     rows: list[tuple[str, str]] = []
     for key, label in (
+        ("business_preconditions", "业务前置条件"),
         ("env_url", "环境URL"),
         ("test_account", "测试账号"),
         ("excluded", "排除范围"),
@@ -476,6 +477,8 @@ class AIService:
         provider: str = 'minimax-m3',
         project: dict[str, Any] | None = None,
         context_info: dict[str, Any] | None = None,
+        case_count: int = 12,
+        coverage_focus: str = "balanced",
     ) -> dict[str, Any]:
         # P0 / P1 · 增量：项目信息 + 上下文信息按 build_prompt_sections 拼到 user.message.content.prompt_sections
         extra_sections = build_prompt_sections(
@@ -485,9 +488,16 @@ class AIService:
             ]
         )
         standard_excerpt = standard_text[:3000]
+        focus_instruction = {
+            "balanced": "均衡覆盖正常流程、异常、边界和必要权限场景",
+            "normal": "优先覆盖主流程、关键分支和成功结果",
+            "abnormal_boundary": "优先覆盖异常输入、失败路径、边界值和状态限制",
+            "permission_security": "优先覆盖角色权限、越权访问、敏感信息和安全限制",
+        }.get(coverage_focus, coverage_focus)
         user_payload: dict[str, Any] = {
             'standard_excerpt': standard_excerpt,
-            'output_limits': 'return valid JSON only, at most 12 concise cases, no Markdown, no trailing commas.',
+            'output_limits': f'return valid JSON only, target exactly {case_count} distinct concise cases, no Markdown, no trailing commas.',
+            'coverage_focus': focus_instruction,
             'requirement_document': document,
         }
         if extra_sections:
@@ -509,7 +519,7 @@ class AIService:
         }
         if provider == 'minimax-m3' or model == 'MiniMax-M3':
             payload['thinking'] = {'type': 'adaptive'}
-            payload['max_completion_tokens'] = 4096
+            payload['max_completion_tokens'] = 8192
         else:
             payload['max_tokens'] = 12288
         if provider == 'ollama-local':
@@ -523,6 +533,8 @@ class AIService:
         settings: dict[str, Any],
         project: dict[str, Any] | None = None,
         context_info: dict[str, Any] | None = None,
+        case_count: int = 12,
+        coverage_focus: str = "balanced",
     ) -> dict[str, Any]:
         if not document.strip():
             return {'cases': [], 'raw': ''}
@@ -535,6 +547,8 @@ class AIService:
             provider,
             project=project,
             context_info=context_info,
+            case_count=case_count,
+            coverage_focus=coverage_focus,
         )
         raw = self._post_json(
             self.chat_completions_url(settings['base_url']),
@@ -551,7 +565,7 @@ class AIService:
         content = self._message_text(message.get('content'))
         if not content:
             content = self._message_text(message.get('reasoning'))
-        return {'cases': self._parse_spec_cases(content), 'raw': content}
+        return {'cases': self._parse_spec_cases(content)[:case_count], 'raw': content}
 
     @staticmethod
     def _message_text(value: Any) -> str:

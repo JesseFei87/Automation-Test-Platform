@@ -200,6 +200,7 @@ export type RequirementDetail = {
   test_points: TestPoint[];
   drafts: CaseDraft[];
   provider?: string;
+  generated_cases?: number;
 };
 
 export type ApiRunSummary = {
@@ -215,6 +216,7 @@ export type ApiRun = {
   id: string;
   mode: "run-case" | "run-batch" | "run-draft" | "agent-explore";
   case_id: string | null;
+  agent_backend?: "native" | "harness" | null;
   parent_run_id?: string | null;
   trigger?: "manual" | "self_heal" | string | null;
   healing_context_path?: string | null;
@@ -350,6 +352,7 @@ export type ApiRunDetailView = {
   case_id?: string | null;
   case_name: string;
   mode: "worker" | "agent";
+  agent_backend?: "native" | "harness" | null;
   trigger?: "manual" | "self_heal" | string;
   parent_run_id?: string | null;
   status: string;
@@ -371,12 +374,15 @@ export type ApiRunDetailView = {
     observed_asset_merge_url?: string;
     trace_download_url?: string;
     candidate_flow_url?: string;
+    diagnosis_url?: string;
+    candidate_patch_url?: string;
   };
   raw_report?: string;
   logs?: Array<{ id: number; run_id: string; stream: string; line: string; created_at: string }>;
   screenshots?: ApiScreenshot[];
   evidence?: ApiEvidenceSummary;
   agent_explore?: ApiAgentExploreDetail | null;
+  diagnosis?: { category?: string; confidence?: number; evidence?: string; recommendation?: string; ai_status?: string; reobservation?: { ok?: boolean; read_only?: boolean; screenshot?: string; error?: string } } | null;
   analysis?: ApiRunDetail["analysis"];
   healing_hint?: string;
   agent_plan?: {
@@ -702,13 +708,10 @@ export type Project = {
   updated_at: string;
 };
 
-// P1 · 上下文信息结构化（增量 2026-06-10）
-// 4 子字段均可空；前端 JSON.stringify 后写入 cases.spec_yaml 顶层 context_info
+// 可选生成约束；空对象不提交，也不写入草稿 YAML。
 export type ContextInfo = {
-  env_url?: string;
-  test_account?: string;
+  business_preconditions?: string;
   excluded?: string;
-  refs?: string;
 };
 
 async function testPointsWithFallback(status?: "confirmed") {
@@ -780,11 +783,16 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ title, document }),
     }),
-  analyzeRequirementSpec: (payload: { title: string; document: string; context_info?: ContextInfo; project_id?: string | null; generation_id?: string }, signal?: AbortSignal) =>
+  analyzeRequirementSpec: (payload: { title: string; document: string; context_info?: ContextInfo; project_id?: string | null; requirement_id?: number | null; generation_id?: string; case_count?: number; coverage_focus?: "balanced" | "normal" | "abnormal_boundary" | "permission_security" }, signal?: AbortSignal) =>
     request<RequirementDetail>("/requirements/analyze-spec", {
       method: "POST",
       body: JSON.stringify(payload),
       signal,
+    }),
+  parseRequirementDocument: (filename: string, contentBase64: string) =>
+    request<{ filename: string; title: string; text: string }>("/requirements/parse-document", {
+      method: "POST",
+      body: JSON.stringify({ filename, content_base64: contentBase64 }),
     }),
   stopRequirementGeneration: (generationId: string) =>
     request<{ status: string; generation_id: string }>(`/requirements/generations/${encodeURIComponent(generationId)}/stop`, { method: "POST" }),
@@ -869,10 +877,10 @@ export const api = {
     }),
   exportRequirementCases: (requirementId: number, format: "xlsx" | "yaml") =>
     requestBlob(`/requirements/${requirementId}/export?format=${format}`, { method: "GET" }),
-  createRun: (mode: "run-case" | "run-batch" | "run-draft" | "agent-explore", caseId?: string, draftId?: number, caseIds?: string[]) =>
+  createRun: (mode: "run-case" | "run-batch" | "run-draft" | "agent-explore", caseId?: string, draftId?: number, caseIds?: string[], agentBackend: "native" | "harness" = "native") =>
     request<{ id: string; mode: "run-case" | "run-batch" | "run-draft" | "agent-explore"; case_id: string | null; status: string }>("/runs", {
       method: "POST",
-      body: JSON.stringify({ mode, case_id: caseId, draft_id: draftId, case_ids: caseIds }),
+      body: JSON.stringify({ mode, case_id: caseId, draft_id: draftId, case_ids: caseIds, agent_backend: agentBackend }),
     }),
   stopRun: (runId: string) => request<{ id: string; status: string }>(`/runs/${runId}/stop`, { method: "POST" }),
   runCaseDraft: (draftId: number) =>
@@ -955,6 +963,11 @@ export const api = {
     request<ApiCodegenResponse>(`/cases/${encodeURIComponent(caseId)}/codegen`, {
       method: "POST",
       body: JSON.stringify({ write, template }),
+    }),
+  diagnoseRun: (runId: string) =>
+    request<{ run_id: string; status: string }>(`/runs/${runId}/diagnose`, {
+      method: "POST",
+      body: JSON.stringify({}),
     }),
   createRecorderSession: (payload: { start_url: string; case_id?: string; system_id?: string }) =>
     request<RecorderSession>("/recordings", { method: "POST", body: JSON.stringify(payload) }),

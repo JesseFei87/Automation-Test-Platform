@@ -63,6 +63,25 @@ class _FakeEvidence:
         self.events.append((kind, message, value))
 
 
+class _FlakyRoutePage:
+    def __init__(self) -> None:
+        self.gotos: list[str] = []
+        self.waits: list[int] = []
+        self.url = "about:blank"
+
+    async def goto(self, url: str, **_kwargs) -> None:
+        self.gotos.append(url)
+        if len(self.gotos) == 1:
+            raise RuntimeError("Page.goto: net::ERR_CONNECTION_CLOSED")
+        self.url = url
+
+    async def wait_for_timeout(self, milliseconds: int) -> None:
+        self.waits.append(milliseconds)
+
+    async def wait_for_load_state(self, *_args, **_kwargs) -> None:
+        return None
+
+
 def _async_return(value):
     async def _fn(*_args, **_kwargs):
         return value
@@ -70,6 +89,18 @@ def _async_return(value):
 
 
 class BrowserLoginFlowTests(unittest.TestCase):
+    def test_recorded_fill_value_redacts_password_fields(self) -> None:
+        self.assertEqual(browser_module._recorded_fill_value(["密码", 'input[type="password"]'], "123456"), "<redacted>")
+        self.assertEqual(browser_module._recorded_fill_value(["账号"], "test"), "test")
+
+    def test_goto_route_retries_a_transient_connection_close_once(self) -> None:
+        page = _FlakyRoutePage()
+
+        asyncio.run(browser_module.goto_route(page, {"base_url": "https://example.test"}, "#/login"))
+
+        assert page.gotos == ["https://example.test#/login", "https://example.test#/login"]
+        assert page.waits == [1000, 500]
+
     def test_decode_token_subject_reads_jwt_sub(self) -> None:
         token = "eyJhbGciOiJIUzUxMiJ9.eyJzdWIiOiJhZG1pbiIsImxvZ2luX3VzZXJfa2V5IjoiMTIzIn0.signature"
         assert browser_module._decode_token_subject(token) == "admin"
@@ -169,7 +200,7 @@ class BrowserLoginFlowTests(unittest.TestCase):
         ):
             asyncio.run(browser_module.perform_login(page, system, username="test", password="123456", checkpoint=_checkpoint))
 
-        assert checkpoints == ["login_page_opened", "credentials_filled", "login_completed"]
+        assert checkpoints == ["login_page_opened", "username_filled", "password_filled", "login_completed"]
 
 
     def test_current_logged_in_username_prefers_visible_header_over_cookie_subject(self) -> None:

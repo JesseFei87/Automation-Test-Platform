@@ -2,6 +2,7 @@ import asyncio
 import re
 
 from runner.agent_stage_router import (
+    _record,
     _extract_binding_device_names,
     _is_icm_device_create_case,
     _run_account_switch,
@@ -13,6 +14,34 @@ from runner.agent_stage_router import (
     plan_agent_execution,
     saved_device_name_value,
 )
+
+
+def test_record_attaches_element_knowledge_evidence(monkeypatch):
+    class Page:
+        _case_run_id = ""
+        _case_id = ""
+
+    async def observe(_page):
+        return {
+            "url": "https://example.test/#/users",
+            "visibleText": ["新增用户"],
+            "interactives": [{"ref": "e3", "text": "新增用户"}],
+        }
+
+    monkeypatch.setattr(
+        "runner.element_ref_matcher.build_agent_ref_evidence",
+        lambda *args, **kwargs: {"matched": True, "adopted": False, "selected_ref": ""},
+    )
+
+    item = asyncio.run(_record(Page(), {"action": "click", "ref": "", "reason": "新增用户"}, {"result": "clicked"}, observe))
+
+    assert item["element_knowledge"] == {
+        "matched": True,
+        "adopted": False,
+        "selected_ref": "",
+        "decision_source": "native_strategy",
+        "observation_phase": "post_action",
+    }
 
 
 def test_parse_case_test_data_supports_semicolon_pairs():
@@ -117,6 +146,24 @@ def test_plan_agent_execution_adds_login_stage_for_logged_in_precondition():
     assert plan["stages"][0]["strategy"] == "login_guard"
 
 
+def test_plan_agent_execution_does_not_treat_login_url_input_as_dialog_form() -> None:
+    plan = plan_agent_execution(
+        {
+            "id": "LOGIN_FUN_007",
+            "module": "账号/登录",
+            "steps": [
+                "在浏览器地址栏输入 https://example.test/#/login?redirect=%2Fredirect 并访问",
+                "在账号输入框填入 test",
+                "在密码输入框填入 123456",
+                '点击"登录"按钮',
+            ],
+            "expected": ["页面跳转至屏幕墙，顶部导航显示当前登录用户test"],
+        }
+    )
+
+    assert [stage["scene_type"] for stage in plan["stages"]] == ["login", "assertion"]
+
+
 def test_plan_agent_execution_uses_expected_field_for_assertion_signals():
     plan = plan_agent_execution(
         {
@@ -129,6 +176,7 @@ def test_plan_agent_execution_uses_expected_field_for_assertion_signals():
     assertion_stage = plan["stages"][-1]
     assert assertion_stage["scene_type"] == "assertion"
     assert "弹窗不关闭" in assertion_stage["success_signals"]
+    assert "设备名称最多15个字符" in assertion_stage["success_signals"]
 
 
 def test_plan_agent_execution_maps_input_step_to_dialog_stage():
@@ -187,6 +235,7 @@ def test_is_exception_case_matches_exc_id_prefix():
     assert _is_exception_case({"id": "TC_EXC_FOO"})
     assert _is_exception_case({"id": "X", "case_type": "exception"})
     assert _is_exception_case({"id": "X", "type": "exception"})
+    assert _is_exception_case({"id": "TC-ICM-026", "type": "异常"})
 
 
 def test_is_exception_case_rejects_non_exc_cases():
@@ -197,6 +246,27 @@ def test_is_exception_case_rejects_non_exc_cases():
     assert not _is_exception_case({"id": "ICMDEV_LOGIN_001"})
     assert not _is_exception_case({})
     assert not _is_exception_case({"id": "ICMDEV_001"})
+
+
+def test_empty_required_fields_case_is_verified_in_dialog_stage():
+    plan = plan_agent_execution(
+        {
+            "id": "ICMDEV_EXC_010",
+            "module": "ICM-设备信息",
+            "steps": [
+                "1. 打开添加设备信息弹窗",
+                "2. 清空所有必填字段（除固定下拉项）",
+                "3. 点击【确定】",
+            ],
+            "expected_results": [
+                "1. 弹窗正常打开",
+                "2. 各必填字段输入框显示为空",
+                "3. 各必填字段下方出现红色'此项必填'或'不能为空'提示，提交被拦截，弹窗不关闭",
+            ],
+        }
+    )
+
+    assert [stage["scene_type"] for stage in plan["stages"]] == ["navigation", "dialog_form"]
 
 
 def test_exc_case_assertion_stage_uses_expected_as_success_signal():
@@ -349,6 +419,36 @@ def test_run_detail_assert_uses_screen_wall_device_visibility(monkeypatch):
 
     assert history == []
     assert error == "screen wall devices not visible: DxI(2)"
+
+
+def test_run_detail_assert_requires_every_exception_signal(monkeypatch):
+    class FakePage:
+        url = "https://example.test/#/device"
+
+    async def fake_record(_page, decision, execution, _observe_page):
+        return {"decision": decision, "execution": execution}
+
+    async def fake_observe_page(_page):
+        return {}
+
+    async def fake_ensure_text_visible(_page, text: str):
+        if text != "first prompt":
+            raise RuntimeError("not visible")
+
+    monkeypatch.setattr("runner.agent_stage_router._record", fake_record)
+    monkeypatch.setattr("runner.agent_stage_router.ensure_text_visible", fake_ensure_text_visible)
+    monkeypatch.setattr("runner.agent_explore.observe_page", fake_observe_page)
+
+    history, error = asyncio.run(
+        _run_detail_assert(
+            FakePage(),
+            {"id": "ICMDEV_EXC_010", "type": "异常"},
+            {"success_signals": ["first prompt", "second prompt"]},
+        )
+    )
+
+    assert len(history) == 1
+    assert "second prompt" in error
 
 
 def test_run_detail_assert_passes_when_all_screen_wall_devices_are_visible(monkeypatch):
@@ -1000,7 +1100,7 @@ def test_run_login_guard_records_one_screenshot_checkpoint_per_source_step(monke
         assert username == "test"
         assert password == "123456"
         assert checkpoint is not None
-        for name in ("login_page_opened", "credentials_filled", "login_completed"):
+        for name in ("login_page_opened", "username_filled", "password_filled", "login_completed"):
             await checkpoint(name)
 
     monkeypatch.setattr("runner.agent_stage_router._record", fake_record)
@@ -1012,10 +1112,11 @@ def test_run_login_guard_records_one_screenshot_checkpoint_per_source_step(monke
     assert error == ""
     assert [item["execution"]["result"] for item in history] == [
         "login_page_opened",
-        "login_credentials_filled",
+        "login_username_filled",
+        "login_password_filled",
         "login_guard_passed",
     ]
-    assert [item["screenshot_name"] for item in history] == ["agent-step-01.png", "agent-step-02.png", "agent-step-03.png"]
+    assert [item["screenshot_name"] for item in history] == ["agent-step-01.png", "agent-step-02.png", "agent-step-03.png", "agent-step-04.png"]
 
 
 def test_run_logout_prompt_emits_screenshot_record(monkeypatch):

@@ -3,7 +3,9 @@ import MindElixir from "mind-elixir";
 import "mind-elixir/style.css";
 import { api, type TestPoint } from "../data/api";
 import { Card } from "../components/Card";
+import { useConfirm } from "../components/ConfirmDialog";
 import { StatusPill } from "../components/StatusPill";
+import { useToast } from "../components/Toast";
 
 type ViewMode = "category" | "module";
 type CaseTemplate = "functional" | "negative" | "regression" | "e2e";
@@ -182,6 +184,8 @@ function downloadText(filename: string, content: string, type: string) {
 }
 
 export function TestPointsMap() {
+  const confirm = useConfirm();
+  const toast = useToast();
   const mapHostRef = useRef<HTMLDivElement | null>(null);
   const mindRef = useRef<any>(null);
   const [points, setPoints] = useState<TestPoint[]>([]);
@@ -277,6 +281,7 @@ export function TestPointsMap() {
       await api.updateTestPoint(selectedOne.id, draft);
       await refreshPoints();
       setStatus(`测试点已保存：${draft.name}`);
+      toast.show({ kind: "success", message: "测试点保存成功" });
     } catch (error) {
       setStatus(`保存失败：${error instanceof Error ? error.message : "unknown error"}`);
     } finally {
@@ -294,6 +299,7 @@ export function TestPointsMap() {
       const result = await api.reorderTestPoints(updates);
       await refreshPoints();
       setStatus(`导图结构已保存：${result.updated} 个测试点`);
+      toast.show({ kind: "success", message: "导图结构保存成功" });
     } catch (error) {
       setStatus(`保存导图结构失败：${error instanceof Error ? error.message : "unknown error"}`);
     } finally {
@@ -306,6 +312,13 @@ export function TestPointsMap() {
       setStatus("请选择要删除的测试点");
       return;
     }
+    const confirmed = await confirm({
+      title: ids.length === 1 ? "确认删除这个测试点？" : `确认删除选中的 ${ids.length} 个测试点？`,
+      description: "删除后这些测试点将从测试点导图和列表中移除，也无法再基于它们生成用例。",
+      danger: true,
+      confirmText: "确认删除",
+    });
+    if (!confirmed) return;
     setBusy(true);
     try {
       for (const id of ids) {
@@ -314,6 +327,7 @@ export function TestPointsMap() {
       setSelectedIds([]);
       await refreshPoints();
       setStatus("已删除选中的测试点");
+      toast.show({ kind: "success", message: "测试点删除成功" });
     } catch (error) {
       setStatus(`删除失败：${error instanceof Error ? error.message : "unknown error"}`);
     } finally {

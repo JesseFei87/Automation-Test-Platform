@@ -16,6 +16,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import * as authApi from "../data/authApi";
+import { API_ORIGIN } from "../data/api";
 import { useAuth } from "../data/authStore";
 import { useToast } from "../components/Toast";
 import PixelBlast from "../components/PixelBlast";
@@ -227,6 +228,15 @@ export function Login() {
             {submitting ? "登录中…" : "登录"}
           </button>
         </form>
+        <div className="login-certificate">
+          <div>
+            <strong>首次使用 Trace Viewer？</strong>
+            <span>远程查看执行轨迹前，请先安装访问证书并重新打开浏览器。</span>
+          </div>
+          <a href={`${API_ORIGIN}/api/trace-viewer/ca-certificate`} download>
+            下载访问证书
+          </a>
+        </div>
         <div className="login-foot">© 2026 ICM QA Platform · 仅供内部演示</div>
       </div>
     </div>

@@ -14,6 +14,215 @@ from runner.main import cases_for_batch
 
 
 class RunViewTests(unittest.TestCase):
+    def test_list_loaded_assertion_uses_structural_page_evidence(self) -> None:
+        checks = api_module._build_assertion_checks("页面正常加载用户列表")
+
+        self.assertEqual([check["type"] for check in checks], ["table_visible"])
+        evaluated = api_module._evaluate_assertion_check(
+            checks[0],
+            {
+                "observation": {
+                    "url": "https://example.test/#/system/user",
+                    "visibleText": [
+                        "用户管理",
+                        "用户名称 手机号码 状态",
+                        "创建时间",
+                        "搜索 重置",
+                        "新增 修改 删除",
+                    ],
+                },
+                "execution": {"result": "route_open_passed"},
+            },
+            {},
+        )
+
+        self.assertEqual(evaluated["status"], "completed")
+        self.assertEqual(evaluated["match_strength"], "structural")
+
+    def test_harness_evidence_gate_uses_last_successful_post_action_screenshot(self) -> None:
+        step = {
+            "expected_result": "页面跳转至屏幕墙",
+            "expected_result_status": "completed",
+            "status": "completed",
+            "assertion_checks": [{"type": "login_success", "expected": "页面跳转至屏幕墙"}],
+            "events": [
+                {
+                    "execution": {
+                        "result": "clicked",
+                        "screenshot_name": "step-01-click.png",
+                        "post_observation": {"url": "https://example.test/#/login", "visibleText": ["登录中"]},
+                    }
+                },
+                {
+                    "execution": {
+                        "result": "asserted",
+                        "screenshot_name": "step-02-assert.png",
+                        "post_observation": {"url": "https://example.test/#/icm", "visibleText": ["矩阵", "test"]},
+                    }
+                },
+            ],
+        }
+
+        api_module._apply_harness_evidence_gate(
+            [step],
+            {},
+            [
+                {"filename": "step-01-click.png", "url": "/step-01-click.png"},
+                {"filename": "step-02-assert.png", "url": "/step-02-assert.png"},
+            ],
+        )
+
+        self.assertEqual(step["status"], "completed")
+        self.assertEqual(step["screenshot_url"], "/step-02-assert.png")
+        self.assertEqual(step["assertion_checks"][-1]["type"], "evidence_bundle")
+        self.assertEqual(step["assertion_checks"][-1]["status"], "completed")
+
+    def test_harness_evidence_gate_rejects_incomplete_post_action_evidence(self) -> None:
+        step = {
+            "expected_result": "页面跳转至屏幕墙",
+            "expected_result_status": "completed",
+            "status": "completed",
+            "assertion_checks": [{"type": "login_success", "expected": "页面跳转至屏幕墙"}],
+            "events": [{"execution": {"result": "clicked", "screenshot_name": "step.png"}}],
+        }
+
+        api_module._apply_harness_evidence_gate(
+            [step], {}, [{"filename": "step.png", "url": "/step.png"}]
+        )
+
+        self.assertEqual(step["status"], "failed")
+        self.assertEqual(step["expected_result_status"], "failed")
+        self.assertIn("截图、URL", step["error_message"])
+
+    def test_password_mask_and_screen_wall_expectations_use_structured_checks(self) -> None:
+        password_checks = api_module._build_assertion_checks("密码输入框以掩码形式显示 6 位字符")
+        screen_checks = api_module._build_assertion_checks("页面跳转至屏幕墙，顶部导航显示当前登录用户test")
+        account_checks = api_module._build_assertion_checks("账号输入框值显示为 test")
+
+        self.assertEqual(password_checks[0]["type"], "password_masked")
+        self.assertEqual(password_checks[0]["length"], 6)
+        self.assertIn("login_success", {check["type"] for check in screen_checks})
+        self.assertIn(("field_value", "test"), {(check["type"], check["expected"]) for check in account_checks})
+        self.assertNotIn("text_contains", {check["type"] for check in account_checks})
+
+    def test_password_mask_check_accepts_successful_password_fill_without_plaintext(self) -> None:
+        evaluated = api_module._evaluate_assertion_check(
+            {"type": "password_masked", "expected": "密码输入框以掩码形式显示 6 位字符", "length": 6},
+            {
+                "decision": {"action": "fill", "ref": "e3", "value": "<redacted>"},
+                "execution": {"result": "filled"},
+                "observation": {"interactives": [{"ref": "e3", "type": "password", "text": "密码"}]},
+            },
+            {},
+        )
+
+        self.assertEqual(evaluated["status"], "completed")
+        self.assertEqual(evaluated["evidence_source"], "execution.result")
+
+    def test_login_fill_actions_advance_to_the_next_case_step(self) -> None:
+        steps = ["访问登录页", "输入账号", "输入密码", "点击登录"]
+
+        username = api_module._match_case_step_index(
+            steps,
+            {"action": "fill", "value": "test", "reason": "fill username"},
+            {"interactives": []},
+            0,
+        )
+        password = api_module._match_case_step_index(
+            steps,
+            {"action": "fill", "value": "123456", "reason": "fill password"},
+            {"interactives": []},
+            username,
+        )
+        click = api_module._match_case_step_index(
+            steps,
+            {"action": "click", "reason": "submit login"},
+            {"interactives": []},
+            password,
+        )
+
+        self.assertEqual((username, password, click), (1, 2, 3))
+
+    def test_trace_viewer_redirects_to_local_playwright_viewer(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            trace_root = Path(folder)
+            trace_path = trace_root / "ui-trace" / "trace.zip"
+            trace_path.parent.mkdir()
+            trace_path.write_bytes(b"trace")
+
+            class FakeRequest:
+                class url:
+                    scheme = "http"
+                    hostname = "192.168.66.175"
+                    port = 8000
+
+                class client:
+                    host = "192.168.66.175"
+
+                @staticmethod
+                def url_for(_name: str, **_params: str) -> str:
+                    return "http://192.168.66.175:8000/api/runs/ui-trace/evidence/trace"
+
+            with patch.object(api_module, "TRACE_ROOT", trace_root):
+                response = api_module.run_evidence_trace_viewer("ui-trace", FakeRequest())
+
+        self.assertEqual(response.status_code, 307)
+        self.assertEqual(
+            response.headers["location"],
+            "http://localhost:8000/playwright-trace-viewer/index.html?trace=http%3A%2F%2Flocalhost%3A8000%2Fapi%2Fruns%2Fui-trace%2Fevidence%2Ftrace",
+        )
+
+    def test_trace_viewer_redirects_remote_clients_to_https(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            trace_root = Path(folder)
+            trace_path = trace_root / "remote-trace" / "trace.zip"
+            trace_path.parent.mkdir()
+            trace_path.write_bytes(b"trace")
+
+            class FakeRequest:
+                class url:
+                    scheme = "http"
+                    hostname = "192.168.66.175"
+                    port = 8000
+
+                class client:
+                    host = "192.168.66.20"
+
+                @staticmethod
+                def url_for(_name: str, **_params: str) -> str:
+                    return "http://192.168.66.175:8000/api/runs/remote-trace/evidence/trace"
+
+            with patch.object(api_module, "TRACE_ROOT", trace_root):
+                response = api_module.run_evidence_trace_viewer("remote-trace", FakeRequest())
+
+        self.assertEqual(
+            response.headers["location"],
+            "https://192.168.66.175:8443/playwright-trace-viewer/index.html?trace=https%3A%2F%2F192.168.66.175%3A8443%2Fapi%2Fruns%2Fremote-trace%2Fevidence%2Ftrace",
+        )
+
+    def test_build_agent_steps_uses_explicit_required_field_evidence(self) -> None:
+        agent_explore = {
+            "trace": {
+                "ok": True,
+                "plan": {"stages": [{"stage_id": "stage-dialog", "source_steps": [1, 2, 3], "strategy": "dialog_form_fill"}]},
+                "history": [
+                    {"stage_id": "stage-dialog", "stage_local_step": 1, "decision": {"action": "click"}, "observation": {}, "execution": {"result": "dialog_opened"}},
+                    {"stage_id": "stage-dialog", "stage_local_step": 2, "decision": {"action": "fill"}, "observation": {}, "execution": {"result": "required_fields_cleared"}},
+                    {"stage_id": "stage-dialog", "stage_local_step": 3, "decision": {"action": "assert_text"}, "observation": {}, "execution": {"result": "required_field_validation_visible"}},
+                ],
+            }
+        }
+        case = {
+            "steps": ["打开弹窗", "清空必填字段", "点击确定"],
+            "expected_results": ["弹窗正常打开", "各必填字段输入框显示为空", "显示此项必填提示，弹窗不关闭"],
+        }
+
+        with patch.object(api_module, "_load_agent_case_payload", return_value=case):
+            steps = api_module._build_agent_steps(agent_explore, [], [], "ui-required", {"case_id": "ICMDEV_EXC_010"})
+
+        self.assertEqual([step["status"] for step in steps], ["completed", "completed", "completed"])
+        self.assertEqual([step["expected_result_status"] for step in steps], ["completed", "completed", "completed"])
+
     def test_synthetic_agent_logs_include_complete_evidence_history(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             evidence_root = Path(folder) / "evidence"
@@ -40,6 +249,23 @@ class RunViewTests(unittest.TestCase):
         self.assertEqual(len(logs), 15)
         self.assertIn("agent-step-01.png", logs[0]["line"])
         self.assertIn("agent-step-15.png", logs[-1]["line"])
+
+    def test_regular_run_logs_include_live_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            evidence_root = Path(folder) / "evidence"
+            run_root = evidence_root / "ui-worker"
+            run_root.mkdir(parents=True)
+            (run_root / "events.jsonl").write_text(
+                json.dumps({"kind": "screenshot", "message": "captured screenshot step-01.png", "created_at": "2026-07-22T01:00:00Z"}) + "\n",
+                encoding="utf-8",
+            )
+            (run_root / "console.jsonl").write_text("", encoding="utf-8")
+
+            with patch("icm_platform.api.EVIDENCE_ROOT", evidence_root):
+                logs = api_module._run_logs_with_evidence("ui-worker", [])
+
+        self.assertEqual(len(logs), 1)
+        self.assertIn("step-01.png", logs[0]["line"])
 
     def test_runner_batch_range_parser(self) -> None:
         self.assertEqual(cases_for_batch("TC-ICM-001..TC-ICM-003"), ["TC-ICM-001", "TC-ICM-002", "TC-ICM-003"])
@@ -165,7 +391,25 @@ class RunViewTests(unittest.TestCase):
                 "",
             )
 
-        self.assertEqual(screenshots, [])
+            self.assertEqual(screenshots, [])
+
+    def test_legacy_run_detail_attaches_final_screenshot_only_to_last_step(self) -> None:
+        steps = [
+            {"step_index": 1, "screenshot_url": ""},
+            {"step_index": 2, "screenshot_url": ""},
+        ]
+        screenshots = [
+            {"filename": "01-entry.png", "url": "/api/screenshots/latest/TC-ICM-001/01-entry.png"},
+            {"filename": "03-final.png", "url": "/api/screenshots/latest/TC-ICM-001/03-final.png"},
+        ]
+
+        api_module._attach_legacy_final_screenshot(steps, screenshots)
+
+        self.assertEqual(steps[0]["screenshot_url"], "")
+        self.assertEqual(
+            steps[1]["screenshot_url"],
+            "/api/screenshots/latest/TC-ICM-001/03-final.png",
+        )
 
     def test_agent_run_uses_evidence_as_log_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
@@ -1069,6 +1313,20 @@ class RunViewTests(unittest.TestCase):
     def _eval_check(self, check: dict, item: dict, trace: dict = None) -> dict:
         trace = trace or {}
         return api_module._evaluate_assertion_check(check, item, trace)
+
+    def test_evaluate_user_list_normal_display_from_structural_signals(self) -> None:
+        checks = api_module._build_assertion_checks("用户列表正常展示")
+        item = {
+            "observation": {
+                "url": "https://example.test/#/system/user",
+                "visibleText": ["用户管理", "用户名称 手机号码 状态", "创建时间", "搜索 重置", "新增 修改 删除"],
+            },
+            "execution": {"result": "route_open_passed"},
+            "decision": {},
+        }
+
+        self.assertEqual(checks[0]["type"], "table_visible")
+        self.assertEqual(self._eval_check(checks[0], item)["status"], "completed")
 
     def test_evaluate_unknown_type_contains_match(self) -> None:
         item = {"observation": {"visibleText": ["Configure Page"]}, "execution": {"result": ""}, "decision": {}}

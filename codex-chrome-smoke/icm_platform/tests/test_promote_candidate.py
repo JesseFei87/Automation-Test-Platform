@@ -237,6 +237,31 @@ class PromoteCandidateEndpointTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200, resp.text)
         self.assertEqual(resp.json()["case_id"], "TC-ICM-099")
 
+    def test_promote_regression_rejects_candidate_without_actions(self):
+        draft_dir = self.root / "reports" / "draft-runs" / self.run_id
+        draft_dir.mkdir(parents=True)
+        (draft_dir / "case.yaml").write_text(
+            "id: LOGIN_EXC_002\nsystem: icm-internal\ntitle: logout\nstatus: draft\nsteps:\n- logout\nexpected:\n- login page\n",
+            encoding="utf-8",
+        )
+        agent_dir = self.root / "reports" / "agent-explore" / self.run_id
+        agent_dir.mkdir(parents=True, exist_ok=True)
+        (agent_dir / "trace.json").write_text('{"ok": true, "status": "passed"}', encoding="utf-8")
+        (agent_dir / "candidate_flow.py").write_text(
+            "async def run(page, system, case):\n    raise RuntimeError('Agent trace did not contain executable actions')\n",
+            encoding="utf-8",
+        )
+        with db.connect() as conn:
+            conn.execute(
+                "insert into run_tasks(id, mode, case_id, status, command, created_at, report_path) values (?, 'agent-explore', 'LOGIN_EXC_002', 'passed', '', '2026-06-16T00:00:00Z', ?)",
+                (self.run_id, str(agent_dir / "trace.json")),
+            )
+
+        resp = self.client.post(f"/api/runs/{self.run_id}/agent-explore/promote-regression")
+
+        self.assertEqual(resp.status_code, 400, resp.text)
+        self.assertIn("no executable actions", resp.text)
+
     def test_promote_regression_returns_existing_case_by_source_run_id(self):
         """即使草稿状态不可靠，也按正式 YAML 的 source_run_id 防重复沉淀。"""
         case_dir = self.root / "test-cases" / "icm"

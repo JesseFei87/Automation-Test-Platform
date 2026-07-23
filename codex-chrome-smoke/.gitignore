@@ -6,6 +6,7 @@ reports/runs/
 reports/agent-knowledge/
 platform-data/*.sqlite3
 platform-data/runner-logs/
+platform-data/tls/
 screenshots/
 .chrome-profile-clone/
 

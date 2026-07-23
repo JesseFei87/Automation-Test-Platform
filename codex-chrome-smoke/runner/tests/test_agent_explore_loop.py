@@ -34,6 +34,62 @@ def test_agent_loop_stops_on_finish():
     asyncio.run(scenario())
 
 
+def test_agent_loop_publishes_each_recorded_step():
+    async def scenario():
+        snapshots = []
+
+        async def observe():
+            return {"url": "http://127.0.0.1", "visibleText": [], "interactives": []}
+
+        async def decide(goal, observation, history, step_index, max_steps):
+            return {"action": "finish", "reason": "done"}
+
+        result = await run_agent_loop(
+            "finish",
+            observe,
+            decide,
+            lambda decision, observation: None,
+            {"127.0.0.1"},
+            on_history=lambda history: snapshots.append(list(history)),
+        )
+
+        assert result["ok"] is True
+        assert len(snapshots) == 1
+        assert snapshots[0][0]["decision"]["action"] == "finish"
+
+    asyncio.run(scenario())
+
+
+def test_agent_loop_attaches_element_knowledge_evidence(monkeypatch):
+    async def scenario():
+        async def observe():
+            return {"url": "https://example.test/#/users", "interactives": [{"ref": "e3", "text": "新增用户"}]}
+
+        async def decide(goal, observation, history, step_index, max_steps):
+            return {"action": "click", "ref": "e3", "reason": "新增用户"}
+
+        async def execute(decision, observation):
+            return {"result": "clicked"}
+
+        monkeypatch.setattr(
+            "runner.agent_explore.build_agent_ref_evidence",
+            lambda *args, **kwargs: {
+                "matched": True,
+                "candidate_count": 1,
+                "candidates": [{"element_id": "create", "recommended_ref": "e3"}],
+                "selected_ref": "e3",
+                "adopted": True,
+                "adopted_element_id": "create",
+            },
+        )
+        result = await run_agent_loop("新增用户", observe, decide, execute, {"example.test"}, max_steps=1)
+
+        assert result["history"][0]["element_knowledge"]["adopted"] is True
+        assert result["history"][0]["element_knowledge"]["selected_ref"] == "e3"
+
+    asyncio.run(scenario())
+
+
 def test_agent_loop_stops_on_execution_error():
     async def scenario():
         async def observe():

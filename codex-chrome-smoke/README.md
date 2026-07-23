@@ -66,6 +66,15 @@ The MVP platform adds a Web UI plus a local FastAPI backend around the existing 
 - Frontend UI: `cd web-ui && npm run dev`
 - API data store: `platform-data/icm-platform.sqlite3`
 
+Remote computers can open Playwright traces through the optional HTTPS endpoint:
+
+```bash
+python scripts/setup_trace_viewer_https.py --host 192.168.66.175
+python -m uvicorn icm_platform.api:app --host 0.0.0.0 --port 8443 --ssl-keyfile platform-data/tls/qa-platform-server.key --ssl-certfile platform-data/tls/qa-platform-server.crt
+```
+
+Install the generated `qa-platform-root-ca.crt` once in each remote computer's trusted root certificate store. The execution detail page also provides this public certificate for download. Keep the generated private keys under `platform-data/tls/` on the server.
+
 Install backend dependencies once before first use:
 
 ```bash

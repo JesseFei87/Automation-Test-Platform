@@ -3,23 +3,13 @@ import MindElixir from "mind-elixir";
 import "mind-elixir/style.css";
 
 import { Card } from "../components/Card";
+import { useConfirm } from "../components/ConfirmDialog";
+import { parseRequirementFile, RequirementDocumentInput } from "../components/RequirementDocumentInput";
 import { StatusPill } from "../components/StatusPill";
+import { useToast } from "../components/Toast";
 import { api, type AISettings, type CaseDraft, type ContextInfo, type Project, type Requirement, type RequirementDetail } from "../data/api";
 
-const REQUIREMENT_DOCUMENT_PLACEHOLDER = `请粘贴完整的业务需求说明，例如：
-
-【业务背景】
-远程协助工单用于支持运维人员在用户授权后接入设备桌面，完成问题定位、处理和闭环。
-
-【核心流程】
-1. 用户在设备详情页发起远程协助请求，并填写问题描述。
-2. 工单处理人员在远程协助列表中接收请求，打开远程控制界面。
-3. 处理完成后点击“解决”，系统记录处理结果并更新工单状态。
-
-【验收规则】
-- 未授权或异常状态下不得进入远程界面。
-- 处理完成后列表状态、详情记录和操作日志应保持一致。
-- 失败场景需要给出明确提示并保留可追溯信息。`;
+type CoverageFocus = "balanced" | "normal" | "abnormal_boundary" | "permission_security";
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : "unknown error";
@@ -280,19 +270,22 @@ async function buildMindPngBlob(drafts: CaseDraft[], requirementTitle: string, m
 }
 
 export function RequirementsWorkspace() {
+  const confirm = useConfirm();
+  const toast = useToast();
   const generationControllerRef = useRef<AbortController | null>(null);
   const generationIdRef = useRef<string | null>(null);
   const [title, setTitle] = useState(initialWorkspaceState().title);
   const [document, setDocument] = useState(initialWorkspaceState().document);
-  const [projectName, setProjectName] = useState("");
   const [linkedRequirementId, setLinkedRequirementId] = useState<number | null>(null);
-  const [contextInfo, setContextInfo] = useState("");
   const [settings, setSettings] = useState<AISettings | null>(null);
   const [requirements, setRequirements] = useState<Requirement[]>([]);
   const [detail, setDetail] = useState<RequirementDetail | null>(null);
   const [selectedDraftId, setSelectedDraftId] = useState<number | null>(null);
   const [status, setStatus] = useState("正在连接需求工作台...");
   const [busy, setBusy] = useState(false);
+  const [parsingDocument, setParsingDocument] = useState(false);
+  const [caseCount, setCaseCount] = useState(12);
+  const [coverageFocus, setCoverageFocus] = useState<CoverageFocus>("balanced");
   const [xmindMenuOpen, setXmindMenuOpen] = useState(false);
 
   // ---- P0 · 所属项目下拉化（增量 2026-06-10）----
@@ -304,12 +297,10 @@ export function RequirementsWorkspace() {
   const [newProjectError, setNewProjectError] = useState<string | null>(null);
   const [newProjectBusy, setNewProjectBusy] = useState(false);
 
-  // ---- P1 · 上下文信息结构化（增量 2026-06-10）：4 子字段，默认折叠，不做 localStorage 记忆 ----
+  // 可选生成约束，默认折叠且不保存账号凭据。
   const [contextFields, setContextFields] = useState<ContextInfo>({
-    env_url: "",
-    test_account: "",
+    business_preconditions: "",
     excluded: "",
-    refs: "",
   });
   const [showContextFields, setShowContextFields] = useState<boolean>(false);
 
@@ -318,11 +309,13 @@ export function RequirementsWorkspace() {
 
   const requirement = detail?.requirement ?? null;
   const drafts = detail?.drafts ?? [];
+  const promotedCount = drafts.filter((item) => item.status === "promoted").length;
+  const draftCount = drafts.filter((item) => item.status === "draft").length;
   const selectedDraft =
     drafts.find((item) => item.id === selectedDraftId) ?? drafts[0] ?? null;
   const canAnalyze = useMemo(
-    () => title.trim().length > 0 && document.trim().length > 0,
-    [document, title],
+    () => title.trim().length > 0 && document.trim().length > 0 && Boolean(projectId) && !parsingDocument,
+    [document, parsingDocument, projectId, title],
   );
 
   function resetWorkspace(message?: string) {
@@ -352,11 +345,6 @@ export function RequirementsWorkspace() {
     try {
       const items = await api.listProjects();
       setProjects(items);
-      // 缺省选中第一个（按 created_at, name 排序，种子 ICM 在前）
-      if (!projectId && items.length > 0) {
-        setProjectId(items[0].id);
-        setProjectName(items[0].name);
-      }
       return items;
     } catch (error) {
       setStatus(`项目档案加载失败：${errorMessage(error)}`);
@@ -387,7 +375,6 @@ export function RequirementsWorkspace() {
       const items = await loadProjects();
       const next = items.find((p) => p.id === created.id) || created;
       setProjectId(next.id);
-      setProjectName(next.name);
       setShowNewProjectDialog(false);
       setNewProjectName("");
       setNewProjectBaseUrl("");
@@ -447,6 +434,7 @@ export function RequirementsWorkspace() {
       setLinkedRequirementId(id);
       setTitle(result.requirement.title);
       setDocument(result.requirement.document);
+      setProjectId(result.requirement.project_id ?? null);
       setSelectedDraftId(result.drafts[0]?.id ?? null);
       setStatus(`已打开需求：${result.requirement.title}`);
     } catch (error) {
@@ -460,6 +448,7 @@ export function RequirementsWorkspace() {
     const nextId = value ? Number(value) : null;
     setLinkedRequirementId(nextId);
     if (!nextId) {
+      setProjectId(null);
       resetWorkspace("未关联已有需求，点击开始生成后再显示生成结果。");
       return;
     }
@@ -468,7 +457,7 @@ export function RequirementsWorkspace() {
 
   async function analyze() {
     if (!canAnalyze) {
-      setStatus("请先填写需求标题和需求正文。");
+      setStatus("请先选择所属项目，并填写需求标题和需求正文。");
       return;
     }
     const controller = new AbortController();
@@ -478,19 +467,25 @@ export function RequirementsWorkspace() {
     setBusy(true);
     setStatus("正在按规范生成测试用例...");
     try {
+      const cleanContext = Object.fromEntries(
+        Object.entries(contextFields).map(([key, value]) => [key, value?.trim()]).filter(([, value]) => value),
+      ) as ContextInfo;
       const payload = {
         title: title.trim(),
         document: document,
-        context_info: contextFields,
+        context_info: Object.keys(cleanContext).length ? cleanContext : undefined,
         project_id: projectId,
+        requirement_id: linkedRequirementId,
         generation_id: generationId,
+        case_count: caseCount,
+        coverage_focus: coverageFocus,
       };
       const result = await api.analyzeRequirementSpec(payload, controller.signal);
       setDetail(result);
       setLinkedRequirementId(result.requirement.id);
       setRequirements(await api.requirements());
       setSelectedDraftId(result.drafts[0]?.id ?? null);
-      setStatus(`已生成 ${result.drafts.length} 条测试用例草稿。`);
+      setStatus(`已生成 ${result.generated_cases ?? result.drafts.length} 条测试用例草稿。`);
     } catch (error) {
       setStatus(controller.signal.aborted ? "已停止生成，未保存用例草稿。" : `分析失败：${errorMessage(error)}`);
     } finally {
@@ -522,34 +517,38 @@ export function RequirementsWorkspace() {
 
   async function handleUpload(file: File | null) {
     if (!file) return;
-    if (!file.name.endsWith(".txt") && !file.name.endsWith(".md")) {
-      setStatus("首版仅支持 .txt / .md 文档。");
-      return;
+    setParsingDocument(true);
+    setStatus(`正在解析文档：${file.name}`);
+    try {
+      const parsed = await parseRequirementFile(file);
+      setDocument(parsed.text);
+      setTitle((prev) => (prev.trim() ? prev : parsed.title));
+      setStatus(`已解析 ${file.name}，请确认正文后开始生成。`);
+    } catch (error) {
+      setStatus(`文档解析失败：${errorMessage(error)}`);
+    } finally {
+      setParsingDocument(false);
     }
-    const text = await file.text();
-    setDocument(text);
-    setTitle((prev) => (prev.trim() ? prev : file.name.replace(/\.(txt|md)$/i, "")));
-    setStatus(`已读取文档：${file.name}`);
   }
 
   async function handleDeleteRequirement(item: Requirement) {
-    const ok = window.confirm(
-      [
-        `确认删除需求"${item.title}"吗？`,
-        `将同时删除 ${safeCount(item.test_point_count)} 个测试点和 ${safeCount(item.draft_count)} 个草稿。`,
-        "此操作不可恢复。",
-      ].join("\n"),
-    );
+    const ok = await confirm({
+      title: `确认删除需求“${item.title}”？`,
+      description: `关联的 ${safeCount(item.draft_count ?? item.case_count)} 个用例草稿也会被清理。删除后无法恢复。`,
+      danger: true,
+      confirmText: "确认删除",
+    });
     if (!ok) return;
 
     setBusy(true);
     try {
       const result = await api.deleteRequirement(item.id);
       setStatus(
-        `已删除"${result.title}"：清理 ${result.deleted_test_points} 个测试点、${result.deleted_case_drafts} 个草稿。`,
+        `已删除"${result.title}"：清理 ${result.deleted_case_drafts} 个用例草稿。`,
       );
       const keepId = requirement?.id === item.id ? undefined : requirement?.id;
       await refreshRequirements(keepId);
+      toast.show({ kind: "success", message: "需求删除成功" });
     } catch (error) {
       setStatus(`删除失败：${errorMessage(error)}`);
     } finally {
@@ -678,25 +677,18 @@ export function RequirementsWorkspace() {
           min-width: 0;
         }
 
+        .generation-options {
+          display: grid;
+          grid-template-columns: minmax(120px, 0.6fr) minmax(180px, 1fr);
+          gap: 12px;
+        }
+
         .requirements-input-card,
         .requirements-result-card {
           display: flex;
           flex-direction: column;
           height: 100%;
           min-height: 760px;
-        }
-
-        .dropzone {
-          border: 1.5px dashed var(--line);
-          border-radius: 8px;
-          padding: 8px;
-          margin-bottom: 14px;
-          background: var(--soft);
-          transition: border-color 0.2s, background 0.2s;
-        }
-        .dropzone.is-dragover {
-          border-color: var(--blue);
-          background: var(--blue-soft);
         }
 
         .dropdown {
@@ -914,14 +906,6 @@ export function RequirementsWorkspace() {
            深色模式补强：RequirementsWorkspace 自定义块的暗色适配
            （跟随 <html data-theme="dark">）
            ============================================================ */
-        :root[data-theme="dark"] .dropzone {
-          border-color: var(--border-strong, #31415c);
-          background: var(--surface-2, #1d2940);
-        }
-        :root[data-theme="dark"] .dropzone.is-dragover {
-          border-color: var(--blue);
-          background: var(--blue-soft);
-        }
         :root[data-theme="dark"] .dropdown__menu {
           background: var(--card);
           border-color: var(--border-strong, #31415c);
@@ -982,7 +966,7 @@ export function RequirementsWorkspace() {
           <Card
             className="requirements-input-card"
             title="需求文档输入"
-            subtitle="粘贴需求或上传 .txt/.md，点击后直接按功能测试用例规范生成草稿。"
+            subtitle="粘贴需求或上传 TXT、MD、DOCX、文本型 PDF，确认正文后生成草稿。"
           >
             <div className="settings-note">当前模型：{modelLabel}</div>
 
@@ -998,14 +982,13 @@ export function RequirementsWorkspace() {
             />
 
             <label className="field-label" htmlFor="project-name">
-              所属项目
+              所属项目（必选）
             </label>
             <ProjectAutocomplete
               projects={projects}
               value={projectId}
               onChange={(next) => {
                 setProjectId(next?.id ?? null);
-                setProjectName(next?.name ?? "");
               }}
               onCreateNew={() => {
                 setNewProjectName("");
@@ -1015,67 +998,81 @@ export function RequirementsWorkspace() {
               }}
             />
 
-            <label className="field-label" htmlFor="linked-requirement">
-              关联需求
-            </label>
+            <label className="field-label" htmlFor="linked-requirement">打开已有需求</label>
             <select
               className="text-input"
               id="linked-requirement"
               value={linkedRequirementId ?? ""}
               onChange={(event) => handleLinkedRequirementChange(event.target.value)}
             >
-              <option value="">（不关联已有需求）</option>
+              <option value="">新建需求</option>
               {requirements.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.title}
-                </option>
+                <option key={item.id} value={item.id}>{item.title}</option>
               ))}
             </select>
 
+            <div className="generation-options">
+              <div>
+                <label className="field-label" htmlFor="case-count">目标用例数</label>
+                <input
+                  className="text-input"
+                  id="case-count"
+                  min={1}
+                  max={20}
+                  type="number"
+                  value={caseCount}
+                  onChange={(event) => setCaseCount(Math.min(20, Math.max(1, Number(event.target.value) || 1)))}
+                />
+              </div>
+              <div>
+                <label className="field-label" htmlFor="coverage-focus">覆盖重点</label>
+                <select
+                  className="text-input"
+                  id="coverage-focus"
+                  value={coverageFocus}
+                  onChange={(event) => setCoverageFocus(event.target.value as CoverageFocus)}
+                >
+                  <option value="balanced">综合覆盖（默认）</option>
+                  <option value="normal">正常流程</option>
+                  <option value="abnormal_boundary">异常与边界</option>
+                  <option value="permission_security">权限与安全</option>
+                </select>
+              </div>
+            </div>
+
             <div className="context-header">
-              <label className="field-label" htmlFor="context-env-url" style={{ marginBottom: 0 }}>
-                上下文信息
+              <label className="field-label" htmlFor="context-business-preconditions" style={{ marginBottom: 0 }}>
+                补充约束（可选）
               </label>
               <button
                 className="link-button"
                 type="button"
                 onClick={() => setShowContextFields((value) => !value)}
-                title={showContextFields ? "折叠 4 子字段" : "展开 4 子字段"}
+                title={showContextFields ? "收起补充约束" : "展开补充约束"}
               >
                 {showContextFields ? "收起 ▴" : "展开 ▾"}
               </button>
             </div>
             {showContextFields ? (
               <div className="context-stack" data-testid="context-stack">
-                <label className="field-label" htmlFor="context-env-url">
-                  环境URL
+                <label className="field-label" htmlFor="context-business-preconditions">
+                  业务前置条件
                 </label>
-                <input
-                  className="text-input"
-                  id="context-env-url"
-                  value={contextFields.env_url ?? ""}
+                <textarea
+                  className="textarea-mock textarea-real"
+                  id="context-business-preconditions"
+                  rows={3}
+                  value={contextFields.business_preconditions ?? ""}
                   onChange={(event) =>
-                    setContextFields((prev) => ({ ...prev, env_url: event.target.value }))
+                    setContextFields((prev) => ({ ...prev, business_preconditions: event.target.value }))
                   }
-                  placeholder="例如：https://staging.example.com"
-                />
-                <label className="field-label" htmlFor="context-test-account">
-                  测试账号
-                </label>
-                <input
-                  className="text-input"
-                  id="context-test-account"
-                  value={contextFields.test_account ?? ""}
-                  onChange={(event) =>
-                    setContextFields((prev) => ({ ...prev, test_account: event.target.value }))
-                  }
-                  placeholder="例如：tester / 123456"
+                  placeholder="例如：使用管理员角色；已准备一条待审核数据；功能开关已开启（不要填写密码）"
                 />
                 <label className="field-label" htmlFor="context-excluded">
                   排除范围
                 </label>
                 <textarea
-                  className="textarea-mock"
+                  className="textarea-mock textarea-real"
                   id="context-excluded"
                   rows={2}
                   value={contextFields.excluded ?? ""}
@@ -1084,65 +1081,23 @@ export function RequirementsWorkspace() {
                   }
                   placeholder="本次不覆盖的范围（多行）"
                 />
-                <label className="field-label" htmlFor="context-refs">
-                  参考文档
-                </label>
-                <input
-                  className="text-input"
-                  id="context-refs"
-                  value={contextFields.refs ?? ""}
-                  onChange={(event) =>
-                    setContextFields((prev) => ({ ...prev, refs: event.target.value }))
-                  }
-                  placeholder="URL / 文档路径（可多个，空格分隔）"
-                />
               </div>
             ) : (
               <p className="empty-state" style={{ margin: "8px 0 18px 0" }}>
-                已折叠。点击右上「展开」显示 4 个子字段。
+                已折叠。需要补充业务前置条件或排除范围时再展开。
               </p>
             )}
 
-            <label className="field-label" htmlFor="requirement-document">
-              需求正文（支持拖拽 .txt/.md 到下方输入框）
-            </label>
-            <div
-              className="dropzone"
-              onDragOver={(event) => {
-                event.preventDefault();
-                event.currentTarget.classList.add("is-dragover");
-              }}
-              onDragLeave={(event) => {
-                event.currentTarget.classList.remove("is-dragover");
-              }}
-              onDrop={(event) => {
-                event.preventDefault();
-                event.currentTarget.classList.remove("is-dragover");
-                const file = event.dataTransfer.files?.[0] || null;
-                void handleUpload(file);
-              }}
+            <RequirementDocumentInput
+              id="requirement-document"
+              value={document}
+              onChange={setDocument}
+              onFile={(file) => void handleUpload(file)}
+              parsing={parsingDocument}
             >
-              <textarea
-                className="textarea-mock textarea-real requirement-textarea"
-                id="requirement-document"
-                placeholder={REQUIREMENT_DOCUMENT_PLACEHOLDER}
-                value={document}
-                onChange={(event) => setDocument(event.target.value)}
-              />
-            </div>
-
-            <div className="button-row">
-              <label className="btn btn--soft upload-button">
-                上传 .txt/.md
-                <input
-                  accept=".txt,.md,text/plain,text/markdown"
-                  type="file"
-                  onChange={(event) => void handleUpload(event.target.files?.[0] || null)}
-                />
-              </label>
               <button
                 className="btn btn--green"
-                disabled={busy || !canAnalyze}
+                disabled={busy || parsingDocument || !canAnalyze}
                 onClick={analyze}
                 type="button"
               >
@@ -1156,7 +1111,7 @@ export function RequirementsWorkspace() {
               >
                 停止
               </button>
-            </div>
+            </RequirementDocumentInput>
           </Card>
         </div>
 
@@ -1238,7 +1193,7 @@ export function RequirementsWorkspace() {
             </div>
 
             <div className="requirements-result-meta">
-              <span>共 {drafts.length} 条草稿</span>
+              <span>共 {drafts.length} 条用例 · 正式 {promotedCount} · 草稿 {draftCount}</span>
               <span>{selectedDraft ? `当前：${selectedDraft.title || `draft #${selectedDraft.id}`}` : "暂无选中草稿"}</span>
             </div>
 

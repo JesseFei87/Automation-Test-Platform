@@ -491,6 +491,9 @@ async def screenshot(page: Page, run_id: str, case_id: str, name: str) -> Path:
     recorder = get_asset_recorder(page)
     if recorder:
         recorder.screenshot(str(path.relative_to(ROOT)))
+    from runner.step_details import record_step_screenshot
+
+    record_step_screenshot(run_id, str(path.relative_to(ROOT)), page.url)
     return path
 
 
@@ -558,17 +561,23 @@ async def first_visible(page: Page, selectors: str | Iterable[str]) -> Locator |
     return None
 
 
+def _recorded_fill_value(selectors: Iterable[str], value: str) -> str:
+    return "<redacted>" if any("password" in item.lower() or "密码" in item for item in selectors) else value
+
+
 async def fill_first(page: Page, selectors: str | Iterable[str], value: str) -> None:
-    locator = await first_visible(page, selectors)
+    candidates = list(_to_selectors(selectors))
+    locator = await first_visible(page, candidates)
     if locator is None:
-        raise RuntimeError(f"Unable to fill field for selectors: {list(_to_selectors(selectors))}")
+        raise RuntimeError(f"Unable to fill field for selectors: {candidates}")
     await locator.fill(value)
+    recorded_value = _recorded_fill_value(candidates, value)
     evidence = get_evidence_recorder(page)
     if evidence:
-        evidence.event(page, "fill", "filled visible field", selectors=_to_selectors(selectors), value=value)
+        evidence.event(page, "fill", "filled visible field", selectors=candidates, value=recorded_value)
     recorder = get_asset_recorder(page)
     if recorder:
-        recorder.fill(_to_selectors(selectors), value)
+        recorder.fill(candidates, recorded_value)
 
 
 async def fill_first_in(scope: Locator, selectors: str | Iterable[str], value: str) -> None:
@@ -594,12 +603,13 @@ async def fill_first_in(scope: Locator, selectors: str | Iterable[str], value: s
         try:
             if await locator.count() and await locator.first.is_visible():
                 await locator.first.fill(value)
+                recorded_value = _recorded_fill_value(candidates, value)
                 evidence = get_evidence_recorder(scope.page)
                 if evidence:
-                    evidence.event(scope.page, "fill", "filled visible scoped field", selectors=candidates, value=value)
+                    evidence.event(scope.page, "fill", "filled visible scoped field", selectors=candidates, value=recorded_value)
                 recorder = get_asset_recorder(scope.page)
                 if recorder:
-                    recorder.fill(candidates, value)
+                    recorder.fill(candidates, recorded_value)
                 return
         except Exception:
             continue
@@ -751,7 +761,17 @@ async def wait_for_any_text(page: Page, texts: Iterable[str], timeout: int = 200
 
 
 async def goto_route(page: Page, system: dict[str, Any], route: str) -> None:
-    await page.goto(case_url(system, route), wait_until="domcontentloaded")
+    url = case_url(system, route)
+    for attempt in range(2):
+        try:
+            await page.goto(url, wait_until="domcontentloaded")
+            break
+        except Exception as exc:
+            retryable = ("net::ERR_CONNECTION_CLOSED", "net::ERR_CONNECTION_RESET", "net::ERR_CONNECTION_ABORTED", "net::ERR_CONNECTION_REFUSED", "net::ERR_TIMED_OUT", "net::ERR_NETWORK_CHANGED")
+            if attempt or not any(error in str(exc) for error in retryable):
+                raise
+            # ponytail: one retry covers transient GET failures; add policy only if repeated instability warrants it.
+            await page.wait_for_timeout(1000)
     try:
         await page.wait_for_load_state("load", timeout=5000)
     except Exception:
@@ -950,6 +970,15 @@ async def _open_screen_wall_logout_prompt(page: Page) -> bool:
         return False
 
 
+async def open_logout_prompt(page: Page, system: dict[str, Any]) -> None:
+    """Open the logout confirmation without confirming it."""
+    if await _open_screen_wall_logout_prompt(page):
+        return
+    if not await _open_logout_menu(page, system):
+        raise RuntimeError("Unable to open logout menu")
+    await click_first(page, ["text=退出登录", "text=登出", "text=Logout", "li:has-text(退出登录)", "li:has-text(登出)"])
+
+
 async def _wait_for_expected_username(page: Page, system: dict[str, Any], expected_username: str, timeout_ms: int = 20000) -> None:
     deadline = time.monotonic() + timeout_ms / 1000
     mismatch_username: str | None = None
@@ -990,9 +1019,11 @@ async def perform_login(
     if checkpoint:
         await checkpoint("login_page_opened")
     await fill_first(page, usernames, expected_username)
+    if checkpoint:
+        await checkpoint("username_filled")
     await fill_first(page, passwords, expected_password)
     if checkpoint:
-        await checkpoint("credentials_filled")
+        await checkpoint("password_filled")
     await click_first(page, submits)
     try:
         await page.wait_for_url("**/#/index**", timeout=20000)

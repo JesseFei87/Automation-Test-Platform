@@ -41,9 +41,12 @@ class RunnerWorker:
         case_id: str | None = None,
         draft_id: int | None = None,
         batch_case_ids: list[str] | None = None,
+        agent_backend: str = "native",
     ) -> dict[str, str | None]:
         if mode not in {"run-case", "run-batch", "run-draft", "agent-explore"}:
             raise ValueError("mode must be run-case, run-batch, run-draft, or agent-explore")
+        if agent_backend not in {"native", "harness"}:
+            raise ValueError("agent_backend must be native or harness")
         selected_batch_case_ids = self._normalize_batch_case_ids(mode, batch_case_ids)
         task_id = f"ui-{uuid.uuid4().hex[:12]}"
         draft_yaml_path: Path | None = None
@@ -63,13 +66,14 @@ class RunnerWorker:
         if selected_batch_case_ids:
             command_parts.extend(["--batch-cases", *selected_batch_case_ids])
         if mode == "agent-explore":
-            command_parts = [sys.executable, "-m", "runner.main", mode, arg, task_id, *self._runner_args(runner_settings)]
+            command_parts = [sys.executable, "-m", "runner.main", mode, arg, task_id, "--agent-backend", agent_backend, *self._runner_args(runner_settings)]
         if mode in {"run-case", "run-draft"}:
             command_parts.append(platform_run_id)
         command = subprocess.list2cmdline(command_parts)
-        self._insert_task(task_id, mode, case_id, command, batch_case_ids=selected_batch_case_ids)
+        backend = agent_backend if mode == "agent-explore" else None
+        self._insert_task(task_id, mode, case_id, command, batch_case_ids=selected_batch_case_ids, agent_backend=backend)
         self._queue.put(task_id)
-        return {"id": task_id, "mode": mode, "case_id": case_id, "status": "queued"}
+        return {"id": task_id, "mode": mode, "case_id": case_id, "status": "queued", "agent_backend": backend}
 
     def _normalize_batch_case_ids(self, mode: str, batch_case_ids: list[str] | None) -> list[str]:
         if mode != "run-batch":
@@ -114,7 +118,7 @@ class RunnerWorker:
             return
         process.terminate()
 
-    def enqueue_agent_self_heal(self, parent_run_id: str, case_yaml: str, healing_context: dict, case_id: str | None = None) -> dict[str, str | None]:
+    def enqueue_agent_self_heal(self, parent_run_id: str, case_yaml: str, healing_context: dict, case_id: str | None = None, agent_backend: str = "native") -> dict[str, str | None]:
         task_id = f"ui-{uuid.uuid4().hex[:12]}"
         data = yaml.safe_load(case_yaml) or {}
         if not isinstance(data, dict):
@@ -134,7 +138,7 @@ class RunnerWorker:
         draft_path.write_text(yaml_text, encoding="utf-8")
         healing_context_path.write_text(json.dumps(healing_context, ensure_ascii=False, indent=2), encoding="utf-8")
         runner_settings = get_platform_settings()["runner"]
-        command_parts = [sys.executable, "-m", "runner.main", "agent-explore", str(draft_path), task_id, *self._runner_args(runner_settings)]
+        command_parts = [sys.executable, "-m", "runner.main", "agent-explore", str(draft_path), task_id, "--agent-backend", agent_backend, *self._runner_args(runner_settings)]
         command = subprocess.list2cmdline(command_parts)
         self._insert_task(
             task_id,
@@ -144,6 +148,7 @@ class RunnerWorker:
             parent_run_id=parent_run_id,
             trigger="self_heal",
             healing_context_path=str(healing_context_path),
+            agent_backend=agent_backend,
         )
         self._queue.put(task_id)
         return {
@@ -153,6 +158,7 @@ class RunnerWorker:
             "status": "queued",
             "parent_run_id": parent_run_id,
             "trigger": "self_heal",
+            "agent_backend": agent_backend,
         }
 
     def _prepare_draft_case(self, task_id: str, draft_id: int | None) -> tuple[Path, str]:
@@ -234,15 +240,16 @@ class RunnerWorker:
         trigger: str | None = None,
         healing_context_path: str | None = None,
         batch_case_ids: list[str] | None = None,
+        agent_backend: str | None = None,
     ) -> None:
         now = utc_now()
         with connect() as conn:
             conn.execute(
                 """
-                insert into run_tasks(id, mode, case_id, batch_case_ids, parent_run_id, trigger, healing_context_path, status, command, created_at)
-                values (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
+                insert into run_tasks(id, mode, case_id, batch_case_ids, parent_run_id, trigger, agent_backend, healing_context_path, status, command, created_at)
+                values (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
                 """,
-                (task_id, mode, case_id, json.dumps(batch_case_ids or []), parent_run_id, trigger, healing_context_path, command, now),
+                (task_id, mode, case_id, json.dumps(batch_case_ids or []), parent_run_id, trigger, agent_backend, healing_context_path, command, now),
             )
 
     def _loop(self) -> None:
@@ -268,6 +275,7 @@ class RunnerWorker:
         if task["mode"] == "agent-explore":
             draft_path = DRAFT_RUN_DIR / task["id"] / "case.yaml"
             command.extend([str(draft_path) if draft_path.exists() else task["case_id"], task["id"]])
+            command.extend(["--agent-backend", str(task["agent_backend"] or "native")])
         elif task["mode"] == "run-case":
             command.extend([task["case_id"], task["id"]])
         elif task["mode"] == "run-draft":

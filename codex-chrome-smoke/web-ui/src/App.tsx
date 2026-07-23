@@ -3,6 +3,7 @@ import type { RefObject } from "react";
 import type { PageId, PlatformNavKey } from "./types";
 import { api, type AISettings } from "./data/api";
 import { platformNavItems } from "./data/navigation";
+import { buildAppHash, parseAppRoute, type AppRoute } from "./routing";
 import { Dashboard } from "./pages/Dashboard";
 import { ProjectManagement } from "./pages/ProjectManagement";
 import { RequirementManagement } from "./pages/RequirementManagement";
@@ -20,7 +21,7 @@ import { ToastProvider, useToast } from "./components/Toast";
 import { Avatar } from "./components/Avatar";
 import { ChangePasswordModal } from "./components/ChangePasswordModal";
 import { AvatarEditModal } from "./components/AvatarEditModal";
-import { ConfirmDialog } from "./components/ConfirmDialog";
+import { ConfirmDialog, ConfirmProvider } from "./components/ConfirmDialog";
 import { ThemeToggle, useThemeMode } from "./components/ThemeToggle";
 
 // ============================================================
@@ -155,11 +156,11 @@ function navKeyForPage(pageId: PageId, navKey?: PlatformNavKey): PlatformNavKey 
   return navKey || platformNavItems.find((candidate) => candidate.page === pageId)?.key || "dashboard";
 }
 
-function readInitialPage(): PageId {
-  if (typeof window === "undefined") return "dashboard";
-  if (window.location.hash.startsWith("#case-toolbox")) return "cases";
+function readInitialRoute(): AppRoute {
+  if (typeof window === "undefined") return { page: "dashboard" };
   const storedPage = window.localStorage.getItem(LAST_PAGE_STORAGE_KEY);
-  return PAGE_IDS.includes(storedPage as PageId) ? (storedPage as PageId) : "dashboard";
+  const fallback = PAGE_IDS.includes(storedPage as PageId) ? (storedPage as PageId) : "dashboard";
+  return parseAppRoute(window.location.hash, fallback);
 }
 
 function rememberPage(pageId: PageId) {
@@ -174,14 +175,19 @@ function ShellApp() {
   const { state, logout } = useAuth();
   const toast = useToast();
   const { mode: themeMode, toggle: toggleTheme } = useThemeMode();
-  const [page, setPage] = useState<PageId>(() => readInitialPage());
-  const [activeNavKey, setActiveNavKey] = useState<PlatformNavKey>(() => navKeyForPage(readInitialPage()));
-  const [reportRunId, setReportRunId] = useState("");
-  const [executionRunId, setExecutionRunId] = useState("");
+  const [initialRoute] = useState(() => readInitialRoute());
+  const [page, setPage] = useState<PageId>(initialRoute.page);
+  const [activeNavKey, setActiveNavKey] = useState<PlatformNavKey>(() => navKeyForPage(initialRoute.page));
+  const [reportRunId, setReportRunId] = useState(initialRoute.page === "reports" ? initialRoute.runId || "" : "");
+  const [executionRunId, setExecutionRunId] = useState(initialRoute.page === "execution" ? initialRoute.runId || "" : "");
+  const [caseDraftId, setCaseDraftId] = useState(initialRoute.page === "cases" ? initialRoute.draftId : undefined);
   const [aiSettings, setAiSettings] = useState<AISettings | null>(null);
-  const [hasOpenedAIGenerate, setHasOpenedAIGenerate] = useState(() => readInitialPage() === "ai-generate");
+  const [aiOnline, setAiOnline] = useState<boolean | null>(null);
+  const [hasOpenedAIGenerate, setHasOpenedAIGenerate] = useState(() => initialRoute.page === "ai-generate");
   const [modelSwitching, setModelSwitching] = useState(false);
+  const checkingAIRef = useRef(false);
   const modelLabel = aiSettings?.model || "AI 未配置";
+  const aiStatusLabel = aiOnline === null ? "检测中" : aiOnline ? "在线" : "离线";
 
   const [modal, setModal] = useState<ModalKind>(null);
   const [modalTrigger, setModalTrigger] = useState<HTMLElement | null>(null);
@@ -195,10 +201,30 @@ function ShellApp() {
     }
   }
 
+  async function refreshAIStatus() {
+    if (checkingAIRef.current) return;
+    checkingAIRef.current = true;
+    try {
+      const result = await api.testAIConnection();
+      setAiOnline(result.status === "ok");
+    } catch {
+      setAiOnline(false);
+    } finally {
+      checkingAIRef.current = false;
+    }
+  }
+
   useEffect(() => {
     if (state.status === "authenticated") {
       void refreshAISettings();
+      void refreshAIStatus();
     }
+  }, [state.status]);
+
+  useEffect(() => {
+    if (state.status !== "authenticated") return;
+    const timer = window.setInterval(() => void refreshAIStatus(), 30_000);
+    return () => window.clearInterval(timer);
   }, [state.status]);
 
   useEffect(() => {
@@ -207,30 +233,54 @@ function ShellApp() {
     return () => window.clearTimeout(timer);
   }, [modelLabel]);
 
+  useEffect(() => {
+    function applyBrowserRoute() {
+      const route = readInitialRoute();
+      setPage(route.page);
+      setActiveNavKey(navKeyForPage(route.page));
+      setReportRunId(route.page === "reports" ? route.runId || "" : "");
+      setExecutionRunId(route.page === "execution" ? route.runId || "" : "");
+      setCaseDraftId(route.page === "cases" ? route.draftId : undefined);
+      if (route.page === "ai-generate") setHasOpenedAIGenerate(true);
+      rememberPage(route.page);
+    }
+
+    const canonicalHash = buildAppHash(initialRoute);
+    if (window.location.hash !== canonicalHash) {
+      window.history.replaceState(null, "", canonicalHash);
+    }
+    window.addEventListener("popstate", applyBrowserRoute);
+    window.addEventListener("hashchange", applyBrowserRoute);
+    return () => {
+      window.removeEventListener("popstate", applyBrowserRoute);
+      window.removeEventListener("hashchange", applyBrowserRoute);
+    };
+  }, [initialRoute]);
+
   function openReport(runId: string) {
-    setReportRunId(runId);
-    navigate("reports", "reports");
+    navigate("reports", "reports", { runId });
   }
 
   function openExecution(runId: string) {
-    setExecutionRunId(runId);
-    navigate("execution", "ai-test");
+    navigate("execution", "ai-test", { runId });
   }
 
   function openCaseDraft(draftId: number) {
-    if (typeof window !== "undefined") {
-      window.location.hash = `case-toolbox?draft=${draftId}`;
-    }
-    navigate("cases", "cases");
+    navigate("cases", "cases", { draftId });
   }
 
-  function navigate(pageId: PageId, navKey?: PlatformNavKey) {
+  function navigate(pageId: PageId, navKey?: PlatformNavKey, routeState: Pick<AppRoute, "runId" | "draftId"> = {}) {
     if (pageId === "ai-generate") {
       setHasOpenedAIGenerate(true);
     }
+    setReportRunId(pageId === "reports" ? routeState.runId || "" : "");
+    setExecutionRunId(pageId === "execution" ? routeState.runId || "" : "");
+    setCaseDraftId(pageId === "cases" ? routeState.draftId : undefined);
     setActiveNavKey(navKeyForPage(pageId, navKey));
     setPage(pageId);
     rememberPage(pageId);
+    const hash = buildAppHash({ page: pageId, ...routeState });
+    if (window.location.hash !== hash) window.history.pushState(null, "", hash);
   }
 
   function handleUserMenuAction(action: UserMenuAction, triggerEl: HTMLElement | null) {
@@ -295,7 +345,15 @@ function ShellApp() {
           ))}
         </nav>
         <div className="platform-user">
-          <span className={modelSwitching ? "is-switching" : undefined}>{modelLabel}</span>
+          <span
+            aria-label={`当前大模型 ${modelLabel}，${aiStatusLabel}`}
+            className={`platform-model-status ${aiOnline === null ? "is-checking" : aiOnline ? "is-online" : "is-offline"} ${modelSwitching ? "is-switching" : ""}`}
+            role="status"
+            title={`当前大模型：${modelLabel} · ${aiStatusLabel}`}
+          >
+            <i aria-hidden="true" className="platform-model-status__dot" />
+            {modelLabel}
+          </span>
           <ThemeToggle mode={themeMode} onToggle={toggleTheme} />
           <UserMenuTrigger
             onAction={handleUserMenuAction}
@@ -313,12 +371,12 @@ function ShellApp() {
           </div>
         ) : null}
         {page === "points" ? <TestPointsMap /> : null}
-        {page === "cases" ? <CaseToolbox onRunCreated={openExecution} /> : null}
+        {page === "cases" ? <CaseToolbox initialDraftId={caseDraftId} onRunCreated={openExecution} /> : null}
         {page === "recorder" ? <Recorder /> : null}
         {page === "execution" ? <ExecutionCenter initialRunId={executionRunId} onOpenReport={openReport} onOpenCaseDraft={openCaseDraft} /> : null}
-        {page === "reports" ? <ReportDetail initialRunId={reportRunId} /> : null}
+        {page === "reports" ? <ReportDetail initialRunId={reportRunId} onRouteChange={(runId) => navigate("reports", "reports", { runId })} /> : null}
         {page === "element-knowledge" ? <ElementKnowledge /> : null}
-        {page === "settings" ? <SystemSettings onAISettingsChange={refreshAISettings} /> : null}
+        {page === "settings" ? <SystemSettings onAISettingsChange={async () => { await refreshAISettings(); await refreshAIStatus(); }} /> : null}
       </main>
 
       {/* 三个弹窗（按需挂载） */}
@@ -358,11 +416,13 @@ function ShellApp() {
 export default function App() {
   return (
     <ToastProvider>
-      <AuthProvider>
-        <ThemeBoot>
-          <ShellApp />
-        </ThemeBoot>
-      </AuthProvider>
+      <ConfirmProvider>
+        <AuthProvider>
+          <ThemeBoot>
+            <ShellApp />
+          </ThemeBoot>
+        </AuthProvider>
+      </ConfirmProvider>
     </ToastProvider>
   );
 }

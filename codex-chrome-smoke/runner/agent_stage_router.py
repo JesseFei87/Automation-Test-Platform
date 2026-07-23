@@ -224,8 +224,7 @@ def _success_signals(case: dict[str, Any], scene_type: str, route: str) -> list[
 
 
 def _final_assertion_signals(case: dict[str, Any]) -> list[str]:
-    signals = case_expected_results(case)
-    return [signals[-1]] if signals else []
+    return case_expected_results(case)
 
 
 def plan_agent_execution(case: dict[str, Any]) -> dict[str, Any]:
@@ -386,6 +385,7 @@ def plan_agent_execution(case: dict[str, Any]) -> dict[str, Any]:
         index
         for index, step in enumerate(steps, start=1)
         if _contains_any(step, ("新增", "编辑", "弹窗", "表单", "填写", "输入", "选择连接类型", "设备类型", "确定"))
+        and not _is_login_step(step)
         and not _contains_any(step, ("登录", "账号", "密码", "校验", "成功", "失败", "应显示", "应跳转"))
     ]
     if dialog_steps:
@@ -395,7 +395,7 @@ def plan_agent_execution(case: dict[str, Any]) -> dict[str, Any]:
     if detail_steps:
         add_stage("detail", "详情页校验", detail_steps, strategy="detail_assert", target_route=route, objective="校验详情页内容")
 
-    if _needs_assertion_stage(case, steps, expected):
+    if _needs_assertion_stage(case, steps, expected) and not _is_empty_required_fields_case(case):
         add_stage(
             "assertion",
             "结果校验",
@@ -538,12 +538,39 @@ async def _record(page, decision: dict[str, Any], execution: dict[str, Any], obs
         screenshot_name = f"agent-step-{screenshot_index:02d}.png"
         await screenshot(page, run_id, case_id, screenshot_name)
         execution = {**execution, "screenshot_name": screenshot_name}
+    observation = await observe_page(page)
+    from runner.element_ref_matcher import build_agent_ref_evidence
+
+    visible_text = observation.get("visibleText") or []
+    if isinstance(visible_text, list):
+        visible_text = " ".join(str(value) for value in visible_text[:20])
+    route = str(observation.get("url") or "")
+    intent = "\n".join(
+        value
+        for value in (
+            str(decision.get("reason") or decision.get("action") or ""),
+            route,
+            str(observation.get("title") or ""),
+            str(visible_text or ""),
+        )
+        if value
+    )
     return {
         "step": 0,
         "decision": decision,
-        "observation": await observe_page(page),
+        "observation": observation,
         "execution": execution,
         "screenshot_name": screenshot_name,
+        "element_knowledge": {
+            **build_agent_ref_evidence(
+                intent,
+                route,
+                observation,
+                str(decision.get("ref") or ""),
+            ),
+            "decision_source": "native_strategy",
+            "observation_phase": "post_action",
+        },
     }
 
 
@@ -559,9 +586,13 @@ async def _run_login_guard(page, system: dict[str, Any], case: dict[str, Any]) -
             {"action": "goto", "ref": "", "reason": "已访问登录页面"},
             {"result": "login_page_opened"},
         ),
-        "credentials_filled": (
-            {"action": "fill", "ref": "", "reason": f"已填写账号 {username} 和密码"},
-            {"result": "login_credentials_filled"},
+        "username_filled": (
+            {"action": "fill", "ref": "", "reason": f"已填写账号 {username}"},
+            {"result": "login_username_filled"},
+        ),
+        "password_filled": (
+            {"action": "fill", "ref": "", "reason": "已填写密码（明文不记录）"},
+            {"result": "login_password_filled"},
         ),
         "login_completed": (
             {"action": "click", "ref": "", "reason": f"使用 {username} 完成登录"},
@@ -764,7 +795,7 @@ async def _run_dialog_form_fill(page, case: dict[str, Any]) -> tuple[list[dict[s
                 observe_page,
             )
         ]
-        child_history, error = await _run_icm_device_dialog_fill(page, scope, data, observe_page)
+        child_history, error = await _run_icm_device_dialog_fill(page, scope, case, data, observe_page)
         return history + child_history, error
 
     applied = 0
@@ -979,9 +1010,17 @@ def _is_exception_case(case: dict[str, Any]) -> bool:
     case_id = str(case.get("id") or "").upper()
     if "_EXC_" in case_id:
         return True
-    if case.get("case_type") == "exception" or case.get("type") == "exception":
+    if case.get("case_type") in {"exception", "异常"} or case.get("type") in {"exception", "异常"}:
         return True
     return False
+
+
+def _is_empty_required_fields_case(case: dict[str, Any]) -> bool:
+    if not _is_exception_case(case):
+        return False
+    steps = " ".join(str(item) for item in case.get("steps") or [])
+    expected = " ".join(case_expected_results(case))
+    return ("清空" in steps or "留空" in steps) and "必填" in (steps + expected)
 
 
 def _needs_assertion_stage(case: dict[str, Any], steps: list[str], expected: list[str]) -> bool:
@@ -1003,7 +1042,7 @@ async def _choose_visible_dropdown(page, field, value: str) -> None:
     await option.click(force=True)
 
 
-async def _run_icm_device_dialog_fill(page, scope, data: dict[str, str], observe_page) -> tuple[list[dict[str, Any]], str]:
+async def _run_icm_device_dialog_fill(page, scope, case: dict[str, Any], data: dict[str, str], observe_page) -> tuple[list[dict[str, Any]], str]:
     try:
         dialog = await wait_for_visible_dialog(page, timeout=5000)
     except Exception:
@@ -1012,6 +1051,36 @@ async def _run_icm_device_dialog_fill(page, scope, data: dict[str, str], observe
     inputs = dialog.locator("input")
     if await inputs.count() < 10:
         return [], "device dialog inputs are incomplete"
+
+    if _is_empty_required_fields_case(case):
+        clearable_inputs = dialog.locator("input:not([readonly]):not([disabled]):not([type=checkbox]):visible")
+        for index in range(await clearable_inputs.count()):
+            await clearable_inputs.nth(index).fill("")
+        history = [
+            await _record(
+                page,
+                {"action": "fill", "ref": "", "reason": "清空必填输入字段"},
+                {"result": "required_fields_cleared"},
+                observe_page,
+            )
+        ]
+        await click_dialog_primary(page)
+        await page.wait_for_timeout(300)
+        errors = dialog.locator(".el-form-item__error:visible")
+        error_text = " ".join(await errors.all_inner_texts())
+        if not await dialog.is_visible():
+            return history, "required field submission closed the dialog"
+        if not any(token in error_text for token in ("此项必填", "不能为空")):
+            return history, "required field validation message is not visible"
+        history.append(
+            await _record(
+                page,
+                {"action": "assert_text", "value": error_text, "reason": "校验必填提示且弹窗未关闭"},
+                {"result": "required_field_validation_visible"},
+                observe_page,
+            )
+        )
+        return history, ""
 
     connection_type = data.get("连接类型") or data.get("connection_type") or ""
     device_type = data.get("设备类型") or data.get("device_type") or ""
@@ -1107,31 +1176,26 @@ async def _run_detail_assert(page, case: dict[str, Any], stage: dict[str, Any]) 
         history, error = await _run_screen_wall_assert(page, case, observe_page)
         if history or error:
             return history, error
+    history: list[dict[str, Any]] = []
+    missing: list[str] = []
+    quoted_re = re.compile(r"[\u201c\u201d\u0027\u0022]([^\u201c\u201d\u0027\u0022]{2,})[\u201c\u201d\u0027\u0022]")
     for signal in signals:
+        candidates = [signal]
+        if _is_exception_case(case):
+            candidates.extend(quoted_re.findall(signal))
         if signal.startswith("#/") and signal in page.url:
-            return [await _record(page, {"action": "assert_text", "value": signal, "reason": f"命中路由 {signal}"}, {"result": "detail_assert_passed"}, observe_page)], ""
-        if any(token in signal for token in ("成功", "失败", "设备", "服务器", "首页", "工作台")):
+            history.append(await _record(page, {"action": "assert_text", "value": signal, "reason": f"命中路由 {signal}"}, {"result": "detail_assert_passed"}, observe_page))
+            continue
+        for candidate in candidates:
             try:
-                await ensure_text_visible(page, signal)
-                return [await _record(page, {"action": "assert_text", "value": signal, "reason": f"校验页面出现 {signal}"}, {"result": "detail_assert_passed"}, observe_page)], ""
+                await ensure_text_visible(page, candidate)
+                history.append(await _record(page, {"action": "assert_text", "value": candidate, "reason": "校验页面出现 " + candidate}, {"result": "detail_assert_passed"}, observe_page))
+                break
             except Exception:
                 continue
-    # EXC bypass: full signal match first, then quoted substring fallback for numbered expected lines
-    if _is_exception_case(case):
-        quoted_re = re.compile(r"[\u201c\u201d\u0027\u0022]([^\u201c\u201d\u0027\u0022]{2,})[\u201c\u201d\u0027\u0022]")
-        for signal in signals:
-            try:
-                await ensure_text_visible(page, signal)
-                return [await _record(page, {"action": "assert_text", "value": signal, "reason": "exception case assert hit: " + signal}, {"result": "detail_assert_passed"}, observe_page)], ""
-            except Exception:
-                pass
-            for quoted in quoted_re.findall(signal):
-                try:
-                    await ensure_text_visible(page, quoted)
-                    return [await _record(page, {"action": "assert_text", "value": quoted, "reason": "exception case quoted assert hit: " + quoted}, {"result": "detail_assert_passed"}, observe_page)], ""
-                except Exception:
-                    continue
-    return [], "no assertion signal matched on current page"
+        else:
+            missing.append(signal)
+    return history, "unmatched assertion signals: " + "; ".join(missing) if missing else ""
 
 
 async def _run_screen_wall_assert(page, case: dict[str, Any], observe_page) -> tuple[list[dict[str, Any]], str]:

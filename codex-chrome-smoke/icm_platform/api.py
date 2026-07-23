@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 import sqlite3
 import importlib.util
@@ -11,6 +13,7 @@ import threading
 import time
 import uuid
 import shutil
+import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime
 from hashlib import sha256
@@ -24,9 +27,10 @@ import io
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 import yaml
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse, Response, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import AliasChoices, BaseModel, Field, SecretStr
 
 from icm_platform.ai_service import AIConfigurationError, AIProviderError, AIService
@@ -101,6 +105,22 @@ app.add_middleware(
     expose_headers=["Content-Disposition"],
 )
 
+_playwright_spec = importlib.util.find_spec("playwright")
+_PLAYWRIGHT_TRACE_VIEWER_DIR = (
+    Path(_playwright_spec.origin).parent / "driver" / "package" / "lib" / "vite" / "traceViewer"
+    if _playwright_spec and _playwright_spec.origin
+    else Path()
+)
+_TRACE_VIEWER_HTTPS_PORT = 8443
+_TRACE_VIEWER_TLS_DIR = ROOT / "platform-data" / "tls"
+_TRACE_VIEWER_CA_CERT = _TRACE_VIEWER_TLS_DIR / "qa-platform-root-ca.crt"
+if _PLAYWRIGHT_TRACE_VIEWER_DIR.is_dir():
+    app.mount(
+        "/playwright-trace-viewer",
+        StaticFiles(directory=_PLAYWRIGHT_TRACE_VIEWER_DIR, html=True),
+        name="playwright-trace-viewer",
+    )
+
 
 class AISettingsRequest(BaseModel):
     provider: str | None = None
@@ -121,7 +141,15 @@ class RequirementRequest(BaseModel):
     document: str
     context_info: dict | None = None
     project_id: str | None = None
+    requirement_id: int | None = None
     generation_id: str | None = None
+    case_count: int = Field(default=12, ge=1, le=20)
+    coverage_focus: Literal["balanced", "normal", "abnormal_boundary", "permission_security"] = "balanced"
+
+
+class DocumentParseRequest(BaseModel):
+    filename: str
+    content_base64: str
 
 
 class RequirementPatchRequest(BaseModel):
@@ -252,6 +280,7 @@ class RunRequest(BaseModel):
     case_id: str | None = None
     case_ids: list[str] = Field(default_factory=list)
     draft_id: int | None = None
+    agent_backend: Literal["native", "harness"] = "native"
 
 
 class RecorderStartRequest(BaseModel):
@@ -888,25 +917,48 @@ def _spec_case_summary(cases: list[dict]) -> tuple[str, str]:
     return summary, risk
 
 
-def _save_spec_case_drafts(requirement_id: int, cases: list[dict], context_info: dict | None = None) -> list[dict]:
+def _save_spec_case_drafts(
+    conn: sqlite3.Connection,
+    requirement_id: int,
+    cases: list[dict],
+    context_info: dict | None = None,
+    continue_ids: bool = False,
+) -> list[dict]:
     now = utc_now()
     saved: list[dict] = []
-    with connect() as conn:
-        for case in cases:
-            title = str(case.get("title") or case.get("id") or "未命名用例").strip()[:200]
-            # P1 · 增量：context_info 写到 case_drafts.yaml 顶层（ARCH §3.2）
-            case_payload: dict = dict(case)
-            if context_info:
-                case_payload["context_info"] = context_info
-            yaml_text = yaml.safe_dump(case_payload, allow_unicode=True, sort_keys=False)
-            cur = conn.execute(
-                """
-                insert into case_drafts(requirement_id, title, yaml, status, created_at, updated_at, template)
-                values (?, ?, ?, 'draft', ?, ?, 'spec')
-                """,
-                (requirement_id, title, yaml_text, now, now),
-            )
-            saved.append({"draft_id": cur.lastrowid, "title": title})
+    next_number = 1
+    id_width = 3
+    if continue_ids:
+        for row in conn.execute("select yaml from case_drafts where requirement_id = ?", (requirement_id,)):
+            try:
+                existing_id = str((yaml.safe_load(row["yaml"]) or {}).get("id") or "")
+            except (AttributeError, yaml.YAMLError):
+                continue
+            match = re.fullmatch(r"(.*?)(\d+)", existing_id.strip())
+            if match:
+                next_number = max(next_number, int(match.group(2)) + 1)
+                id_width = max(id_width, len(match.group(2)))
+
+    for case in cases:
+        case_payload: dict = dict(case)
+        if continue_ids:
+            match = re.fullmatch(r"(.*?)(\d+)", str(case_payload.get("id") or "").strip())
+            prefix = match.group(1) if match and match.group(1) else "CASE_"
+            case_payload["id"] = f"{prefix}{next_number:0{id_width}d}"
+            next_number += 1
+        title = str(case_payload.get("title") or case_payload.get("id") or "未命名用例").strip()[:200]
+        # P1 · 增量：context_info 写到 case_drafts.yaml 顶层（ARCH §3.2）
+        if context_info:
+            case_payload["context_info"] = context_info
+        yaml_text = yaml.safe_dump(case_payload, allow_unicode=True, sort_keys=False)
+        cur = conn.execute(
+            """
+            insert into case_drafts(requirement_id, title, yaml, status, created_at, updated_at, template)
+            values (?, ?, ?, 'draft', ?, ?, 'spec')
+            """,
+            (requirement_id, title, yaml_text, now, now),
+        )
+        saved.append({"draft_id": cur.lastrowid, "title": title})
     return saved
 
 
@@ -1043,18 +1095,83 @@ def _load_spec_text() -> str:
     return SPEC_FILE.read_text(encoding="utf-8")
 
 
+def _parse_requirement_document(filename: str, content: bytes) -> dict[str, str]:
+    suffix = Path(filename).suffix.lower()
+    if suffix not in {".docx", ".pdf"}:
+        raise ValueError("仅支持 DOCX 或文本型 PDF")
+    if not content or len(content) > 10 * 1024 * 1024:
+        raise ValueError("文档不能为空且不能超过 10 MB")
+
+    if suffix == ".docx":
+        from docx import Document
+
+        with zipfile.ZipFile(io.BytesIO(content)) as archive:
+            if sum(item.file_size for item in archive.infolist()) > 50 * 1024 * 1024:
+                raise ValueError("DOCX 解压后内容过大")
+        document = Document(io.BytesIO(content))
+        lines = [paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip()]
+        lines.extend(
+            " | ".join(cell.text.strip() for cell in row.cells)
+            for table in document.tables
+            for row in table.rows
+            if any(cell.text.strip() for cell in row.cells)
+        )
+    else:
+        from pypdf import PdfReader
+
+        reader = PdfReader(io.BytesIO(content))
+        if reader.is_encrypted:
+            raise ValueError("暂不支持加密 PDF")
+        if len(reader.pages) > 200:
+            raise ValueError("PDF 不能超过 200 页")
+        lines = [text.strip() for page in reader.pages if (text := (page.extract_text() or "").strip())]
+
+    text = "\n".join(lines).strip()
+    if not text:
+        raise ValueError("未解析到文字；扫描型 PDF 暂不支持 OCR")
+    if len(text) > 200_000:
+        raise ValueError("解析后的正文不能超过 20 万字符")
+    first_line = next((line.lstrip("# ").strip() for line in text.splitlines() if line.strip()), "")
+    title = first_line[:120] if 1 < len(first_line) <= 120 else Path(filename).stem
+    return {"filename": Path(filename).name, "title": title, "text": text}
+
+
+@app.post("/api/requirements/parse-document")
+def parse_requirement_document(payload: DocumentParseRequest) -> dict[str, str]:
+    try:
+        content = base64.b64decode(payload.content_base64, validate=True)
+        return _parse_requirement_document(payload.filename, content)
+    except (ValueError, binascii.Error, zipfile.BadZipFile) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/api/requirements/analyze-spec")
 def analyze_requirement_spec(payload: RequirementRequest) -> dict:
+    standard_text = _load_spec_text()
+    # P0 · 增量：按 project_id 查 project_profiles（已有函数 db.get_project_profile），拿不到用空 dict
+    existing_requirement = None
+    if payload.requirement_id is not None:
+        with connect() as conn:
+            existing_requirement = conn.execute(
+                "select id, project_id from requirements where id = ?",
+                (payload.requirement_id,),
+            ).fetchone()
+        if not existing_requirement:
+            raise HTTPException(status_code=404, detail="requirement not found")
+    project_id = resolve_requirement_project_id(
+        existing_requirement["project_id"] if existing_requirement else payload.project_id
+    )
     generation_id = (payload.generation_id or "").strip()
     if generation_id and not generation_control.begin(generation_id):
         generation_control.finish(generation_id)
         raise HTTPException(status_code=409, detail="generation stopped before completion")
-    standard_text = _load_spec_text()
-    # P0 · 增量：按 project_id 查 project_profiles（已有函数 db.get_project_profile），拿不到用空 dict
-    project_id = resolve_requirement_project_id(payload.project_id)
     project = get_project_profile(project_id) if project_id else None
     project_for_prompt: dict = project or {}
-    context_info = payload.context_info or None
+    context_info = {
+        key: value
+        for key in ("business_preconditions", "excluded")
+        if (value := str((payload.context_info or {}).get(key) or "").strip())
+    } or None
     try:
         try:
             result = ai_service.generate_test_cases_spec(
@@ -1063,6 +1180,8 @@ def analyze_requirement_spec(payload: RequirementRequest) -> dict:
                 get_ai_settings(mask_key=False),
                 project=project_for_prompt or None,
                 context_info=context_info,
+                case_count=payload.case_count,
+                coverage_focus=payload.coverage_focus,
             )
         except AIConfigurationError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1076,31 +1195,53 @@ def analyze_requirement_spec(payload: RequirementRequest) -> dict:
         analysis_summary, risk_summary = _spec_case_summary(cases)
         now = utc_now()
         with connect() as conn:
-            cur = conn.execute(
-                """
-                insert into requirements(title, document, status, analysis_summary, risk_summary, case_count, project_id, created_at, updated_at)
-                values (?, ?, 'analyzed', ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    payload.title,
-                    payload.document,
-                    analysis_summary,
-                    risk_summary,
-                    len(cases),
-                    project_id,
-                    now,
-                    now,
-                ),
+            conn.execute("begin immediate")
+            if existing_requirement:
+                if not conn.execute("select id from requirements where id = ?", (payload.requirement_id,)).fetchone():
+                    raise HTTPException(status_code=404, detail="requirement not found")
+                requirement_id = int(existing_requirement["id"])
+            else:
+                cur = conn.execute(
+                    """
+                    insert into requirements(title, document, status, analysis_summary, risk_summary, case_count, project_id, created_at, updated_at)
+                    values (?, ?, 'analyzed', ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        payload.title,
+                        payload.document,
+                        analysis_summary,
+                        risk_summary,
+                        len(cases),
+                        project_id,
+                        now,
+                        now,
+                    ),
+                )
+                requirement_id = int(cur.lastrowid)
+            _save_spec_case_drafts(
+                conn,
+                requirement_id,
+                cases,
+                context_info=context_info,
+                continue_ids=bool(existing_requirement),
             )
-            requirement_id = cur.lastrowid
-        _save_spec_case_drafts(requirement_id, cases, context_info=context_info)
+            if existing_requirement:
+                conn.execute(
+                    """
+                    update requirements
+                    set case_count = (select count(*) from case_drafts where requirement_id = ?), updated_at = ?
+                    where id = ?
+                    """,
+                    (requirement_id, now, requirement_id),
+                )
         detail = load_requirement_detail(requirement_id)
         if not detail:
             raise HTTPException(status_code=500, detail="failed to load generated requirement")
         detail["provider"] = get_ai_settings(mask_key=False).get("provider")
-        detail["requirement"]["analysis_summary"] = analysis_summary
-        detail["requirement"]["risk_summary"] = risk_summary
-        detail["requirement"]["case_count"] = len(cases)
+        if not existing_requirement:
+            detail["requirement"]["analysis_summary"] = analysis_summary
+            detail["requirement"]["risk_summary"] = risk_summary
+            detail["requirement"]["case_count"] = len(cases)
         detail["generated_cases"] = len(cases)
         return detail
     finally:
@@ -1498,7 +1639,7 @@ def run_case_draft(draft_id: int) -> dict[str, str | None]:
 @app.post("/api/runs")
 def create_run(payload: RunRequest) -> dict[str, str | None]:
     try:
-        return worker.enqueue(payload.mode, payload.case_id, payload.draft_id, payload.case_ids)
+        return worker.enqueue(payload.mode, payload.case_id, payload.draft_id, payload.case_ids, payload.agent_backend)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1594,9 +1735,8 @@ def run_detail(run_id: str) -> dict:
     if not screenshots and task_dict.get("case_id") and str(task_dict.get("status") or "") not in {"queued", "running"}:
         screenshots = [screenshot_payload(task_dict["case_id"], path) for path in latest_screenshots(task_dict["case_id"])]
     agent_explore = load_agent_explore_artifacts(run_id) if task_dict.get("mode") == "agent-explore" else None
-    log_dicts = rows_to_dicts(logs)
-    if not log_dicts and task_dict.get("mode") == "agent-explore":
-        log_dicts = _synthetic_logs_from_evidence(run_id)
+    diagnosis = load_agent_diagnosis_artifacts(run_id)
+    log_dicts = _run_logs_with_evidence(run_id, rows_to_dicts(logs))
     evidence_lines = evidence_log_lines(run_id)
     return {
         "task": task_dict,
@@ -1607,6 +1747,7 @@ def run_detail(run_id: str) -> dict:
         "screenshots": screenshots,
         "evidence": evidence_summary(run_id),
         "agent_explore": agent_explore,
+        "diagnosis": diagnosis,
         "analysis": ai_service.analyze_run_report(report, screenshots, [row["line"] for row in log_dicts] + evidence_lines) if report else None,
     }
 
@@ -1637,6 +1778,17 @@ def _report_screenshots(task_dict: dict, report_text: str) -> list[dict[str, str
     if not screenshots and task_dict.get("case_id") and str(task_dict.get("status") or "") not in {"queued", "running"}:
         screenshots = [screenshot_payload(task_dict["case_id"], path) for path in latest_screenshots(task_dict["case_id"])]
     return screenshots
+
+
+def _attach_legacy_final_screenshot(steps: list[dict], screenshots: list[dict[str, str]]) -> None:
+    if not steps or steps[-1].get("screenshot_url"):
+        return
+    final_screenshot = next(
+        (item for item in reversed(screenshots) if item.get("filename") == "03-final.png"),
+        None,
+    )
+    if final_screenshot:
+        steps[-1]["screenshot_url"] = final_screenshot["url"]
 
 
 def _batch_case_ids(task_dict: dict[str, Any]) -> list[str] | None:
@@ -1846,14 +1998,18 @@ def _match_case_step_index(case_steps: list[str], decision: dict, observation: d
     haystack = " ".join(part for part in haystack_parts if part).lower()
     action = str(decision.get("action") or "").lower()
     target = _agent_target_text(decision, observation)
+    if action in {"assert_text", "finish"} and current_index >= 0:
+        return min(current_index, len(case_steps) - 1)
     if action == "fill":
         if any(word in target for word in ("账号", "用户名", "密码")) or any(word in haystack for word in ("test", "123456", "password", "username", "账号", "密码")):
-            for index, step_text in enumerate(case_steps):
+            for index in range(max(0, current_index + 1), len(case_steps)):
+                step_text = case_steps[index]
                 if any(word in step_text for word in ("输入", "填写", "账号", "密码")):
                     return index
     if action == "click":
         if any(word in haystack for word in ("登录", "submit login")):
-            for index, step_text in enumerate(case_steps):
+            for index in range(max(0, current_index + 1), len(case_steps)):
+                step_text = case_steps[index]
                 if "点击" in step_text and "登录" in step_text:
                     return index
     if action == "wait" and current_index >= 0:
@@ -2095,6 +2251,18 @@ def _agent_assertion_binding(item: dict, expected_bindings: list[dict], stage_me
     return expected_bindings[local_step - 1]
 
 
+def _agent_result_assertion_binding(item: dict, expected_bindings: list[dict]) -> dict | None:
+    execution = item.get("execution") if isinstance(item.get("execution"), dict) else {}
+    result_index = {
+        "dialog_opened": 0,
+        "required_fields_cleared": 1,
+        "required_field_validation_visible": 2,
+    }.get(str(execution.get("result") or "").strip())
+    if result_index is None or result_index >= len(expected_bindings):
+        return None
+    return expected_bindings[result_index]
+
+
 def _agent_actual_result_text(item: dict, trace: dict) -> str:
     if not isinstance(item, dict):
         return ""
@@ -2145,7 +2313,7 @@ def _assertion_status_rank(status: str) -> int:
 def _extract_expected_value_pairs(text: str) -> list[tuple[str, str]]:
     pairs: list[tuple[str, str]] = []
     for match in re.finditer(
-        r"(设备名称|IP|状态|用户名|账号|端口|连接类型|设备类型|服务器名称|标题|名称)(?:为|是|显示为|默认为)([^，。；,;]+)",
+        r"(设备名称|IP|状态|用户名|账号|端口|连接类型|设备类型|服务器名称|标题|名称)(?:输入框(?:值)?)?(?:为|是|显示为|默认为)([^，。；,;]+)",
         text,
     ):
         label = _clean_case_step_text(match.group(1))
@@ -2299,6 +2467,11 @@ def _build_assertion_checks(expected_text: str, ai_fallback: bool = False, page_
         if "首页" in text:
             push("url_contains", "#/index", "首页")
         push("login_success", text, "登录成功")
+    if "屏幕墙" in text and any(word in text for word in ("跳转", "进入", "显示")):
+        push("login_success", text, "进入屏幕墙")
+    password_length = re.search(r"密码.*?(\d+)\s*位", text)
+    if "密码" in text and "掩码" in text:
+        push("password_masked", text, "密码掩码", {"length": int(password_length.group(1)) if password_length else None})
 
     if re.search(r"弹窗.*(打开|显示|出现)|对话框.*(打开|显示|出现)", text):
         target = ""
@@ -2312,6 +2485,17 @@ def _build_assertion_checks(expected_text: str, ai_fallback: bool = False, page_
     if re.search(r"列表.*(新增|出现|显示).*(记录|一行)|表格.*(新增|出现|显示).*(记录|一行)", text):
         terms = [value for _label, value in _extract_expected_value_pairs(text)]
         push("table_row_exists", text, "列表记录", {"terms": terms})
+    table_visible = re.search(
+        r"(?P<subject>[^，。；;]{0,12}?)列表.*(?:正常展示|正常显示|展示正常|显示正常|正常加载|加载正常)",
+        text,
+    )
+    if not table_visible:
+        table_visible = re.search(
+            r"(?:正常展示|正常显示|展示正常|显示正常|正常加载|加载正常)(?P<subject>[^，。；;]{0,12}?)列表",
+            text,
+        )
+    if table_visible:
+        push("table_visible", text, "列表展示", {"subject": table_visible.group("subject").strip()})
 
     value_pairs = _extract_expected_value_pairs(text)
     for label, value in value_pairs:
@@ -2320,13 +2504,24 @@ def _build_assertion_checks(expected_text: str, ai_fallback: bool = False, page_
 
     fragments = _expected_text_fragments(text)
     for fragment in fragments:
+        if any(label in fragment and value in fragment for label, value in value_pairs):
+            continue
         if re.search(r"https?://|#/", fragment):
             continue
         if "列表" in fragment and any(word in fragment for word in ("新增", "记录", "一行")):
             continue
+        if "列表" in fragment and any(
+            word in fragment
+            for word in ("正常展示", "正常显示", "展示正常", "显示正常", "正常加载", "加载正常")
+        ):
+            continue
         if any(word in fragment for word in ("弹窗关闭", "弹窗打开", "对话框关闭", "对话框打开")):
             continue
         if "登录成功" in fragment:
+            continue
+        if "密码" in fragment and "掩码" in fragment:
+            continue
+        if "屏幕墙" in fragment and any(word in fragment for word in ("跳转", "进入", "显示")):
             continue
         if ((any(word in fragment for word in ("复选框", "勾选框")) and any(word in fragment for word in ("选中", "已选中", "勾选"))) or "选中状态" in fragment):
             continue
@@ -2344,10 +2539,16 @@ def _build_assertion_checks(expected_text: str, ai_fallback: bool = False, page_
     return checks
 
 
+def _agent_event_observation(item: dict) -> dict:
+    execution = item.get("execution") if isinstance(item.get("execution"), dict) else {}
+    post_observation = execution.get("post_observation") if isinstance(execution.get("post_observation"), dict) else {}
+    return post_observation or (item.get("observation") if isinstance(item.get("observation"), dict) else {})
+
+
 def _agent_observation_facts(item: dict, trace: dict) -> dict:
     decision = item.get("decision") if isinstance(item.get("decision"), dict) else {}
     execution = item.get("execution") if isinstance(item.get("execution"), dict) else {}
-    observation = item.get("observation") if isinstance(item.get("observation"), dict) else {}
+    observation = _agent_event_observation(item)
     visible_texts: list[str] = []
     for raw_text in observation.get("visibleText") or []:
         text = _clean_case_step_text(raw_text)
@@ -2406,6 +2607,24 @@ def _evaluate_assertion_check(check: dict, item: dict, trace: dict) -> dict:
             evaluated.update({"status": "failed", "actual": url, "evidence_source": "observation.url", "reason": "当前 URL 未命中预期"})
         return evaluated
 
+    if check_type == "password_masked":
+        expected_length = check.get("length")
+        password_fields = [
+            field
+            for field in _agent_event_observation(item).get("interactives") or []
+            if isinstance(field, dict) and str(field.get("type") or "").lower() == "password"
+        ]
+        observed_lengths = [field.get("valueLength") for field in password_fields if isinstance(field.get("valueLength"), int)]
+        if observed_lengths and (expected_length is None or expected_length in observed_lengths):
+            evaluated.update({"status": "completed", "actual": f"密码已以掩码显示（{observed_lengths[0]} 位）", "evidence_source": "observation.interactives.valueLength", "reason": "密码字段长度与预期一致，且未记录密码明文"})
+        elif facts["result"] == "filled" and password_fields:
+            evaluated.update({"status": "completed", "actual": "密码字段已填写并保持掩码", "evidence_source": "execution.result", "reason": "填写动作成功且目标为密码字段"})
+        elif password_fields:
+            evaluated.update({"status": "failed", "actual": "密码字段未达到预期长度", "evidence_source": "observation.interactives.valueLength", "reason": "密码掩码长度与预期不一致"})
+        else:
+            evaluated.update({"status": "queued", "reason": "缺少密码字段证据"})
+        return evaluated
+
     if check_type == "dialog_visible":
         dialog_signal = expected.lower()
         result = facts["result"].lower()
@@ -2444,6 +2663,19 @@ def _evaluate_assertion_check(check: dict, item: dict, trace: dict) -> dict:
             evaluated.update({"status": "completed", "actual": visible_text, "evidence_source": "observation.visibleText", "reason": "列表文本命中预期描述"})
         else:
             evaluated.update({"status": "failed", "actual": visible_text, "evidence_source": "observation.visibleText", "reason": "列表中未找到目标记录"})
+        return evaluated
+
+    if check_type == "table_visible":
+        subject = str(check.get("subject") or "").lower()
+        markers = ("搜索", "查询", "重置", "名称", "状态", "创建时间", "操作", "新增", "修改", "删除")
+        matched_markers = [marker for marker in markers if marker in facts["haystack"]]
+        actual = "；".join(facts["visible_texts"][:8])
+        if not facts["visible_texts"]:
+            evaluated.update({"status": "queued", "reason": "缺少列表页面证据"})
+        elif (not subject or subject in facts["haystack"]) and len(matched_markers) >= 3:
+            evaluated.update({"status": "completed", "actual": actual, "evidence_source": "observation.visibleText", "reason": "页面已观察到列表主题及列表结构", "match_strength": "structural"})
+        else:
+            evaluated.update({"status": "failed", "actual": actual, "evidence_source": "observation.visibleText", "reason": "页面未观察到完整的列表结构"})
         return evaluated
 
     if check_type in {"field_value", "status_tag", "text_contains"}:
@@ -2628,6 +2860,46 @@ def _assertion_actual_summary(checks: list[dict]) -> str:
             parts.append(actual)
     return "；".join(parts[:3])
 
+
+def _apply_harness_evidence_gate(steps: list[dict], trace: dict, screenshots: list[dict[str, str]]) -> None:
+    screenshot_map = {str(item.get("filename") or ""): item for item in screenshots}
+    for step in steps:
+        if step.get("expected_result_status") != "completed" or not step.get("expected_result"):
+            continue
+        checks = [check for check in (step.get("assertion_checks") or []) if check.get("type") != "evidence_bundle"]
+        accepted: tuple[dict, list[dict], dict[str, str]] | None = None
+        for event in reversed(step.get("events") or []):
+            execution = event.get("execution") if isinstance(event.get("execution"), dict) else {}
+            observation = execution.get("post_observation") if isinstance(execution.get("post_observation"), dict) else {}
+            if not observation and str((event.get("decision") or {}).get("action") or "") == "goto":
+                observation = event.get("observation") if isinstance(event.get("observation"), dict) else {}
+            screenshot = screenshot_map.get(str(execution.get("screenshot_name") or ""))
+            if not screenshot or not observation.get("url") or not (observation.get("visibleText") or observation.get("interactives")):
+                continue
+            evaluated = [_evaluate_assertion_check(check, event, trace) for check in checks]
+            if _aggregate_assertion_status(evaluated) == "completed":
+                accepted = event, evaluated, screenshot
+                break
+        bundle = {
+            "type": "evidence_bundle",
+            "expected": "动作后截图、URL 和关键页面文本一致",
+            "label": "三类证据",
+            "status": "completed" if accepted else "failed",
+            "actual": "三类证据已绑定到同一次动作后观察" if accepted else "缺少同一次动作后的截图、URL 或关键页面文本证据",
+            "evidence_source": "execution.post_observation",
+            "reason": "证据完整" if accepted else "证据不完整，不能判定步骤成功",
+        }
+        if accepted:
+            _event, evaluated, screenshot = accepted
+            step["assertion_checks"] = evaluated + [bundle]
+            step["screenshot_url"] = screenshot["url"]
+            step["actual_result"] = _assertion_actual_summary(evaluated) or step.get("actual_result", "")
+        else:
+            step["assertion_checks"] = checks + [bundle]
+            step["expected_result_status"] = "failed"
+            step["status"] = "failed"
+            step["error_message"] = bundle["actual"]
+
 def _build_agent_steps(agent_explore: dict | None, logs: list[dict], screenshots: list[dict[str, str]], run_id: str, task_dict: dict, ai_fallback: bool = False) -> list[dict]:
     trace = (agent_explore or {}).get("trace") or {}
     history = trace.get("history") or []
@@ -2790,7 +3062,7 @@ def _build_agent_steps(agent_explore: dict | None, logs: list[dict], screenshots
         if summary_text:
             step_entry["summary"] = summary_text
         step_entry["ai_analysis"] = str(decision.get("reason") or action_summary or step_entry["ai_analysis"])
-        if screenshot:
+        if screenshot and (task_dict.get("agent_backend") != "harness" or not step_entry["screenshot_url"]):
             step_entry["screenshot_url"] = screenshot["url"]
         step_entry["events"].append(item)
         step_entry["command_output"].extend(_agent_step_command_output(item_dict, case_step_text))
@@ -2799,12 +3071,16 @@ def _build_agent_steps(agent_explore: dict | None, logs: list[dict], screenshots
             step_entry["error_message"] = str(execution.get("error") or "")
         elif step_entry["status"] != "failed":
             step_entry["status"] = "completed"
-        assertion_binding = _agent_assertion_binding(item_dict, expected_bindings, stage_meta_map)
+        result_binding = _agent_result_assertion_binding(item_dict, expected_bindings)
+        assertion_binding = result_binding or _agent_assertion_binding(item_dict, expected_bindings, stage_meta_map)
         if assertion_binding:
             bound_step = steps[assertion_binding["end_step"] - 1]
             bound_step["expected_result"] = assertion_binding["text"]
-            current_checks = bound_step["assertion_checks"] or _build_assertion_checks(assertion_binding["text"], ai_fallback=ai_fallback)
-            evaluated_checks = [_evaluate_assertion_check(check, item_dict, trace) for check in current_checks]
+            if result_binding:
+                evaluated_checks = [{"type": "execution_result", "expected": assertion_binding["text"], "label": "执行结果", "status": "completed", "actual": str(execution.get("result") or ""), "evidence_source": "execution.result", "reason": "策略已完成对应步骤校验"}]
+            else:
+                current_checks = bound_step["assertion_checks"] or _build_assertion_checks(assertion_binding["text"], ai_fallback=ai_fallback)
+                evaluated_checks = [_evaluate_assertion_check(check, item_dict, trace) for check in current_checks]
             bound_step["assertion_checks"] = evaluated_checks
             bound_step["actual_result"] = _assertion_actual_summary(evaluated_checks) or _agent_actual_result_text(item_dict, trace) or summary_text or case_step_text
             if execution.get("error"):
@@ -2845,6 +3121,8 @@ def _build_agent_steps(agent_explore: dict | None, logs: list[dict], screenshots
         if step_entry.get("expected_result_status") == "completed" and step_entry.get("status") == "failed":
             step_entry["status"] = "completed"
             step_entry["error_message"] = ""
+    if task_dict.get("agent_backend") == "harness" and trace.get("evidence_bundle_version") == 1:
+        _apply_harness_evidence_gate(steps, trace, screenshots)
     return steps
 
 
@@ -2941,9 +3219,8 @@ def _build_unified_run_detail(run_id: str) -> dict:
     if not task:
         raise HTTPException(status_code=404, detail="run not found")
     task_dict = dict(task)
-    log_dicts = rows_to_dicts(logs)
-    if not log_dicts and task_dict.get("mode") == "agent-explore":
-        log_dicts = _synthetic_logs_from_evidence(run_id)
+    log_dicts = _run_logs_with_evidence(run_id, rows_to_dicts(logs))
+    evidence = evidence_summary(run_id)
     report_text = ""
     if task_dict.get("report_path") and Path(str(task_dict["report_path"])).suffix.lower() == ".md":
         try:
@@ -2956,6 +3233,7 @@ def _build_unified_run_detail(run_id: str) -> dict:
     screenshots = _report_screenshots(task_dict, report_text)
     analysis = ai_service.analyze_run_report(report_text, screenshots, [row["line"] for row in log_dicts] + evidence_log_lines(run_id)) if report_text else None
     agent_explore = load_agent_explore_artifacts(run_id) if task_dict.get("mode") == "agent-explore" else None
+    diagnosis = load_agent_diagnosis_artifacts(run_id)
     step_detail_payload = load_step_details(run_id)
     if step_detail_payload:
         steps = step_detail_payload.get("steps") or []
@@ -2971,7 +3249,7 @@ def _build_unified_run_detail(run_id: str) -> dict:
             "ai_analysis": "",
         }
     else:
-        steps = _build_agent_steps(agent_explore, log_dicts, screenshots, run_id, task_dict, ai_fallback=True)
+        steps = _build_agent_steps(agent_explore, log_dicts, screenshots, run_id, task_dict)
         trace = (agent_explore or {}).get("trace") or {}
         final_url = str(trace.get("finalUrl") or trace.get("final_url") or "")
         summary = {
@@ -2980,20 +3258,25 @@ def _build_unified_run_detail(run_id: str) -> dict:
             "failure_reason": str(trace.get("error") or task_dict.get("error") or ""),
             "ai_analysis": str(trace.get("summary") or ""),
         }
+    _attach_legacy_final_screenshot(steps, screenshots)
     case_name = _case_title_for_run(run_id, task_dict, agent_explore) or task_dict.get("case_id") or run_id
     if report_text:
         report_meta = parse_report(report_text)
         case_name = report_meta.get("case_name") or case_name
     trace = (agent_explore or {}).get("trace") or {}
     agent_stage_runs = _reconcile_agent_stage_runs(trace, steps, (trace.get("stage_runs") or []))
+    status = _normalized_status(str(task_dict.get("status") or ""))
+    if task_dict.get("mode") == "agent-explore" and any(step.get("status") == "failed" for step in steps):
+        status = "failed"
     return {
         "run_id": run_id,
         "case_id": task_dict.get("case_id"),
         "case_name": case_name,
         "mode": _normalized_mode(str(task_dict.get("mode") or "")),
+        "agent_backend": task_dict.get("agent_backend"),
         "trigger": str(task_dict.get("trigger") or "manual"),
         "parent_run_id": task_dict.get("parent_run_id"),
-        "status": _normalized_status(str(task_dict.get("status") or "")),
+        "status": status,
         "operator": "admin",
         "started_at": task_dict.get("started_at") or task_dict.get("created_at"),
         "finished_at": task_dict.get("finished_at"),
@@ -3010,14 +3293,17 @@ def _build_unified_run_detail(run_id: str) -> dict:
             "report_markdown_url": f"/api/reports/{run_id}" if report_text else "",
             "observed_asset_path": (step_detail_payload or {}).get("artifacts", {}).get("observed_asset_path", ""),
             "observed_asset_merge_url": f"/api/runs/{run_id}/merge-observed-asset",
-            "trace_download_url": f"/api/runs/{run_id}/evidence/trace" if evidence_summary(run_id).get("trace", {}).get("exists") else "",
+            "trace_download_url": f"/api/runs/{run_id}/evidence/trace" if evidence.get("trace", {}).get("exists") else "",
             "candidate_flow_url": f"/api/runs/{run_id}/agent-explore/candidate-flow" if agent_explore and agent_explore.get("candidate_flow_path") else "",
+            "diagnosis_url": f"/api/runs/{run_id}/diagnosis" if diagnosis else "",
+            "candidate_patch_url": f"/api/runs/{run_id}/candidate-patch" if diagnosis and diagnosis.get("candidate_patch_path") else "",
         },
         "raw_report": report_text,
         "logs": log_dicts,
         "screenshots": screenshots,
-        "evidence": evidence_summary(run_id),
+        "evidence": evidence,
         "agent_explore": agent_explore,
+        "diagnosis": diagnosis,
         "analysis": analysis,
         "healing_hint": str((trace.get("healing_hint") or "")),
         "agent_plan": trace.get("plan") or {},
@@ -3048,6 +3334,21 @@ def load_agent_explore_artifacts(run_id: str) -> dict | None:
         "candidate_flow_path": str(candidate_path.relative_to(ROOT)) if candidate_path.exists() else "",
         "trace": trace,
     }
+
+
+def load_agent_diagnosis_artifacts(run_id: str) -> dict | None:
+    root = ROOT / "reports" / "agent-diagnosis" / run_id
+    path = root / "diagnosis.json"
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    patch = root / "candidate_patch.json"
+    return {**payload, "candidate_patch_path": str(patch.relative_to(ROOT)) if patch.exists() else ""}
 
 
 def _load_case_source_for_agent_run(run_id: str, task_dict: dict, trace: dict) -> tuple[str, str]:
@@ -3345,6 +3646,8 @@ def promote_agent_explore_regression(run_id: str) -> dict:
     candidate_text = candidate_path.read_text(encoding="utf-8")
     if not candidate_text.strip():
         raise HTTPException(status_code=400, detail="candidate_flow.py is empty")
+    if "Agent trace did not contain executable actions" in candidate_text:
+        raise HTTPException(status_code=400, detail="candidate_flow.py has no executable actions")
     try:
         ast.parse(candidate_text)
     except SyntaxError as exc:
@@ -3410,15 +3713,44 @@ def self_heal_agent_explore(run_id: str) -> dict:
     if not task:
         raise HTTPException(status_code=404, detail="run not found")
     task_dict = dict(task)
-    if task_dict.get("mode") != "agent-explore":
-        raise HTTPException(status_code=400, detail="only Agent Explore runs can self heal")
-    agent_explore = load_agent_explore_artifacts(run_id)
-    trace = (agent_explore or {}).get("trace") or {}
-    if not trace:
-        raise HTTPException(status_code=404, detail="trace not found for self heal")
-    case_yaml, _ = _load_case_source_for_agent_run(run_id, task_dict, trace)
-    context = _build_self_heal_context(run_id, task_dict, trace)
-    return worker.enqueue_agent_self_heal(run_id, case_yaml, context, case_id=task_dict.get("case_id"))
+    if _normalized_status(str(task_dict.get("status") or "")) != "failed":
+        raise HTTPException(status_code=400, detail="only failed runs can be diagnosed")
+    return _diagnose_failed_run(run_id, task_dict)
+
+
+@app.post("/api/runs/{run_id}/diagnose")
+def diagnose_run(run_id: str) -> dict:
+    with connect() as conn:
+        task = conn.execute("select * from run_tasks where id = ?", (run_id,)).fetchone()
+    if not task:
+        raise HTTPException(status_code=404, detail="run not found")
+    task_dict = dict(task)
+    return _diagnose_failed_run(run_id, task_dict)
+
+
+def _diagnose_failed_run(run_id: str, task_dict: dict) -> dict:
+    if _normalized_status(str(task_dict.get("status") or "")) != "failed":
+        raise HTTPException(status_code=400, detail="only failed runs can be diagnosed")
+    from runner.agent_diagnose import run_agent_diagnose
+
+    diagnosis = run_agent_diagnose(run_id, run_id)
+    return {"run_id": run_id, "status": "completed", "diagnosis": diagnosis}
+
+
+@app.get("/api/runs/{run_id}/diagnosis")
+def diagnosis_file(run_id: str) -> FileResponse:
+    path = ROOT / "reports" / "agent-diagnosis" / run_id / "diagnosis.json"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="diagnosis not found")
+    return FileResponse(path, media_type="application/json", filename=f"{run_id}-diagnosis.json")
+
+
+@app.get("/api/runs/{run_id}/candidate-patch")
+def candidate_patch_file(run_id: str) -> FileResponse:
+    path = ROOT / "reports" / "agent-diagnosis" / run_id / "candidate_patch.json"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="candidate patch not found")
+    return FileResponse(path, media_type="application/json", filename=f"{run_id}-candidate-patch.json")
 
 
 @app.post("/api/runs/{run_id}/agent-explore/promote-candidate")
@@ -3530,12 +3862,52 @@ def _synthetic_logs_from_evidence(run_id: str) -> list[dict]:
     return rows
 
 
+def _run_logs_with_evidence(run_id: str, stored_logs: list[dict]) -> list[dict]:
+    rows = [*stored_logs, *_synthetic_logs_from_evidence(run_id)]
+    rows.sort(key=lambda item: str(item.get("created_at") or ""))
+    for index, item in enumerate(rows, start=1):
+        item["id"] = index
+    return rows
+
+
 @app.get("/api/runs/{run_id}/evidence/trace")
 def run_evidence_trace(run_id: str) -> FileResponse:
     path = TRACE_ROOT / run_id / "trace.zip"
     if not path.exists():
         raise HTTPException(status_code=404, detail="trace not found")
     return FileResponse(path, media_type="application/zip", filename=f"{run_id}-trace.zip")
+
+
+@app.get("/api/runs/{run_id}/evidence/trace/view")
+def run_evidence_trace_viewer(run_id: str, request: Request) -> RedirectResponse:
+    path = TRACE_ROOT / run_id / "trace.zip"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="trace not found")
+    if not _PLAYWRIGHT_TRACE_VIEWER_DIR.is_dir():
+        raise HTTPException(status_code=503, detail="Playwright Trace Viewer is unavailable")
+    trace_url = str(request.url_for("run_evidence_trace", run_id=run_id))
+    viewer_url = "/playwright-trace-viewer/index.html"
+    request_host = str(request.url.hostname or "")
+    client_host = str(request.client.host if request.client else "")
+    if request.url.scheme == "http" and request_host not in {"localhost", "127.0.0.1", "::1"}:
+        if client_host == request_host:
+            secure_origin = f"http://localhost:{request.url.port or 80}"
+        else:
+            secure_origin = f"https://{request_host}:{_TRACE_VIEWER_HTTPS_PORT}"
+        trace_url = f"{secure_origin}/api/runs/{quote(run_id, safe='')}/evidence/trace"
+        viewer_url = f"{secure_origin}{viewer_url}"
+    return RedirectResponse(f"{viewer_url}?trace={quote(trace_url, safe='')}")
+
+
+@app.get("/api/trace-viewer/ca-certificate")
+def trace_viewer_ca_certificate() -> FileResponse:
+    if not _TRACE_VIEWER_CA_CERT.exists():
+        raise HTTPException(status_code=404, detail="Trace Viewer CA certificate is not configured")
+    return FileResponse(
+        _TRACE_VIEWER_CA_CERT,
+        media_type="application/x-x509-ca-cert",
+        filename=_TRACE_VIEWER_CA_CERT.name,
+    )
 
 
 @app.get("/api/runs/{run_id}/evidence/{kind}")
@@ -4909,7 +5281,7 @@ def reports() -> list[dict]:
                 "started_at": task.get("started_at") or task.get("created_at"),
                 "finished_at": task.get("finished_at"),
                 "has_report": bool(task.get("report_path")),
-                "has_evidence": bool(evidence_summary(str(task["id"])).get("root")),
+                "has_evidence": (EVIDENCE_ROOT / str(task["id"])).exists(),
             }
         )
     items.sort(key=lambda item: (0 if item["status"] == "failed" else 1, item.get("finished_at") or item.get("started_at") or ""), reverse=False)

@@ -57,6 +57,7 @@ def init_db() -> None:
               batch_case_ids text,
               parent_run_id text,
               trigger text,
+              agent_backend text,
               healing_context_path text,
               status text not null,
               command text not null,
@@ -213,6 +214,7 @@ def init_db() -> None:
         ensure_column(conn, "run_tasks", "batch_case_ids", "text")
         ensure_column(conn, "run_tasks", "trigger", "text")
         ensure_column(conn, "run_tasks", "healing_context_path", "text")
+        ensure_column(conn, "run_tasks", "agent_backend", "text")
         ensure_column(conn, "run_tasks", "report_deleted_at", "text")
         ensure_column(conn, "platform_settings", "environment_json", "text")
         ensure_column(conn, "platform_settings", "accounts_json", "text")

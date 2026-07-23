@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -20,25 +21,26 @@ def step_details_path(run_id: str) -> Path:
 
 
 def planned_step_titles(case: dict[str, Any]) -> list[str]:
+    case_steps = [str(item).strip() for item in (case.get("steps") or []) if str(item).strip()]
+    if case_steps:
+        return case_steps
     asset = case.get("automation_asset") or {}
     operation_steps = [str(item).strip() for item in (asset.get("operation_steps") or []) if str(item).strip()]
     if operation_steps:
         return operation_steps
-    case_steps = [str(item).strip() for item in (case.get("steps") or []) if str(item).strip()]
-    if case_steps:
-        return case_steps
     title = str(case.get("title") or case.get("id") or "执行步骤").strip()
     return [title or "执行步骤"]
 
 
 def initialize_step_details(run_id: str, case: dict[str, Any], *, mode: str = "worker") -> dict[str, Any]:
+    started_at = utc_now_iso()
     steps = [
         {
             "step_index": index,
             "step_code": f"step_{index:02d}",
             "title": title,
-            "status": "queued",
-            "started_at": None,
+            "status": "running" if index == 1 else "queued",
+            "started_at": started_at if index == 1 else None,
             "finished_at": None,
             "duration_seconds": None,
             "summary": "",
@@ -63,7 +65,7 @@ def initialize_step_details(run_id: str, case: dict[str, Any], *, mode: str = "w
         "mode": mode,
         "status": "running",
         "operator": "admin",
-        "started_at": utc_now_iso(),
+        "started_at": started_at,
         "finished_at": None,
         "duration_seconds": None,
         "final_url": "",
@@ -84,6 +86,32 @@ def initialize_step_details(run_id: str, case: dict[str, Any], *, mode: str = "w
     }
     write_step_details(run_id, payload)
     return payload
+
+
+def record_step_screenshot(run_id: str, screenshot_path: str, final_url: str = "") -> None:
+    payload = load_step_details(run_id)
+    match = re.fullmatch(r"step-(\d+)\.png", Path(screenshot_path).name, flags=re.IGNORECASE)
+    if not payload or not match:
+        return
+    index = int(match.group(1))
+    steps = payload.get("steps") or []
+    if index < 1 or index > len(steps):
+        return
+
+    now = utc_now_iso()
+    step = steps[index - 1]
+    step["status"] = "completed"
+    step["started_at"] = step.get("started_at") or payload.get("started_at") or now
+    step["finished_at"] = now
+    step["duration_seconds"] = _duration_seconds(step["started_at"], now)
+    step["summary"] = step.get("summary") or step.get("title") or ""
+    step["screenshot_url"] = _screenshot_url(screenshot_path)
+    step["final_url"] = final_url
+    payload["final_url"] = final_url
+    if index < len(steps) and steps[index].get("status") == "queued":
+        steps[index]["status"] = "running"
+        steps[index]["started_at"] = now
+    write_step_details(run_id, payload)
 
 
 def finalize_step_details(
@@ -112,10 +140,18 @@ def finalize_step_details(
 
     screenshots = [str(item) for item in (result.get("screenshots") or [])]
     evidence = evidence_summary(run_id)
+    step_screenshots = _step_screenshots(screenshots)
     step_count = len(payload["steps"])
-    failing_index = step_count if result.get("status") != "passed" else 0
+    failing_index = min(len(step_screenshots) + 1, step_count) if result.get("status") != "passed" else 0
     for index, step in enumerate(payload["steps"], start=1):
-        step["status"] = "completed" if index < failing_index or failing_index == 0 else "failed"
+        if failing_index == 0:
+            step["status"] = "completed"
+        elif index < failing_index:
+            step["status"] = "completed"
+        elif index == failing_index:
+            step["status"] = "failed"
+        else:
+            step["status"] = "queued"
         if index == failing_index and failing_index > 0:
             step["summary"] = str(result.get("error") or result.get("failure_point") or step["title"])
             step["error_message"] = str(result.get("error") or "")
@@ -125,7 +161,11 @@ def finalize_step_details(
         step["finished_at"] = payload["finished_at"] if step["status"] in {"completed", "failed"} else None
         step["duration_seconds"] = payload["duration_seconds"]
         step["final_url"] = payload["final_url"]
-        shot_path = screenshots[min(index - 1, len(screenshots) - 1)] if screenshots else ""
+        shot_path = step_screenshots.get(index, "")
+        if index == failing_index and not shot_path:
+            shot_path = next((item for item in reversed(screenshots) if Path(item).name == "03-final.png"), "")
+        if index == step_count and not shot_path:
+            shot_path = next((item for item in reversed(screenshots) if Path(item).name == "03-final.png"), "")
         step["screenshot_url"] = _screenshot_url(shot_path)
         step["command_output"] = [str(result.get("error") or "")] if step["status"] == "failed" and result.get("error") else []
         step["selectors"] = _selector_keys(case)
@@ -152,7 +192,9 @@ def load_step_details(run_id: str) -> dict[str, Any] | None:
 def write_step_details(run_id: str, payload: dict[str, Any]) -> Path:
     path = step_details_path(run_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(path)
     return path
 
 
@@ -194,3 +236,12 @@ def _screenshot_url(path_text: str) -> str:
         run_id = parts[2]
         return f"/api/screenshots/runs/{run_id}/{parts[-1]}"
     return ""
+
+
+def _step_screenshots(paths: list[str]) -> dict[int, str]:
+    screenshots: dict[int, str] = {}
+    for path in paths:
+        match = re.fullmatch(r"step-(\d+)\.png", Path(path).name, flags=re.IGNORECASE)
+        if match:
+            screenshots[int(match.group(1))] = path
+    return screenshots

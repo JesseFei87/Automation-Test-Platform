@@ -1,7 +1,7 @@
 import json
 
 from runner import element_knowledge
-from runner.element_ref_matcher import bind_candidate_refs, format_agent_ref_guidance, format_bound_candidate_elements, match_element_to_interactive, resolve_recovery_ref
+from runner.element_ref_matcher import bind_candidate_refs, build_agent_ref_evidence, format_agent_ref_guidance, format_bound_candidate_elements, match_element_to_interactive, resolve_recovery_ref
 
 
 def write_library(path, elements):
@@ -74,6 +74,30 @@ def test_bind_candidate_refs_omits_low_confidence_matches():
     bound = bind_candidate_refs(candidates, observation)
 
     assert "matched_ref" not in bound[0]
+
+
+def test_agent_ref_evidence_records_match_and_adoption_without_selectors(monkeypatch):
+    element = {
+        "element_id": "user_create_button",
+        "name": "user_create_button",
+        "selectors": ["button.add"],
+        "tag": "button",
+        "text": "新增用户",
+        "validation_status": "valid",
+    }
+    monkeypatch.setattr("runner.element_ref_matcher.rank_for_intent", lambda *args, **kwargs: [element])
+    observation = {
+        "interactives": [{"ref": "e3", "selector": "button.add", "tag": "button", "text": "新增用户"}]
+    }
+
+    evidence = build_agent_ref_evidence("新增用户", "https://example.test/#/users", observation, "e3")
+
+    assert evidence["matched"] is True
+    assert evidence["adopted"] is True
+    assert evidence["adopted_element_id"] == "user_create_button"
+    assert evidence["adoption_reason"] == "selected_ref_matches_candidate"
+    assert evidence["candidates"][0]["recommended_ref"] == "e3"
+    assert "selectors" not in evidence["candidates"][0]
 
 
 def test_resolve_recovery_ref_requires_action_compatible_enabled_ref(monkeypatch):

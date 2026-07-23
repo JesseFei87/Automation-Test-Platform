@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Card } from "../components/Card";
 import { StatusPill } from "../components/StatusPill";
+import { useToast } from "../components/Toast";
 import { api, type AISettings, type ApiElementKnowledgeEnvironment, type ApiElementKnowledgeRefreshTask, type OllamaModel, type PlatformSettings, type SystemHealth } from "../data/api";
 
 const MODEL_PRESETS = {
@@ -84,6 +85,7 @@ function mergePlatformSettings(platform: PlatformSettings): PlatformSettings {
 }
 
 export function SystemSettings({ onAISettingsChange }: SystemSettingsProps) {
+  const toast = useToast();
   const [aiSettings, setAiSettings] = useState<AISettings | null>(null);
   const [aiForm, setAiForm] = useState<AIForm>({ ...MODEL_PRESETS["minimax-m3"] });
   const [platformSettings, setPlatformSettings] = useState<PlatformSettings>(DEFAULT_PLATFORM_SETTINGS);
@@ -247,6 +249,7 @@ export function SystemSettings({ onAISettingsChange }: SystemSettingsProps) {
       const message = `AI 设置已保存：${saved.provider} / ${saved.model}`;
       setStatus(message);
       setAiActionNotice(message);
+      toast.show({ kind: "success", message: "AI 设置保存成功" });
     } catch (error) {
       const message = error instanceof Error ? error.message : "unknown error";
       setStatus(`AI 设置保存失败：${message}`);
@@ -296,6 +299,7 @@ export function SystemSettings({ onAISettingsChange }: SystemSettingsProps) {
       setPlatformSettings(mergePlatformSettings(saved));
       setAccountPasswords({});
       setStatus("平台设置已保存");
+      toast.show({ kind: "success", message: "平台设置保存成功" });
       await refreshHealth();
     } catch (error) {
       setStatus(`平台设置保存失败：${error instanceof Error ? error.message : "unknown error"}`);

@@ -105,6 +105,11 @@ class PromptSectionBuildersTests(unittest.TestCase):
         self.assertNotIn("测试账号", keys)
         self.assertNotIn("参考文档", keys)
 
+    def test_context_block_emits_business_preconditions(self):
+        block = build_context_info_block({"business_preconditions": "使用管理员角色"})
+
+        self.assertEqual(block["rows"], [("业务前置条件", "使用管理员角色")])
+
     def test_context_block_emits_all_four(self):
         block = build_context_info_block(
             {

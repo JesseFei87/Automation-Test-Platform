@@ -177,6 +177,17 @@ def _validation_status_index() -> dict[tuple[str, str, tuple[str, ...]], str]:
     }
 
 
+def _validation_record_index() -> dict[tuple[str, str], dict[str, Any]]:
+    report = _load_validation()
+    if not report:
+        return {}
+    return {
+        (str(record.get("page_id") or ""), str(record.get("element_id") or "")): record
+        for record in report.get("records") or []
+        if isinstance(record, dict)
+    }
+
+
 def _status_for_element(element: dict[str, Any], status_index: dict[tuple[str, str, tuple[str, ...]], str]) -> str:
     if not status_index:
         return ""
@@ -194,11 +205,28 @@ def rank_for_intent(intent: str, route: str = "", *, top_k: int = 6, include_nee
     if not lib:
         return []
     status_index = _validation_status_index()
+    validation_records = _validation_record_index()
     intent_tokens = _expanded_tokens(intent)
     route_norm = (route or "").strip().lower()
+    page_patterns = {
+        str(page.get("page_id") or ""): [str(page.get(key) or "").strip().lower() for key in ("url_pattern", "route", "url")]
+        for page in lib.get("pages") or []
+        if isinstance(page, dict)
+    }
+    matched_patterns = [
+        (page_id, pattern)
+        for page_id, patterns in page_patterns.items()
+        for pattern in patterns
+        if route_norm and pattern and pattern in route_norm
+    ]
+    longest_pattern = max((len(pattern) for _page_id, pattern in matched_patterns), default=0)
+    route_page_ids = {page_id for page_id, pattern in matched_patterns if len(pattern) == longest_pattern}
     scored: list[tuple[float, dict[str, Any]]] = []
     for e in lib.get("elements") or []:
-        validation_status = _status_for_element(e, status_index)
+        if route_page_ids and str(e.get("page_id") or "") not in route_page_ids:
+            continue
+        validation_record = validation_records.get((str(e.get("page_id") or ""), str(e.get("element_id") or "")), {})
+        validation_status = _status_for_element(e, status_index) or str(validation_record.get("status") or "")
         if validation_status == "invalid":
             continue
         if validation_status == "needs_review" and not include_needs_review:
@@ -218,6 +246,8 @@ def rank_for_intent(intent: str, route: str = "", *, top_k: int = 6, include_nee
         route_score = 0.0
         if route_norm and (route_norm in selector_text or route_norm in context_text or route_norm in text_haystack):
             route_score += 6.0
+        if route_norm and any(pattern and pattern in route_norm for pattern in page_patterns.get(str(e.get("page_id") or ""), [])):
+            route_score += 24.0
         for ck in e.get("context_keys") or []:
             ck_text = str(ck).lower()
             if ck_text in intent.lower() or ck_text in route_norm:
@@ -233,6 +263,8 @@ def rank_for_intent(intent: str, route: str = "", *, top_k: int = 6, include_nee
             score -= 8.0
         if score > 0:
             candidate = dict(e)
+            if validation_record.get("selectors"):
+                candidate["selectors"] = list(validation_record["selectors"])
             if validation_status:
                 candidate["validation_status"] = validation_status
             scored.append((score, candidate))

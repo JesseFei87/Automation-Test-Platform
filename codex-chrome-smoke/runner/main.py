@@ -55,6 +55,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--ignore-https-errors", action="store_true")
     # 路线 B · T5：单 case 失败时自动重试 N 次（0~3，默认 0 即不重试）
     parser.add_argument("--retry", type=int, default=0, help="失败重试次数（0~3，0=不重试）")
+    parser.add_argument("--agent-backend", choices=["native", "harness"], default="native")
     return parser.parse_args(argv)
 
 
@@ -151,6 +152,13 @@ async def main() -> int:
         return 0
 
     # 路线 B · T6：提前加载首个 case 对应的 system，用于 launch_browser 加载 storage_state
+    if args.command == "agent-explore" and args.agent_backend == "harness":
+        from runner.harness_explore import run_harness_explore
+
+        run_id = args.run_id or f"{datetime.now():%Y%m%d-%H%M}-{args.arg.lower()}-agent-explore"
+        result = await run_harness_explore(run_id, args.arg)
+        return 0 if result.get("status") == "passed" else 1
+
     system_for_launch = _preload_system_for_launch(args.command, args.arg, args.batch_cases)
 
     exit_status = 0

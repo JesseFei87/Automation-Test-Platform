@@ -28,6 +28,16 @@ function detailOrFallback(detail: string, fallback: string) {
 }
 
 const stepTranslationRules: StepTranslationRule[] = [
+  { pattern: /^verify login page rendered.*$/i, translate: () => "验证登录页及账号、密码输入框和登录按钮正常显示" },
+  { pattern: /^fill (?:the )?(?:username|account)(?: field| input)?.*$/i, translate: () => "在账号输入框中填写用例账号" },
+  { pattern: /^fill (?:the )?password(?: field| input)?.*$/i, translate: () => "在密码输入框中填写用例密码" },
+  { pattern: /^submit login form.*$/i, translate: () => "点击登录按钮提交账号和密码" },
+  { pattern: /^verify (?:the )?top navigation.*(?:user|test).*$/i, translate: () => "验证顶部导航显示当前登录用户" },
+  { pattern: /^fill username(?:\s+(.+?))?\s+(?:in|into) (?:the )?(?:account|username) input$/i, translate: (match) => `在账号输入框中填写 ${match[1] || "用例账号"}` },
+  { pattern: /^fill password with case test data(?:\s+.+)?$/i, translate: () => "在密码输入框中填写用例密码" },
+  { pattern: /^click (?:the )?login button to submit credentials$/i, translate: () => "点击登录按钮提交账号和密码" },
+  { pattern: /^verify (?:the )?logged-in user ['"]?(.+?)['"]? is shown in (?:the )?top navigation.*$/i, translate: (match) => `验证顶部导航显示当前登录用户 ${match[1]}` },
+  { pattern: /^login (?:completed|successful).*$/i, translate: () => "登录验证完成：已进入屏幕墙并显示当前登录用户" },
   { pattern: /^fill username with\s+(.+)$/i, translate: (match) => `在用户名输入框中填写 ${match[1]}` },
   { pattern: /^fill password with\s+(.+)$/i, translate: () => "在密码输入框中填写用例密码" },
   { pattern: /^(?:open|navigate|go to|visit)\s+(.+)$/i, translate: (match) => `打开${detailOrFallback(match[1], "目标页面")}` },
@@ -54,9 +64,29 @@ export function translateStepText(value: string, fallback: string) {
   const normalized = trimmed.replace(/[.。]+$/, "").replace(/\s+/g, " ").toLowerCase();
   const exact = exactStepTranslations.get(normalized);
   if (exact) return exact;
-  if (/\p{Script=Han}/u.test(trimmed)) return trimmed;
   if (!/[a-z]/i.test(trimmed)) return trimmed;
   const matchedRule = stepTranslationRules.find((rule) => rule.pattern.test(trimmed));
   const match = matchedRule ? trimmed.match(matchedRule.pattern) : null;
-  return matchedRule && match ? matchedRule.translate(match) : fallback;
+  if (matchedRule && match) return matchedRule.translate(match);
+  return /\p{Script=Han}/u.test(trimmed) ? trimmed : fallback;
+}
+
+export function translateCommandOutput(value: string) {
+  const resultLabels: Record<string, string> = {
+    navigated: "已打开页面",
+    filled: "已填写",
+    clicked: "已点击",
+    asserted: "断言已通过",
+    waited: "等待完成",
+    pressed: "按键完成",
+    scrolled: "滚动完成",
+  };
+  const result = value.match(/^\[result\]\s*(.+)$/i);
+  if (result) return `[结果] ${resultLabels[result[1].trim().toLowerCase()] || result[1]}`;
+  return value
+    .replace(/^\[action\]/i, "[操作]")
+    .replace(/^\[value\]/i, "[输入]")
+    .replace(/^\[screenshot\]/i, "[截图]")
+    .replace(/^\[url\]/i, "[地址]")
+    .replace(/^\[error\]/i, "[错误]");
 }

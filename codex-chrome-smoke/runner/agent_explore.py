@@ -13,7 +13,7 @@ from runner.agent_codegen import generate_candidate_flow
 from runner.case_expectations import case_expected_results
 from runner.agent_stage_router import build_stage_goal, execute_stage_strategy, normalize_stage_history, now_iso, plan_agent_execution, stage_view
 from runner.browser import attach_case_runtime, ensure_logged_out, first_visible, load_case, load_case_file, load_system, open_login_page, screenshot
-from runner.element_ref_matcher import format_agent_ref_guidance, resolve_recovery_ref
+from runner.element_ref_matcher import build_agent_ref_evidence, format_agent_ref_guidance, resolve_recovery_ref
 from runner.element_feedback import feedback_enabled, record_element_feedback
 from runner.element_retry_strategy import retry_once_with_healing
 from runner.evidence_recorder import attach_evidence_recorder, evidence_summary
@@ -240,7 +240,8 @@ OBSERVE_PAGE_SCRIPT = """() => {
               tag: el.tagName.toLowerCase(),
               role: el.getAttribute('role') || '',
               type: el.getAttribute('type') || '',
-              text: textOf(el),
+              text: el.getAttribute('type') === 'password' ? (el.getAttribute('placeholder') || '') : textOf(el),
+              valueLength: el.getAttribute('type') === 'password' ? String(el.value || '').length : undefined,
               ariaLabel: el.getAttribute('aria-label') || '',
               placeholder: el.getAttribute('placeholder') || '',
               name: el.getAttribute('name') || '',
@@ -336,17 +337,51 @@ async def run_agent_loop(
     execute: Callable[[Any, dict[str, Any]], Awaitable[dict[str, Any]] | dict[str, Any] | None],
     allowed_hosts: set[str],
     max_steps: int = 25,
+    on_history: Callable[[list[dict[str, Any]]], None] | None = None,
 ) -> dict[str, Any]:
     from runner.agent_actions import normalize_decision, validate_decision
 
     history: list[dict[str, Any]] = []
+
+    def record_history(item: dict[str, Any]) -> None:
+        observation = item.get("observation") or {}
+        decision = item.get("decision") or {}
+        visible_text = observation.get("visibleText") or []
+        if isinstance(visible_text, list):
+            visible_text = " ".join(str(value) for value in visible_text[:20])
+        route = str(observation.get("url") or "")
+        intent = "\n".join(
+            value
+            for value in (
+                goal,
+                str(decision.get("reason") or ""),
+                route,
+                str(observation.get("title") or ""),
+                str(visible_text or ""),
+            )
+            if value
+        )
+        item["element_knowledge"] = {
+            **build_agent_ref_evidence(
+            intent,
+            route,
+            observation,
+            str(decision.get("ref") or ""),
+            ),
+            "decision_source": "agent_decision",
+            "observation_phase": "pre_action",
+        }
+        history.append(item)
+        if on_history:
+            on_history(history)
+
     for step_index in range(max_steps):
         observation = await observe()
         try:
             raw_decision = await decide(goal, observation, history, step_index, max_steps)
         except Exception as exc:
             if step_index == 0 or not _is_network_provider_error(exc):
-                history.append(
+                record_history(
                     {
                         "step": step_index + 1,
                         "decision": {
@@ -366,7 +401,7 @@ async def run_agent_loop(
             try:
                 raw_decision = await decide(goal, observation, history, step_index, max_steps)
             except Exception as retry_exc:
-                history.append(
+                record_history(
                     {
                         "step": step_index + 1,
                         "decision": {
@@ -393,7 +428,7 @@ async def run_agent_loop(
         }
         if decision.action == "finish":
             if _should_continue_after_login_satisfied(goal, observation, history, decision.reason):
-                history.append(
+                record_history(
                     {
                         "step": step_index + 1,
                         "decision": {
@@ -409,11 +444,11 @@ async def run_agent_loop(
                     }
                 )
                 continue
-            history.append({"step": step_index + 1, "decision": decision_dict, "observation": observation})
+            record_history({"step": step_index + 1, "decision": decision_dict, "observation": observation})
             return {"ok": True, "status": "passed", "goal": goal, "history": history, "summary": decision.reason}
         if decision.action == "fail":
             if _should_continue_after_login_satisfied(goal, observation, history, decision.reason):
-                history.append(
+                record_history(
                     {
                         "step": step_index + 1,
                         "decision": {
@@ -429,13 +464,13 @@ async def run_agent_loop(
                     }
                 )
                 continue
-            history.append({"step": step_index + 1, "decision": decision_dict, "observation": observation})
+            record_history({"step": step_index + 1, "decision": decision_dict, "observation": observation})
             return {"ok": False, "status": "failed", "goal": goal, "history": history, "error": decision.reason}
 
         observed_refs = {item.get("ref", "") for item in observation.get("interactives") or []}
         errors = validate_decision(decision, observed_refs=observed_refs, allowed_hosts=allowed_hosts)
         if errors and _should_finish_on_success_signal(goal, observation, history, decision, errors):
-            history.append(
+            record_history(
                 {
                     "step": step_index + 1,
                     "decision": {
@@ -469,7 +504,7 @@ async def run_agent_loop(
             )
             if recovered_decision is not None and recovered_execution and recovered_execution.get("result") != "error":
                 refreshed_observation = recovery.pop("observation", observation)
-                history.append(
+                record_history(
                     {
                         "step": step_index + 1,
                         "decision": {
@@ -485,7 +520,7 @@ async def run_agent_loop(
                     }
                 )
                 continue
-            history.append(
+            record_history(
                 {
                     "step": step_index + 1,
                     "decision": decision_dict,
@@ -505,7 +540,7 @@ async def run_agent_loop(
             previous_decision.get("key"),
         ) == (decision.action, decision.ref, decision.url, decision.value, decision.key)
         if same_action and previous.get("observation") == observation:
-            history.append(
+            record_history(
                 {
                     "step": step_index + 1,
                     "decision": decision_dict,
@@ -531,7 +566,7 @@ async def run_agent_loop(
             )
             if recovered_decision is not None and recovered_execution and recovered_execution.get("result") != "error":
                 refreshed_observation = recovery.pop("observation", observation)
-                history.append(
+                record_history(
                     {
                         "step": step_index + 1,
                         "decision": {
@@ -547,7 +582,7 @@ async def run_agent_loop(
                     }
                 )
                 continue
-            history.append(
+            record_history(
                 {
                     "step": step_index + 1,
                     "decision": decision_dict,
@@ -562,7 +597,7 @@ async def run_agent_loop(
                 "history": history,
                 "error": error,
             }
-        history.append(
+        record_history(
             {
                 "step": step_index + 1,
                 "decision": decision_dict,
@@ -1244,7 +1279,9 @@ def _write_trace_snapshot(run_id: str, trace: dict[str, Any]) -> None:
     out_dir = AGENT_REPORT_ROOT / run_id
     out_dir.mkdir(parents=True, exist_ok=True)
     trace_path = out_dir / "trace.json"
-    trace_path.write_text(json.dumps(trace, ensure_ascii=False, indent=2), encoding="utf-8")
+    pending_path = trace_path.with_suffix(".json.tmp")
+    pending_path.write_text(json.dumps(trace, ensure_ascii=False, indent=2), encoding="utf-8")
+    pending_path.replace(trace_path)
 
 
 def _finalize_stage_runs(trace: dict[str, Any], *, current_stage_id: str = "", current_stage_name: str = "", current_strategy: str = "") -> dict[str, Any]:

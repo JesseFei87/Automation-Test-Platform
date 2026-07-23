@@ -182,7 +182,7 @@ def resolve_recovery_ref(
     ambiguity_gap: float = 3.0,
 ) -> dict[str, Any]:
     """Resolve one safe current ref for a failed pre-action locator attempt."""
-    candidates = rank_for_intent(intent, route, top_k=top_k)
+    candidates = rank_for_intent(intent, route, top_k=top_k, include_needs_review=True)
     matches: dict[str, dict[str, Any]] = {}
     for candidate_index, element in enumerate(candidates):
         for interactive in observation.get("interactives") or []:
@@ -236,6 +236,50 @@ def format_agent_ref_guidance(intent: str, route: str, observation: dict[str, An
         return ""
     lines.append("Use recommended refs only if they appear in current observation.interactives; never use library selectors directly.")
     return "\n".join(lines)
+
+
+def build_agent_ref_evidence(
+    intent: str,
+    route: str,
+    observation: dict[str, Any],
+    selected_ref: str = "",
+    *,
+    top_k: int = 6,
+) -> dict[str, Any]:
+    """Describe which library candidates matched current refs and whether one was used."""
+    rows = bind_candidate_refs(rank_for_intent(intent, route, top_k=top_k, include_needs_review=True), observation)
+    candidates = [
+        {
+            "element_id": str(element.get("element_id") or ""),
+            "element_name": str(element.get("name") or ""),
+            "recommended_ref": str(element.get("matched_ref") or ""),
+            "label": str(element.get("matched_ref_text") or element.get("name") or ""),
+            "score": element.get("matched_ref_score"),
+            "validation_status": str(element.get("validation_status") or "unknown"),
+        }
+        for element in rows
+        if element.get("matched_ref")
+    ]
+    adopted = next((item for item in candidates if item["recommended_ref"] == selected_ref), None)
+    applicable = bool(selected_ref)
+    return {
+        "matched": bool(candidates),
+        "candidate_count": len(candidates),
+        "candidates": candidates,
+        "selected_ref": selected_ref,
+        "adopted": adopted is not None,
+        "adopted_element_id": adopted["element_id"] if adopted else "",
+        "applicable": applicable,
+        "adoption_reason": (
+            "selected_ref_matches_candidate"
+            if adopted
+            else "selected_ref_differs_from_candidates"
+            if applicable and candidates
+            else "no_bound_candidate"
+            if applicable
+            else "action_has_no_target"
+        ),
+    }
 
 
 def format_bound_candidate_elements(intent: str, route: str, observation: dict[str, Any], *, top_k: int = 6) -> str:

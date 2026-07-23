@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Card } from "../components/Card";
+import { useConfirm } from "../components/ConfirmDialog";
 import { StatusPill } from "../components/StatusPill";
+import { useToast } from "../components/Toast";
 import { api, type Project } from "../data/api";
 
 type ProjectForm = {
@@ -61,6 +63,8 @@ function ProjectActionSvg({ icon }: { icon: ProjectActionIcon }) {
 }
 
 export function ProjectManagement() {
+  const confirm = useConfirm();
+  const toast = useToast();
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [form, setForm] = useState<ProjectForm>(EMPTY_FORM);
@@ -138,6 +142,7 @@ export function ProjectManagement() {
         description: form.description.trim() || null,
       });
       setMessage(`项目已保存：${updated.name}`);
+      toast.show({ kind: "success", message: "项目保存成功" });
       await refresh(updated.id);
     } catch (error) {
       setMessage(`${mode === "create" ? "创建" : "保存"}失败：${errorMessage(error)}`);
@@ -147,12 +152,18 @@ export function ProjectManagement() {
   }
 
   async function deleteProject(project: Project) {
-    const confirmed = window.confirm(`确认删除项目“${project.name}”？该操作只删除项目档案，不会删除已生成的需求、用例或报告。`);
+    const confirmed = await confirm({
+      title: `确认删除项目“${project.name}”？`,
+      description: "该操作只删除项目档案，不会删除已生成的需求、用例或报告。删除后无法从项目列表恢复。",
+      danger: true,
+      confirmText: "确认删除",
+    });
     if (!confirmed) return;
     setBusy(true);
     try {
       await api.deleteProject(project.id);
       setMessage(`项目已删除：${project.name}`);
+      toast.show({ kind: "success", message: "项目删除成功" });
       await refresh(project.id === selectedId ? "" : selectedId);
     } catch (error) {
       setMessage(`删除失败：${errorMessage(error)}`);

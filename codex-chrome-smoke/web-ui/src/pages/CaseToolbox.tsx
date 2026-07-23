@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Card } from "../components/Card";
+import { useConfirm } from "../components/ConfirmDialog";
 import { StatusPill } from "../components/StatusPill";
+import { useToast } from "../components/Toast";
 import {
   api,
   type ApiCase,
@@ -100,7 +102,9 @@ function CaseActionSvg({ icon }: { icon: CaseActionIcon }) {
   );
 }
 
-export function CaseToolbox({ onRunCreated }: { onRunCreated?: (runId: string) => void }) {
+export function CaseToolbox({ initialDraftId, onRunCreated }: { initialDraftId?: number; onRunCreated?: (runId: string) => void }) {
+  const confirm = useConfirm();
+  const toast = useToast();
   const [cases, setCases] = useState<ApiCase[]>([]);
   const [drafts, setDrafts] = useState<CaseDraft[]>([]);
   const [requirements, setRequirements] = useState<Requirement[]>([]);
@@ -121,6 +125,7 @@ export function CaseToolbox({ onRunCreated }: { onRunCreated?: (runId: string) =
   const [busy, setBusy] = useState(false);
   const [batchBusy, setBatchBusy] = useState(false);
   const [browserMode, setBrowserModeState] = useState<PlatformSettings["runner"]["browser_mode"]>("background");
+  const [agentBackend, setAgentBackend] = useState<"native" | "harness">("native");
   const [status, setStatus] = useState("正在读取用例资产...");
 
   const selectedDraft = useMemo(() => drafts.find((draft) => draft.id === selectedDraftId) || null, [drafts, selectedDraftId]);
@@ -289,6 +294,7 @@ export function CaseToolbox({ onRunCreated }: { onRunCreated?: (runId: string) =
       setDrafts((items) => items.map((item) => (item.id === updated.id ? updated : item)));
       selectDraft(updated);
       setStatus(`草稿已保存：#${updated.id}`);
+      toast.show({ kind: "success", message: "用例保存成功" });
     } catch (error) {
       setStatus(`保存草稿失败：${errorMessage(error)}`);
     } finally {
@@ -332,7 +338,7 @@ export function CaseToolbox({ onRunCreated }: { onRunCreated?: (runId: string) =
         setDrafts((items) => items.map((item) => (item.id === sourceDraft.id ? sourceDraft : item)));
         selectDraft(sourceDraft);
       }
-      const task = await api.createRun("agent-explore", undefined, sourceDraft.id);
+      const task = await api.createRun("agent-explore", undefined, sourceDraft.id, undefined, agentBackend);
       setStatus(`已创建 Agent Explore 任务：${task.id}`);
       onRunCreated?.(task.id);
     } catch (error) {
@@ -388,13 +394,20 @@ export function CaseToolbox({ onRunCreated }: { onRunCreated?: (runId: string) =
 
   async function deleteDraft(draft: CaseDraft) {
     const label = draft.promoted_case_id || `草稿 #${draft.id}`;
-    if (!window.confirm(`是否确认删除 ${label}？`)) return;
+    const confirmed = await confirm({
+      title: `确认删除用例“${label}”？`,
+      description: "删除后将无法在用例管理中继续查看该用例；若已沉淀为正式用例，其关联自动化资产也会一并清理。",
+      danger: true,
+      confirmText: "确认删除",
+    });
+    if (!confirmed) return;
     setBusy(true);
     try {
       await api.deleteCaseDraft(draft.id);
       setSelectedDraftIds((items) => items.filter((id) => id !== draft.id));
       await refresh(selectedDraftId === draft.id ? null : selectedDraftId);
       setStatus(`已删除用例：${label}`);
+      toast.show({ kind: "success", message: "用例删除成功" });
     } catch (error) {
       setStatus(`删除用例失败：${errorMessage(error)}`);
     } finally {
@@ -407,7 +420,13 @@ export function CaseToolbox({ onRunCreated }: { onRunCreated?: (runId: string) =
       setStatus("请先勾选至少一条用例");
       return;
     }
-    if (!window.confirm(`是否确认删除选中的 ${selectedDraftIds.length} 条用例？`)) return;
+    const confirmed = await confirm({
+      title: `确认删除选中的 ${selectedDraftIds.length} 条用例？`,
+      description: "所选用例及其关联自动化资产将被清理。批量删除完成后无法在用例管理中恢复。",
+      danger: true,
+      confirmText: "确认删除",
+    });
+    if (!confirmed) return;
     setBatchBusy(true);
     try {
       const result = await api.batchDeleteCaseDrafts(selectedDraftIds);
@@ -415,6 +434,9 @@ export function CaseToolbox({ onRunCreated }: { onRunCreated?: (runId: string) =
       setSelectedDraftIds([]);
       await refresh(nextSelected);
       setStatus(`批量删除完成：成功 ${result.deleted} 条，失败 ${result.failed} 条`);
+      if (result.deleted > 0 && result.failed === 0) {
+        toast.show({ kind: "success", message: "用例删除成功" });
+      }
     } catch (error) {
       setStatus(`批量删除失败：${errorMessage(error)}`);
     } finally {
@@ -423,8 +445,8 @@ export function CaseToolbox({ onRunCreated }: { onRunCreated?: (runId: string) =
   }
 
   useEffect(() => {
-    void refresh();
-  }, []);
+    void refresh(initialDraftId);
+  }, [initialDraftId]);
 
   const selectedFormalCase = selectedDraft?.promoted_case_id ? cases.find((item) => item.id === selectedDraft.promoted_case_id) || null : null;
 
@@ -649,9 +671,10 @@ export function CaseToolbox({ onRunCreated }: { onRunCreated?: (runId: string) =
               <button className="btn btn--primary" type="button" disabled={!selectedDraft || busy || detailMode === "formal"} onClick={promoteDraft}>
                 转正式
               </button>
-              <button className="btn btn--outline" type="button" title="按当前草稿最新内容执行 Agent Explore" disabled={!selectedDraft || busy} onClick={() => selectedDraft && void runAgentExplore(selectedDraft)}>
-                AG
-              </button>
+              <select className={`case-agent-backend-select is-${agentBackend}`} aria-label="智能探索执行后端" disabled={busy} value={agentBackend} onChange={(event) => setAgentBackend(event.target.value as "native" | "harness")}>
+                <option value="native">平台原生 Agent</option>
+                <option value="harness">Browser Harness</option>
+              </select>
             </div>
           </Card>
         </div>

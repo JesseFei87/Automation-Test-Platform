@@ -1,5 +1,5 @@
 import type { ApiReportListItem, ApiRun, ApiRunDetail, ApiRunDetailView, ApiScreenshot, ApiStructuredStep } from "./api";
-import { translateStepText } from "./stepTextZh";
+import { translateCommandOutput, translateStepText } from "./stepTextZh";
 
 export type ExecutionListItem = {
   runId: string;
@@ -298,7 +298,7 @@ function mapStep(step: ApiStructuredStep, screenshots: ApiScreenshot[]): StepDet
     screenshotUrl: shot?.url || step.screenshot_url || "",
     aiAnalysis: translateStepText(step.ai_analysis || step.summary || sourceTitle, summary),
     finalUrl: step.final_url || "",
-    commandOutput: step.command_output || [],
+    commandOutput: (step.command_output || []).map(translateCommandOutput),
     errorMessage: step.error_message || "",
     selectors: step.selectors || [],
     inputs: step.inputs || [],
@@ -399,7 +399,7 @@ export function buildRunDetailViewModel(detail: ApiRunDetailView | null): RunDet
     startedAtLabel: timeLabel(detail?.started_at),
     finishedAtLabel: timeLabel(detail?.finished_at),
     durationLabel: detail?.duration_seconds ? `${detail.duration_seconds}s` : "--",
-    summaryText: detail?.summary?.conclusion || detail?.summary?.ai_analysis || "暂无执行摘要",
+    summaryText: translateStepText(detail?.summary?.conclusion || detail?.summary?.ai_analysis || "", "探索执行已完成"),
     failureText: detail?.summary?.failure_reason || "",
     finalUrl: detail?.final_url || "",
     steps,

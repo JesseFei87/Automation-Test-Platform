@@ -2,12 +2,63 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { API_ORIGIN, api, type ApiCase, type ApiRunDetailView, type ApiScreenshot } from "../data/api";
 import { buildExecutionListItems, buildRunDetailViewModel, legacyRunDetailToView, type ExecutionListItem, type RunDetailViewModel } from "../data/runViewModels";
 import { Card } from "../components/Card";
+import { useConfirm } from "../components/ConfirmDialog";
 import { ConsolePanel } from "../components/ConsolePanel";
 import { FlowSteps } from "../components/FlowSteps";
 import { ScreenshotLightbox } from "../components/ScreenshotLightbox";
 import { StatusPill } from "../components/StatusPill";
+import { useToast } from "../components/Toast";
 
 type ExecutionTab = "worker" | "agent";
+
+type ElementKnowledgeCandidate = {
+  element_id?: string;
+  element_name?: string;
+  recommended_ref?: string;
+  label?: string;
+  score?: number;
+  validation_status?: string;
+};
+
+type ElementKnowledgeEvidence = {
+  matched?: boolean;
+  adopted?: boolean;
+  applicable?: boolean;
+  adoption_reason?: string;
+  selected_ref?: string;
+  decision_source?: string;
+  observation_phase?: string;
+  candidates?: ElementKnowledgeCandidate[];
+};
+
+function stepElementKnowledge(step: RunDetailViewModel["steps"][number] | null): ElementKnowledgeEvidence | null {
+  for (const event of [...(step?.events || [])].reverse()) {
+    const evidence = event.element_knowledge;
+    if (evidence && typeof evidence === "object" && !Array.isArray(evidence)) {
+      return evidence as ElementKnowledgeEvidence;
+    }
+  }
+  return null;
+}
+
+function knowledgeStatus(evidence: ElementKnowledgeEvidence) {
+  if (evidence.applicable === false || evidence.adoption_reason === "action_has_no_target") return "无需采用";
+  if (evidence.adopted) return "已采用";
+  if (evidence.matched) return "命中未采用";
+  return "未命中";
+}
+
+function knowledgeReason(evidence: ElementKnowledgeEvidence) {
+  if (evidence.adoption_reason === "selected_ref_matches_candidate") return "最终选择与知识推荐一致";
+  if (evidence.adoption_reason === "selected_ref_differs_from_candidates") return "实时页面选择与知识推荐不一致，已优先采用当前 DOM";
+  if (evidence.adoption_reason === "no_bound_candidate") return "知识候选无法可靠绑定到当前页面元素";
+  if (evidence.adoption_reason === "action_has_no_target") return "该动作不需要选择页面元素";
+  return "暂无采纳说明";
+}
+
+function knowledgeValidationStatus(status: string) {
+  return ({ valid: "有效", needs_review: "待复核", invalid: "无效" } as Record<string, string>)[status] || "未知";
+}
 
 function statusTone(status: string): "green" | "red" | "amber" | "blue" {
   if (status === "completed" || status === "passed" || status === "success") return "green";
@@ -101,6 +152,8 @@ export function ExecutionCenter({
   onOpenReport: (runId: string) => void;
   onOpenCaseDraft?: (draftId: number) => void;
 }) {
+  const confirm = useConfirm();
+  const toast = useToast();
   const [cases, setCases] = useState<ApiCase[]>([]);
   const [runs, setRuns] = useState<ExecutionListItem[]>([]);
   const [selectedCaseIds, setSelectedCaseIds] = useState<string[]>([]);
@@ -136,13 +189,14 @@ export function ExecutionCenter({
     return completedStages.at(-1)?.index || 0;
   }, [detailModel.stagePlan]);
   const selectedStep = useMemo(() => detailModel.steps.find((step) => step.key === selectedStepKey) || detailModel.steps[0] || null, [detailModel.steps, selectedStepKey]);
+  const elementKnowledge = useMemo(() => stepElementKnowledge(selectedStep), [selectedStep]);
   const previewScreenshotUrl = selectedStep?.screenshotUrl || "";
   const previewScreenshot = useMemo(() => {
     if (!previewScreenshotUrl) return null;
     return detailModel.screenshots.find((shot) => shot.url === previewScreenshotUrl) || null;
   }, [detailModel.screenshots, previewScreenshotUrl]);
   const canPromoteRegression = detailModel.mode === "agent" && detailModel.status === "completed" && Boolean(detailModel.artifacts.candidate_flow_url);
-  const canSelfHeal = detailModel.mode === "agent" && detailModel.status === "failed" && Boolean(detailModel.artifacts.trace_download_url);
+  const canDiagnose = detailModel.status === "failed";
   const isProcessInitializing =
     Boolean(selectedRunId) &&
     !detailModel.steps.length &&
@@ -260,30 +314,30 @@ export function ExecutionCenter({
     }
   }
 
-  async function selfHealAgentRun() {
+  async function diagnoseRun() {
     const runId = selectedRunId || initialRunId;
-    if (!runId) {
-      setMessage("请先选择一条执行记录");
-      return;
-    }
+    if (!runId) return;
     setSelfHealing(true);
     try {
-      const task = await api.selfHealAgentExplore(runId);
-      setActiveExecutionTab("agent");
-      pendingAutoSelectRunIdRef.current = task.id;
-      setSelectedRunId(task.id);
-      setRunDetail(null);
+      await api.diagnoseRun(runId);
+      setRunDetail(await api.runDetailView(runId));
       await refreshRuns();
-      setMessage(`已创建自愈任务：${task.id}`);
+      setMessage("诊断结果已更新到当前运行。");
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Agent 自愈提交失败");
+      setMessage(error instanceof Error ? error.message : "诊断任务提交失败");
     } finally {
       setSelfHealing(false);
     }
   }
 
   async function deleteRun(runId: string) {
-    if (!window.confirm("是否确认删除？")) return;
+    const confirmed = await confirm({
+      title: `确认删除执行任务“${runId}”？`,
+      description: "删除后将无法在任务队列继续查看该任务的状态、运行日志和执行证据。",
+      danger: true,
+      confirmText: "确认删除",
+    });
+    if (!confirmed) return;
     setDeletingRunId(runId);
     try {
       await api.deleteRun(runId);
@@ -294,6 +348,7 @@ export function ExecutionCenter({
       }
       await refreshRuns();
       setMessage(`已删除任务 ${runId}`);
+      toast.show({ kind: "success", message: "任务删除成功" });
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "删除任务失败");
     } finally {
@@ -357,11 +412,11 @@ export function ExecutionCenter({
         const detail = await api.runDetailView(selectedRunId).catch(async () => legacyRunDetailToView(await api.runDetail(selectedRunId)));
         if (cancelled) return;
         setRunDetail(detail);
-        if (isLiveStatus(detail.status)) timer = window.setTimeout(() => void loadDetail(), 2500);
+        if (isLiveStatus(detail.status)) timer = window.setTimeout(() => void loadDetail(), 1000);
       } catch {
         if (cancelled) return;
         setRunDetail(null);
-        if (!selectedRun || isLiveStatus(selectedRun.status)) timer = window.setTimeout(() => void loadDetail(), 2500);
+        if (!selectedRun || isLiveStatus(selectedRun.status)) timer = window.setTimeout(() => void loadDetail(), 1000);
       }
     }
     void loadDetail();
@@ -443,20 +498,29 @@ export function ExecutionCenter({
             </p>
           </Card>
 
-          <Card className="execution-preview-card" title="执行预览" subtitle="左侧选中任务后，这里显示过程和结果">
-            <div className="run-meta">
-              <StatusPill tone={statusTone(detailModel.status)}>{detailModel.statusLabel}</StatusPill>
-              <span>{detailModel.runId || "等待选择任务"}</span>
-              {detailModel.mode === "agent" ? (
-                <StatusPill tone={detailModel.trigger === "self_heal" ? "blue" : "amber"}>{detailModel.trigger === "self_heal" ? "自愈探索" : "普通探索"}</StatusPill>
-              ) : null}
+          <Card className="execution-preview-card">
+            <header className="card__header execution-preview-card__header">
+              <div>
+                <h2>执行预览</h2>
+                <p>左侧选中任务后，这里显示过程和结果</p>
+              </div>
               {selectedRun?.hasReport ? (
-                <button className="btn btn--outline" onClick={() => onOpenReport(selectedRun.runId)} type="button">
+                <button className="btn btn--outline execution-preview-report" onClick={() => onOpenReport(selectedRun.runId)} type="button">
                   查看报告
                 </button>
               ) : null}
+            </header>
+            <div className="execution-preview-identity">
+              <StatusPill tone={statusTone(detailModel.status)}>{detailModel.statusLabel}</StatusPill>
+              <span className="execution-preview-run-id" title={detailModel.runId || "等待选择任务"}>
+                {detailModel.runId || "等待选择任务"}
+              </span>
+              {detailModel.mode === "agent" ? (
+                <StatusPill tone={detailModel.trigger === "self_heal" ? "blue" : "amber"}>{detailModel.trigger === "self_heal" ? "自愈探索" : "普通探索"}</StatusPill>
+              ) : null}
+              {selectedRun?.source.agent_backend === "harness" ? <StatusPill tone="blue">Browser Harness（隔离 Chrome）</StatusPill> : null}
             </div>
-            <div className="execution-preview-head">
+            <div className="execution-preview-head" aria-label="执行元数据">
               <div className="execution-preview-stat">
                 <span>模式</span>
                 <strong>{detailModel.modeLabel}</strong>
@@ -470,7 +534,10 @@ export function ExecutionCenter({
                 <strong>{detailModel.finalUrl || "--"}</strong>
               </div>
             </div>
-            <ConsolePanel lines={latestLine(runDetail)} running={detailModel.status === "running"} />
+            <div className="execution-preview-console">
+              <div className="execution-preview-console__header">运行日志</div>
+              <ConsolePanel lines={latestLine(runDetail)} running={detailModel.status === "running"} />
+            </div>
           </Card>
             </div>
           </div>
@@ -667,11 +734,36 @@ export function ExecutionCenter({
                       <p>{selectedStep?.summary || detailModel.summaryText || "暂无执行摘要"}</p>
                     )}
                   </div>
-                  {detailModel.mode === "agent" && detailModel.stagePlan.length ? (
-                    <div className="execution-live-panel">
-                      <strong>当前阶段</strong>
-                      <p>{detailModel.currentStageName || "待进入阶段"}</p>
-                      <p>{detailModel.currentStrategy || "通用探索"}</p>
+                  {detailModel.mode === "agent" && elementKnowledge ? (
+                    <div className="execution-live-panel execution-knowledge">
+                      <div className="execution-knowledge__head">
+                        <strong>元素知识轨迹</strong>
+                        <StatusPill tone={elementKnowledge.adopted ? "green" : elementKnowledge.matched ? "amber" : "blue"}>
+                          {knowledgeStatus(elementKnowledge)}
+                        </StatusPill>
+                      </div>
+                      {elementKnowledge.candidates?.length ? (
+                        <div className="execution-knowledge__list">
+                          {elementKnowledge.candidates.slice(0, 3).map((candidate, index) => (
+                            <div className="execution-knowledge__item" key={`${candidate.element_id || candidate.element_name || "knowledge"}-${index}`}>
+                              <span>{candidate.label || candidate.element_name || candidate.element_id || `候选 ${index + 1}`}</span>
+                              <small>
+                                推荐 {candidate.recommended_ref || "-"}
+                                {typeof candidate.score === "number" ? ` · 匹配 ${candidate.score}` : ""}
+                                {candidate.validation_status ? ` · ${knowledgeValidationStatus(candidate.validation_status)}` : ""}
+                              </small>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p>本步骤未找到可绑定到当前页面 ref 的知识。</p>
+                      )}
+                      <p>最终选择：{elementKnowledge.selected_ref || "未选择页面元素"}</p>
+                      <p>采纳说明：{knowledgeReason(elementKnowledge)}</p>
+                      <p>
+                        证据口径：{elementKnowledge.decision_source === "native_strategy" ? "Native 策略" : "Agent 决策"}
+                        {elementKnowledge.observation_phase === "post_action" ? " · 动作后页面" : " · 动作前页面"}
+                      </p>
                     </div>
                   ) : null}
                   {detailModel.trigger === "self_heal" ? (
@@ -679,6 +771,14 @@ export function ExecutionCenter({
                       <strong>自愈信息</strong>
                       <p>{detailModel.parentRunId ? `来源运行：${detailModel.parentRunId}` : "来源运行：--"}</p>
                       <p>{detailModel.healingHint || "已带入上一轮失败上下文进行重试。"}</p>
+                    </div>
+                  ) : null}
+                  {runDetail?.diagnosis ? (
+                    <div className="execution-live-panel">
+                      <strong>诊断结论</strong>
+                      <p>{runDetail.diagnosis.category || "unknown"}（置信度 {Math.round((runDetail.diagnosis.confidence || 0) * 100)}%）</p>
+                      <p>{runDetail.diagnosis.recommendation || "暂无建议"}</p>
+                      {runDetail.diagnosis.reobservation?.read_only ? <p>已执行隔离 Harness 只读复观察。</p> : null}
                     </div>
                   ) : null}
                   <div className="execution-live-panel">
@@ -696,23 +796,34 @@ export function ExecutionCenter({
                     </div>
                   ) : null}
                   <div className="evidence-actions">
-                    {canSelfHeal ? (
-                      <button className="btn btn--outline" disabled={selfHealing} onClick={selfHealAgentRun} type="button">
-                        {selfHealing ? "自愈中..." : "Agent 自愈"}
+                    {canDiagnose ? (
+                      <button className="btn evidence-action evidence-action--diagnose" disabled={selfHealing} onClick={diagnoseRun} type="button">
+                        {selfHealing ? "诊断中..." : "诊断失败原因"}
                       </button>
                     ) : null}
+                    {detailModel.artifacts.diagnosis_url ? (
+                      <a className="btn evidence-action evidence-action--report" href={`${API_ORIGIN}${detailModel.artifacts.diagnosis_url}`} rel="noreferrer" target="_blank">诊断报告</a>
+                    ) : null}
+                    {detailModel.artifacts.candidate_patch_url ? (
+                      <a className="btn evidence-action evidence-action--patch" href={`${API_ORIGIN}${detailModel.artifacts.candidate_patch_url}`} rel="noreferrer" target="_blank">待审核定位器建议</a>
+                    ) : null}
                     {detailModel.artifacts.trace_download_url ? (
-                      <a className="btn btn--outline" href={`${API_ORIGIN}${detailModel.artifacts.trace_download_url}`} rel="noreferrer" target="_blank">
-                        执行轨迹
+                      <a className="btn evidence-action evidence-action--trace" href={`${API_ORIGIN}/api/runs/${detailModel.runId}/evidence/trace/view`} rel="noreferrer" target="_blank">
+                        在线查看执行轨迹
+                      </a>
+                    ) : null}
+                    {detailModel.artifacts.trace_download_url ? (
+                      <a className="btn evidence-action evidence-action--download" href={`${API_ORIGIN}${detailModel.artifacts.trace_download_url}`}>
+                        下载 trace.zip
                       </a>
                     ) : null}
                     {detailModel.artifacts.candidate_flow_url ? (
-                      <a className="btn btn--outline" href={`${API_ORIGIN}${detailModel.artifacts.candidate_flow_url}`} rel="noreferrer" target="_blank">
+                      <a className="btn evidence-action evidence-action--candidate" href={`${API_ORIGIN}${detailModel.artifacts.candidate_flow_url}`} rel="noreferrer" target="_blank">
                         候选脚本
                       </a>
                     ) : null}
                     {detailModel.artifacts.candidate_flow_url ? (
-                      <button className="btn btn--primary" disabled={promoting || !canPromoteRegression} onClick={promoteRegression} type="button">
+                      <button className="btn evidence-action evidence-action--promote" disabled={promoting || !canPromoteRegression} onClick={promoteRegression} type="button">
                         {promoting ? "沉淀中..." : "沉淀为正式回归用例"}
                       </button>
                     ) : null}

@@ -224,6 +224,7 @@ async def run_case_data(
             active_evidence = get_evidence_recorder(active_page) or evidence
             captured_stages = set(getattr(page, "_case_captured_stages", set()))
             captured_stages.update(getattr(active_page, "_case_captured_stages", set()))
+            shot_names.extend(sorted(name for name in captured_stages if name.startswith("step-") and name.endswith(".png")))
             if "02-action.png" in captured_stages:
                 shot_names.append("02-action.png")
             else:

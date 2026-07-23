@@ -43,6 +43,42 @@
       "problemMatcher": []
     },
     {
+      "label": "ICM Platform: Setup Trace Viewer HTTPS",
+      "type": "shell",
+      "command": "python",
+      "args": [
+        "scripts/setup_trace_viewer_https.py",
+        "--host",
+        "${input:traceViewerHost}"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "ICM Platform: Start Trace Viewer HTTPS",
+      "type": "shell",
+      "command": "python",
+      "args": [
+        "-m",
+        "uvicorn",
+        "icm_platform.api:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8443",
+        "--ssl-keyfile",
+        "platform-data/tls/qa-platform-server.key",
+        "--ssl-certfile",
+        "platform-data/tls/qa-platform-server.crt"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
       "label": "ICM: Run Single Case",
       "type": "shell",
       "command": "python",
@@ -212,6 +248,12 @@
     }
   ],
   "inputs": [
+    {
+      "id": "traceViewerHost",
+      "type": "promptString",
+      "description": "Remote IP address or DNS name of this QA Platform server",
+      "default": "192.168.66.175"
+    },
     {
       "id": "icmCaseId",
       "type": "pickString",
